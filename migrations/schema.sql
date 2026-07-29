@@ -1,0 +1,47 @@
+-- -- ============================================================
+-- -- Observability: one row per graph run, per node execution,
+-- -- and per human decision.
+-- -- ============================================================
+
+-- CREATE TABLE IF NOT EXISTS agent_runs (
+--     id SERIAL PRIMARY KEY,
+--     email_id INTEGER REFERENCES email_events(id),
+--     thread_id TEXT UNIQUE NOT NULL,
+--     status TEXT NOT NULL DEFAULT 'running',
+--     -- running | waiting_missing_fields | waiting_approval
+--     -- completed_approved | completed_rejected | failed
+--     current_node TEXT,
+--     started_at TIMESTAMPTZ DEFAULT NOW(),
+--     updated_at TIMESTAMPTZ DEFAULT NOW(),
+--     completed_at TIMESTAMPTZ,
+--     error TEXT
+-- );
+
+-- CREATE TABLE IF NOT EXISTS agent_trace (
+--     id SERIAL PRIMARY KEY,
+--     run_id INTEGER REFERENCES agent_runs(id),
+--     node_name TEXT NOT NULL,
+--     status TEXT NOT NULL,              -- completed | paused | failed
+--     started_at TIMESTAMPTZ NOT NULL,
+--     completed_at TIMESTAMPTZ NOT NULL,
+--     duration_ms INTEGER NOT NULL,
+--     input_snapshot JSON,
+--     output_snapshot JSON,
+--     error TEXT
+-- );
+
+-- CREATE TABLE IF NOT EXISTS hitl_actions (
+--     id SERIAL PRIMARY KEY,
+--     run_id INTEGER REFERENCES agent_runs(id),
+--     email_id INTEGER REFERENCES email_events(id),
+--     interrupt_type TEXT NOT NULL,      -- missing_mandatory_fields | approval_required
+--     question JSON NOT NULL,
+--     answer JSON NOT NULL,
+--     decision TEXT,                     -- approve | reject (approval_required only)
+--     reason TEXT,                       -- rejection reason, if any
+--     actor TEXT NOT NULL,
+--     responded_at TIMESTAMPTZ DEFAULT NOW()
+-- );
+
+-- CREATE INDEX IF NOT EXISTS idx_agent_trace_run_id ON agent_trace(run_id);
+-- CREATE INDEX IF NOT EXISTS idx_hitl_actions_run_id ON hitl_actions(run_id);
