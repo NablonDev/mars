@@ -34,6 +34,8 @@ def traced(node_name: str, fn: NodeFn, trace_repo: AgentTraceRepository) -> Node
 
     def wrapped(state: GraphState) -> GraphState:
         run_id = state.get("run_id")
+        batch_id = state.get("batch_id")
+        thread_id = state.get("thread_id")
         started_at = datetime.now(timezone.utc)
         t0 = time.perf_counter()
 
@@ -46,6 +48,7 @@ def traced(node_name: str, fn: NodeFn, trace_repo: AgentTraceRepository) -> Node
                     run_id, node_name, "paused",
                     started_at, datetime.now(timezone.utc), duration_ms,
                     input_snapshot=state, output_snapshot=None, error=None,
+                    batch_id=batch_id, thread_id=thread_id,
                 )
             raise
         except Exception as exc:
@@ -55,6 +58,7 @@ def traced(node_name: str, fn: NodeFn, trace_repo: AgentTraceRepository) -> Node
                     run_id, node_name, "failed",
                     started_at, datetime.now(timezone.utc), duration_ms,
                     input_snapshot=state, output_snapshot=None, error=str(exc),
+                    batch_id=batch_id, thread_id=thread_id,
                 )
             raise
         else:
@@ -64,6 +68,7 @@ def traced(node_name: str, fn: NodeFn, trace_repo: AgentTraceRepository) -> Node
                     run_id, node_name, "completed",
                     started_at, datetime.now(timezone.utc), duration_ms,
                     input_snapshot=state, output_snapshot=result, error=None,
+                    batch_id=batch_id, thread_id=thread_id,
                 )
             return result
 

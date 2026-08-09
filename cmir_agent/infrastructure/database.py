@@ -3,37 +3,43 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterator
 
-import psycopg2
-from psycopg2.extensions import connection as PGConnection
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from cmir_agent.config import DatabaseConfig
 
 
 class Database:
-    """Thin factory around psycopg2 connections.
-
-    Repositories depend on this abstraction rather than on psycopg2
-    directly, so the connection strategy (single connection today, a pool
-    later) can change in exactly one place.
-    """
+    """SQLAlchemy engine/session factory for repository adapters."""
 
     def __init__(self, config: DatabaseConfig) -> None:
         self._config = config
+        self._engine = create_engine(self._url(config), pool_pre_ping=True)
+        self._session_factory = sessionmaker(
+            bind=self._engine,
+            autoflush=False,
+            expire_on_commit=False,
+        )
+
+    @property
+    def engine(self) -> Engine:
+        """Return the SQLAlchemy engine for migrations or diagnostics."""
+        return self._engine
 
     @contextmanager
-    def connection(self) -> Iterator[PGConnection]:
-        conn = psycopg2.connect(
-            host=self._config.host,
-            port=self._config.port,
-            dbname=self._config.name,
-            user=self._config.user,
-            password=self._config.password,
-        )
+    def session(self) -> Iterator[Session]:
+        """Provide one transactional SQLAlchemy session."""
+        session = self._session_factory()
         try:
-            yield conn
-            conn.commit()
+            yield session
+            session.commit()
         except Exception:
-            conn.rollback()
+            session.rollback()
             raise
         finally:
-            conn.close()
+            session.close()
+
+    @staticmethod
+    def _url(config: DatabaseConfig) -> str:
+        return config.sqlalchemy_url()

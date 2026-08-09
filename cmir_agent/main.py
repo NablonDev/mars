@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import getpass
 from dataclasses import asdict
+from uuid import uuid4
 
 from langgraph.types import Command
 
@@ -51,12 +52,20 @@ def _resolve_answer(reason: str, payload: dict, container: Container) -> dict:
 def process_email(email: EmailMessage, container: Container) -> None:
     thread_config = _thread_config(email)
     thread_id = thread_config["configurable"]["thread_id"]
+    batch_id = f"cli_batch_{uuid4().hex[:12]}"
 
-    run_id = container.agent_runs.start(thread_id)
+    run_id = container.agent_runs.start(batch_id=batch_id, thread_id=thread_id)
 
     try:
         state = container.graph.invoke(
-            {"email": asdict(email), "cmir": {}, "decision": None, "run_id": run_id},
+            {
+                "batch_id": batch_id,
+                "email": asdict(email),
+                "cmir": {},
+                "decision": None,
+                "run_id": run_id,
+                "thread_id": thread_id,
+            },
             config=thread_config,
         )
 
@@ -78,6 +87,7 @@ def process_email(email: EmailMessage, container: Container) -> None:
 
             container.hitl_actions.log(
                 run_id=run_id,
+                batch_id=batch_id,
                 email_id=state.get("email_id"),
                 interrupt_type=reason,
                 question=payload,

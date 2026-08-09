@@ -4,7 +4,7 @@ from typing import Literal
 
 from langgraph.types import interrupt
 
-from cmir_agent.domain.models import CMIR, CMIRStatus, EmailMessage
+from cmir_agent.domain.models import CMIR, CMIRStatus, EmailMessage, WorkflowThread
 from cmir_agent.domain.validators import CMIRValidator
 from cmir_agent.interfaces.email_reader import EmailReader
 from cmir_agent.interfaces.extractor import CMIRExtractor
@@ -13,6 +13,7 @@ from cmir_agent.interfaces.repositories import (
     CMIRRepository,
     EmailRepository,
 )
+from cmir_agent.interfaces.observability import WorkflowThreadRepository
 from cmir_agent.workflow.state import GraphState
 
 ACTOR = "AI Agent"
@@ -34,6 +35,7 @@ class WorkflowNodes:
         email_repository: EmailRepository,
         cmir_repository: CMIRRepository,
         action_log_repository: ActionLogRepository,
+        workflow_thread_repository: WorkflowThreadRepository | None = None,
     ) -> None:
         self._email_reader = email_reader
         self._extractor = extractor
@@ -41,12 +43,32 @@ class WorkflowNodes:
         self._email_repository = email_repository
         self._cmir_repository = cmir_repository
         self._action_log_repository = action_log_repository
+        self._workflow_thread_repository = workflow_thread_repository
 
     # ---- extraction / persistence steps ---- #
 
     def persist_email(self, state: GraphState) -> GraphState:
         email = EmailMessage(**state["email"])
-        email_id = self._email_repository.save(email)
+        email_id = state.get("email_id")
+        if email_id is None:
+            email_id = self._email_repository.save(email)
+        thread_id = state.get("thread_id")
+        if thread_id and self._workflow_thread_repository is not None:
+            self._workflow_thread_repository.create(
+                WorkflowThread(
+                    thread_id=thread_id,
+                    agent_run_id=state["run_id"],
+                    batch_id=state["batch_id"],
+                    email_id=str(email_id),
+                    source_message_id=email.source_message_id,
+                    sender=email.sender,
+                    subject=email.subject,
+                    status="running",
+                    current_node="persist_email",
+                    stage="INGESTING",
+                    latest_snapshot={"email": state["email"], "cmir": state.get("cmir", {})},
+                )
+            )
         self._action_log_repository.log(
             email_id, "Email Received", ACTOR, {"sender": email.sender}
         )
@@ -126,6 +148,8 @@ class WorkflowNodes:
         return {}
 
     def mark_email_read(self, state: GraphState) -> GraphState:
+        if not state["email"].get("mark_read", True):
+            return {}
         self._email_reader.mark_as_read(state["email"]["imap_id"])
         return {}
 

@@ -1,4 +1,5 @@
 .env
+local.settings.json
 myvenv/
-__pycache__/
+__pyc   ache__/
 *.pyc

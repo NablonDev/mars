@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, Iterable, Optional
+
+from cmir_agent.config import ServiceBusConfig
+
+
+class ServiceBusMailQueue:
+    """Azure Service Bus adapter for the CMIR mail-processing queue."""
+
+    def __init__(self, config: ServiceBusConfig, credential: Optional[Any] = None) -> None:
+        self._config = config
+        self._credential = credential
+
+    def send(self, payload: Dict[str, Any], *, message_id: str) -> None:
+        self.send_many([(payload, message_id)])
+
+    def send_many(self, messages: Iterable[tuple[Dict[str, Any], str]]) -> None:
+        from azure.servicebus import ServiceBusClient, ServiceBusMessage
+
+        with self._create_client() as client:
+            with client.get_queue_sender(self._config.queue_name) as sender:
+                for payload, message_id in messages:
+                    print("=" * 60)
+                    print("Session ID from config :", repr(self._config.session_id))
+                    print("Message ID             :", message_id)
+
+                    message = ServiceBusMessage(
+                            json.dumps(payload),
+                            message_id=message_id,
+                            content_type="application/json",
+                    )
+
+                    message.session_id=self._config.session_id
+                    print("Message Session ID     :", repr(message.session_id))
+                    print("=" * 60)
+
+                    sender.send_messages(message)
+
+                    
+                    # sender.send_messages(
+                    #     ServiceBusMessage(
+                    #         json.dumps(payload),
+                    #         session_id=self._config.session_id,
+                    #         message_id=message_id,
+                    #         content_type="application/json",
+                    #     )
+                    # )
+
+    def verify_connection(self) -> None:
+        with self._create_client() as client:
+            with client.get_queue_sender(self._config.queue_name):
+                return
+
+    def _create_client(self):
+        from azure.servicebus import ServiceBusClient
+
+        # Development - Use Connection String
+        if getattr(self._config, "connection_string", None):
+            return ServiceBusClient.from_connection_string(
+                conn_str=self._config.connection_string
+            )
+
+        # Production - Use Managed Identity / Azure AD
+        credential = self._credential or self._default_credential()
+        return ServiceBusClient(
+            fully_qualified_namespace=self._config.fully_qualified_namespace,
+            credential=credential,
+        )
+
+    @staticmethod
+    def _default_credential() -> Any:
+        from azure.identity import DefaultAzureCredential
+
+        return DefaultAzureCredential()
