@@ -1,5 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# Environment / secrets
 .env
-local.settings.json
-myvenv/
-__pyc   ache__/
-*.pyc
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Packaging
+*.egg-info/
+dist/
+build/
+
+# Type checking / linting / tooling
+.mypy_cache/
+.ruff_cache/
+.pyre/
+
+# IDEs / editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local
+.claude/
