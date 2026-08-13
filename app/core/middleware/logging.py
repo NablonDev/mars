@@ -1,13 +1,4 @@
-"""
-Access log: one line per request with method, path, status and
-duration_ms. The request id comes from the `ContextVar`
-(app/core/logging.py) via the logging filter, so it isn't passed
-explicitly here.
-
-Only `scope["path"]`, never the raw query string or full URL -- a query
-string is caller-controlled and is exactly the place a token or password
-shows up in someone's `curl`.
-"""
+"""ASGI middleware for structured HTTP access logging."""
 
 from __future__ import annotations
 
@@ -29,25 +20,20 @@ class AccessLogMiddleware:
             return
 
         started = time.perf_counter()
-        # 500 is the honest default: if the response never starts, the
-        # request died on an exception that Starlette's ServerErrorMiddleware
-        # -- which sits outside this middleware -- turned into a 500.
         status = 500
+        logged = False
 
-        async def send_with_status(message: Message) -> None:
-            nonlocal status
-            if message["type"] == "http.response.start":
-                status = message["status"]
-            await send(message)
+        def log_once() -> None:
+            nonlocal logged
 
-        try:
-            await self.app(scope, receive, send_with_status)
-        finally:
+            if logged:
+                return
+
+            logged = True
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             method = scope.get("method", "-")
             path = scope.get("path", "-")
-            # No exc_info here: the exception handlers log the traceback
-            # once, at the boundary. This line is the access record.
+
             logger.info(
                 "%s %s %s %sms",
                 method,
@@ -61,3 +47,22 @@ class AccessLogMiddleware:
                     "duration_ms": duration_ms,
                 },
             )
+
+        async def send_with_status(message: Message) -> None:
+            nonlocal status
+
+            if message["type"] == "http.response.start":
+                status = message["status"]
+
+            await send(message)
+
+            # Log when the response body is actually sent, rather than when
+            # the ASGI application returns (which can include background work).
+            if message["type"] == "http.response.body" and not message.get("more_body", False):
+                log_once()
+
+        try:
+            await self.app(scope, receive, send_with_status)
+        finally:
+            # Covers requests that fail before a response body is sent.
+            log_once()

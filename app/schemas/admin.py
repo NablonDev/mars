@@ -1,3 +1,5 @@
+"""API schemas for admin requests and responses."""
+
 from datetime import date
 
 from pydantic import BaseModel

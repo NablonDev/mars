@@ -1,7 +1,9 @@
+"""API endpoints for managing retailer fine rules."""
+
 from fastapi import APIRouter, Depends, Query
 
 from app.api.dependencies import get_fine_rule_repository
-from app.repositories.fine_rule_repository import FineRuleRepository
+from app.repositories.fine_rule import FineRuleRepository
 from app.schemas.fine_rules import FineRuleRequest, FineRuleResponse
 
 router = APIRouter(tags=["fine-rules"])
@@ -9,10 +11,12 @@ router = APIRouter(tags=["fine-rules"])
 
 @router.post("/fine-rules", response_model=FineRuleResponse, status_code=201)
 def create_fine_rule(
-    body: FineRuleRequest, rules: FineRuleRepository = Depends(get_fine_rule_repository)
+    body: FineRuleRequest,
+    rules: FineRuleRepository = Depends(get_fine_rule_repository),
 ) -> dict:
     tiers = [t.model_dump() for t in body.tiers] if body.tiers else None
-    rules.add_rule(
+
+    return rules.add_rule(
         rule_id=body.rule_id,
         retailer_id=body.retailer_id,
         violation_type=body.violation_type,
@@ -26,7 +30,6 @@ def create_fine_rule(
         source_doc_reference=body.source_doc_reference,
         tiers=tiers,
     )
-    return next(r for r in rules.list_rules(body.retailer_id) if r["rule_id"] == body.rule_id)
 
 
 @router.get("/fine-rules", response_model=list[FineRuleResponse])

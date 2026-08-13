@@ -1,17 +1,6 @@
-"""
-FastAPI application factory. Builds the one `Database` instance in a
-`lifespan` context manager and stashes it on `app.state.database`
-(app/api/dependencies.py::get_database reads it from there), disposing its
-connection pool on shutdown; configures structured logging; installs the
-request-id and access-log middleware; registers the v1 router; and maps
-domain exceptions to one JSON error contract via
-app/core/exceptions.py::register_exception_handlers, rather than
-scattering try/except-to-HTTPException across every route.
+"""FastAPI application factory and application entry point."""
 
-Run with: uvicorn app.main:app --reload
-"""
-
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -29,12 +18,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging(resolved.log_level)
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        """One engine (and therefore one connection pool) per process,
-        torn down on shutdown. Building it here rather than at import
-        time keeps `create_app()` free of I/O side effects, and `dispose()`
-        stops a reloading/redeploying process from leaking server-side
-        connections."""
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        """One engine/connection pool per process; disposed on shutdown."""
         app.state.database = Database(
             resolved.database_url,
             pool_size=resolved.db_pool_size,
@@ -46,11 +31,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             app.state.database.dispose()
 
-    app = FastAPI(title=resolved.api_title, version=resolved.api_version, lifespan=lifespan)
+    app = FastAPI(
+        title=resolved.project_name,
+        version=resolved.version,
+        lifespan=lifespan,
+        docs_url="/docs" if resolved.docs_enabled else None,
+        redoc_url="/redoc" if resolved.docs_enabled else None,
+        openapi_url="/openapi.json" if resolved.docs_enabled else None,
+    )
 
-    # Added innermost-first: `add_middleware` prepends, so the last one
-    # added is the outermost. RequestIdMiddleware has to wrap the access
-    # log, or the access line has no request id to report.
+    # Last-added middleware is outermost; request IDs must wrap access logging.
     app.add_middleware(AccessLogMiddleware)
     app.add_middleware(RequestIdMiddleware)
 

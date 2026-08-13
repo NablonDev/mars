@@ -21,12 +21,13 @@ from sqlalchemy.pool import StaticPool
 from app.api.dependencies import get_database, get_db
 from app.db.session import Database
 from app.main import create_app
-from app.repositories.fine_rule_repository import FineRuleRepository
-from app.repositories.master_data_repository import MasterDataRepository
-from app.repositories.order_repository import OrderRepository
-from app.repositories.projection_repository import ProjectionRepository
-from app.services.projection_service import ProjectionService
-from app.services.seeding_service import SeedingService
+from app.repositories.agent_registry import PromptRegistryRepository
+from app.repositories.fine_rule import FineRuleRepository
+from app.repositories.master_data import MasterDataRepository
+from app.repositories.order import OrderRepository
+from app.repositories.projection import ProjectionRepository
+from app.services.projection import ProjectionService
+from app.services.seeding import SeedingService
 
 
 @pytest.fixture
@@ -81,6 +82,7 @@ def services(db_session):
     rules = FineRuleRepository(db_session)
     orders = OrderRepository(db_session)
     projections = ProjectionRepository(db_session)
+    prompt_registry = PromptRegistryRepository(db_session)
     projection_service = ProjectionService(
         orders=orders,
         rules=rules,
@@ -98,6 +100,7 @@ def services(db_session):
         rules=rules,
         orders=orders,
         projections=projections,
+        prompt_registry=prompt_registry,
         projection_service=projection_service,
         seeding_service=seeding_service,
     )

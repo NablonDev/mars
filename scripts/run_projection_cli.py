@@ -12,6 +12,14 @@ Examples:
     python scripts/run_projection_cli.py --order-id WMT-100234 --date 2026-08-05
     python scripts/run_projection_cli.py --all-open
     python scripts/run_projection_cli.py --all-open --date 2026-08-05 --stacking-mode MAX
+    python scripts/run_projection_cli.py --all-open --with-summary
+
+--with-summary additionally runs the fine-summary generation for each
+order right after its projection succeeds -- the same sequential
+guarantee as `POST /orders/{order_id}/run`, for this no-HTTP-server path.
+Runs inline (no BackgroundTasks needed in a one-shot CLI process) and
+needs AZURE_OPENAI_* configured; see docs/scheduling-options.md for how
+this script is meant to be invoked on a schedule.
 """
 
 import argparse
@@ -21,14 +29,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.agents.providers.azure_openai import AzureOpenAIChatClient
 from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.db.session import Database
-from app.repositories.fine_rule_repository import FineRuleRepository
-from app.repositories.master_data_repository import MasterDataRepository
-from app.repositories.order_repository import OrderRepository
-from app.repositories.projection_repository import ProjectionRepository
-from app.services.projection_service import ProjectionService
+from app.repositories.agent_registry import PromptRegistryRepository
+from app.repositories.fine_rule import FineRuleRepository
+from app.repositories.fine_summary import FineSummaryRepository
+from app.repositories.master_data import MasterDataRepository
+from app.repositories.order import OrderRepository
+from app.repositories.projection import ProjectionRepository
+from app.services.fine_summary import FineSummaryService
+from app.services.projection import ProjectionService
 
 
 def main() -> None:
@@ -41,22 +53,46 @@ def main() -> None:
         choices=["SUM", "MAX"],
         help="Override the retailer's configured stacking policy for this run only",
     )
+    parser.add_argument(
+        "--with-summary",
+        action="store_true",
+        help="Also generate the fine summary for each order after a successful projection",
+    )
     args = parser.parse_args()
 
     if not args.order_id and not args.all_open:
         parser.error("Pass either --order-id ORDER_ID or --all-open")
 
-    projection_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else None
+    projection_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else None  # noqa: DTZ007
 
-    database = Database(get_settings().database_url)
+    settings = get_settings()
+    database = Database(settings.database_url)
     with database.session() as session:
         orders = OrderRepository(session)
+        rules = FineRuleRepository(session)
+        master_data = MasterDataRepository(session)
+        projections = ProjectionRepository(session)
         projection_service = ProjectionService(
             orders=orders,
-            rules=FineRuleRepository(session),
-            master_data=MasterDataRepository(session),
-            projections=ProjectionRepository(session),
+            rules=rules,
+            master_data=master_data,
+            projections=projections,
         )
+        fine_summary_service = None
+        if args.with_summary:
+            fine_summary_service = FineSummaryService(
+                orders=orders,
+                rules=rules,
+                master_data=master_data,
+                projections=projections,
+                summaries=FineSummaryRepository(session),
+                prompt_registry=PromptRegistryRepository(session),
+                llm=AzureOpenAIChatClient(
+                    settings=settings,
+                    max_retries=settings.azure_openai_max_attempts,
+                    timeout_seconds=settings.azure_openai_timeout_seconds,
+                ),
+            )
 
         if args.order_id:
             order_ids = [args.order_id]
@@ -83,6 +119,20 @@ def main() -> None:
                 f"  {order_id} [{result.projection_date}]  days_to_delivery={result.days_to_delivery:<3} "
                 f"stacking={result.stacking_mode:<3} total=${result.total_expected_fine:,.2f}   {parts}"
             )
+
+            if fine_summary_service is None:
+                continue
+
+            try:
+                job = fine_summary_service.get_or_schedule(order_id, as_of_date=result.projection_date)
+                if job.status == "PENDING":
+                    fine_summary_service.run_generation(job.order_id, job.as_of_date, job.prompt_version)
+                    job = fine_summary_service.get_status(order_id, as_of_date=result.projection_date)
+            except AppError as exc:
+                print(f"    [summary skipped] {order_id}: {exc}")
+                continue
+
+            print(f"    summary [{job.status}]")
 
 
 if __name__ == "__main__":

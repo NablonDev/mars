@@ -16,7 +16,7 @@ line has one true status per day; the mock data never reconciled this.
 proves the *one specific, intended* call pattern -- seed once, simulate
 once, straight through -- reproduces the published numbers exactly. That
 works because each order's own facts are always the most recently written
-at the moment its own projection runs (see seeding_service.py's docstring).
+at the moment its own projection runs (see seeding.py's docstring).
 
 This test proves the *other* pattern -- re-running/backfilling one of the
 two orders after the other has also written facts for an overlapping day
@@ -29,7 +29,7 @@ latest status for that sku/location as of that date.
 
 from datetime import date, datetime
 
-from app.engine import ProductionStatus
+from app.services.fine_projection import ProductionStatus
 
 
 def test_shared_production_line_backfill_is_order_dependent_not_order_specific(services):

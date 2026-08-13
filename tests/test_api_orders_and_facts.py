@@ -27,6 +27,7 @@ def test_create_get_list_order(client):
 
     duplicate = client.post("/api/v1/orders", json=payload)
     assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "ORDER_ALREADY_EXISTS"
 
     fetched = client.get("/api/v1/orders/ORD-1")
     assert fetched.status_code == 200

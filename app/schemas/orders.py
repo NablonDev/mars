@@ -1,3 +1,5 @@
+"""API schemas for order-related operations."""
+
 from datetime import date, datetime
 
 from pydantic import BaseModel
@@ -15,10 +17,6 @@ class OrderRequest(BaseModel):
     required_ship_date: date
     carrier_id: str | None = None
     order_status: str = "OPEN"
-
-
-class OrderResponse(OrderRequest):
-    pass
 
 
 class ConfirmationRequest(BaseModel):

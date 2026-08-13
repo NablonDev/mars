@@ -1,27 +1,9 @@
-"""
-The one domain-exception hierarchy, plus the FastAPI handlers that map it
-onto HTTP. Services and repositories raise these; no route does its own
-exception-to-status translation, and nothing outside this module decides
-what an error looks like on the wire.
-
-Two-field split, deliberately:
-
-- `message` is client-safe and is the only thing that reaches the
-  response body (`{"error": {"code", "message"}}` --
-  app/schemas/common.py::ErrorResponse).
-- `detail` is server-side only. Anything that can carry vendor
-  internals, SQL, a connection string or stack-trace-shaped text (an
-  Azure OpenAI SDK exception, say) belongs here: it is logged and never
-  serialized. See ./CLAUDE.local.md's "Do Not: return raw stack traces,
-  secrets, or internal error detail in API responses".
-
-`ExternalServiceError` defaults to 502; a subclass that means "we are up
-but a dependency is not" sets `status_code = 503`.
-"""
+"""Application exception types and FastAPI handlers for consistent HTTP error responses."""
 
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import ClassVar
 
 from fastapi import FastAPI, Request
@@ -36,18 +18,16 @@ GENERIC_500_MESSAGE = "Internal server error"
 
 
 class AppError(Exception):
-    """Base for every error this application raises on purpose.
-
-    `code`/`status_code` are class-level so a subclass declares its
-    contract once; `message`/`detail` are per-raise.
-    """
+    """Base exception for expected application errors. ``code``/``status_code``
+    are class-level (subclasses declare their contract once); ``message``/``detail``
+    are per-instance."""
 
     code: ClassVar[str] = "INTERNAL_ERROR"
     status_code: ClassVar[int] = 500
 
     def __init__(self, message: str, *, detail: str | None = None) -> None:
-        # `str(exc)` keeps both halves so a traceback/log/CLI stays
-        # informative; only `.message` is ever serialized to a client.
+        # Keep both message and detail available in logs and tracebacks,
+        # while only exposing the client-safe message in API responses.
         super().__init__(message if detail is None else f"{message} :: {detail}")
         self.message = message
         self.detail = detail
@@ -58,15 +38,8 @@ class NotFoundError(AppError):
     status_code: ClassVar[int] = 404
 
 
-class ConflictError(AppError):
-    code: ClassVar[str] = "CONFLICT"
-    status_code: ClassVar[int] = 409
-
-
 class ValidationError(AppError):
-    """Well-formed request, unprocessable given current server state --
-    422, the same code FastAPI/Pydantic use for schema-level rejections.
-    Not to be confused with `pydantic.ValidationError`."""
+    """Expected application-state validation failure, returned as HTTP 422."""
 
     code: ClassVar[str] = "VALIDATION_ERROR"
     status_code: ClassVar[int] = 422
@@ -78,10 +51,7 @@ class ExternalServiceError(AppError):
 
 
 class OrderNotFoundError(NotFoundError):
-    """No `dim_order` row for this business `order_id`. One class for
-    every "unknown order" site (OrderRepository, ProjectionService,
-    ExplanationService, SeedingService) so the message and the status code
-    are decided in exactly one place."""
+    """Raised when no order exists for the requested order ID."""
 
     code: ClassVar[str] = "ORDER_NOT_FOUND"
 
@@ -94,47 +64,60 @@ class OrderNotFoundError(NotFoundError):
 
 
 class NoActiveRulesError(ValidationError):
-    """Raised when a retailer has no active fine rules -- distinct from
-    "order not found" so the caller gets a clear 422 rather than a 404 or
-    a 500."""
+    """Raised when a retailer has no active fine rules."""
 
     code: ClassVar[str] = "NO_ACTIVE_RULES"
 
 
 class NoProjectionExistsError(ValidationError):
-    """Raised when an order has zero `fact_projected_fine` rows -- there's
-    nothing to explain yet, distinct from "order not found" so it maps to
-    a 422 instead of a 404."""
+    """Raised when an order has no projection results."""
 
     code: ClassVar[str] = "NO_PROJECTION_EXISTS"
 
 
 class InvalidAsOfDateError(ValidationError):
-    """Raised when a caller-supplied `as_of_date` falls outside the valid
-    range for this order -- after today, or before the order's earliest
-    projection date.
-
-    Without this check, `as_of_date` is a client-supplied, unvalidated
-    field with no relationship to real projection history -- an
-    unauthenticated caller could otherwise mint an unbounded number of
-    distinct cache keys (one real Azure OpenAI call each, up to
-    MAX_TOOL_ROUNDS round-trips) just by varying it per request. Bounding
-    it to [earliest projection date, today] closes that vector without
-    needing request-level rate limiting."""
+    """Raised when an as-of date is outside the allowed projection range."""
 
     code: ClassVar[str] = "INVALID_AS_OF_DATE"
 
 
+class NoSummaryJobExistsError(NotFoundError):
+    """Raised when no fine-summary job exists for the requested parameters."""
+
+    code: ClassVar[str] = "NO_SUMMARY_JOB_EXISTS"
+
+    def __init__(self, order_id: str, as_of_date: date) -> None:
+        super().__init__(
+            f"No fine-summary job found for order_id={order_id!r}, "
+            f"as_of_date={as_of_date!r} -- POST /orders/{{order_id}}/summary first."
+        )
+        self.order_id = order_id
+        self.as_of_date = as_of_date
+
+
 class ToolLoopExhaustedError(ExternalServiceError):
-    """Raised when the model still hasn't returned valid structured output
-    after the bounded tool-calling loop's forced final round. An upstream
-    (Azure OpenAI) failure, not a client input error -- hence 502.
+    """Raised when the fine-summary upstream tool loop cannot produce a usable result."""
 
-    Raise it with the underlying SDK exception in `detail`, never in
-    `message`: that text can embed vendor internals and stack-trace-shaped
-    content that must not reach a response body."""
+    code: ClassVar[str] = "FINE_SUMMARY_UPSTREAM_FAILED"
 
-    code: ClassVar[str] = "EXPLANATION_UPSTREAM_FAILED"
+
+class ConflictError(AppError):
+    code: ClassVar[str] = "CONFLICT"
+    status_code: ClassVar[int] = 409
+
+
+class OrderAlreadyExistsError(ConflictError):
+    code: ClassVar[str] = "ORDER_ALREADY_EXISTS"
+
+    def __init__(self, order_id: str) -> None:
+        super().__init__(f"Order {order_id!r} already exists")
+        self.order_id = order_id
+
+
+class InvalidFineRuleDataError(AppError):
+    """Raised when stored fine-rule reference data is internally inconsistent."""
+
+    code: ClassVar[str] = "INVALID_FINE_RULE_DATA"
 
 
 def _error_body(code: str, message: str) -> dict:
@@ -142,28 +125,21 @@ def _error_body(code: str, message: str) -> dict:
 
 
 def _resolve_request_id(request: Request) -> str:
-    """`request.state` first, `ContextVar` second. The catch-all handler
-    runs in Starlette's `ServerErrorMiddleware`, which sits *outside* the
-    request-id middleware -- by then the ContextVar has already been reset,
-    but the value stashed on the scope's state survives."""
+    """Resolve the request ID from request state, then the request context."""
     return getattr(request.state, "request_id", None) or get_request_id()
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    """The whole error contract, in two handlers.
-
-    Registered in app/main.py::create_app. FastAPI's own
-    `RequestValidationError`/`HTTPException` handlers are left alone --
-    their `{"detail": ...}` bodies are the documented framework contract.
-    """
+    """Register handlers for expected application and unexpected exceptions."""
 
     @app.exception_handler(AppError)
-    async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+    async def _app_error_handler(
+        request: Request,
+        exc: AppError,
+    ) -> JSONResponse:
         request_id = _resolve_request_id(request)
-        # Logged once, here, at the boundary -- not re-logged at every
-        # layer it bubbled through. 5xx gets a traceback; a 4xx is a
-        # client mistake and doesn't need one.
         is_server_error = exc.status_code >= 500
+
         logger.log(
             logging.ERROR if is_server_error else logging.WARNING,
             "%s %s -> %s %s: %s%s",
@@ -182,6 +158,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "error_code": exc.code,
             },
         )
+
         return JSONResponse(
             status_code=exc.status_code,
             content=_error_body(exc.code, exc.message),
@@ -189,11 +166,12 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(Exception)
-    async def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
-        # Anything that reaches here is a bug, not a contract. Full
-        # traceback to the log, a fixed opaque body to the client: no
-        # exception message, no type name, no stack trace.
+    async def _unhandled_error_handler(
+        request: Request,
+        exc: Exception,
+    ) -> JSONResponse:
         request_id = _resolve_request_id(request)
+
         logger.error(
             "%s %s -> 500 unhandled %s",
             request.method,
@@ -208,11 +186,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "error_code": AppError.code,
             },
         )
-        # The header is set here, not left to `RequestIdMiddleware`: this
-        # handler runs inside Starlette's `ServerErrorMiddleware`, which sits
-        # *outside* that middleware, so its response never passes through
-        # the wrapped `send`. A 500 is the response a caller most needs a
-        # correlation id on.
+
         return JSONResponse(
             status_code=500,
             content=_error_body(AppError.code, GENERIC_500_MESSAGE),

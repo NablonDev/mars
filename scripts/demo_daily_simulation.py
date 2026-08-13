@@ -7,7 +7,7 @@ HTTP -> router -> service -> repository -> DB instead.
 
 One HTTP call (`POST /admin/simulate-daily-run`) does the actual
 day-by-day fact-writing and projecting server-side, inside one service
-method (app/services/seeding_service.py::simulate_daily_run) -- keeping
+method (app/services/seeding.py::simulate_daily_run) -- keeping
 that sequence atomic and consistent per order was more important than
 exposing per-day granularity over HTTP for a demo script. This script's
 job is just to call it and render the day-by-day trace from the

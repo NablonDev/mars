@@ -43,3 +43,19 @@ line-length = 110
 # bug B008 exists to catch. Silences that repo-wide false positive
 # without touching any other bugbear rule.
 extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.0",
+    "ruff>=0.16.2",
+]
+
+[tool.mypy]
+# Minimal, permissive baseline so the tool is runnable at all -- there is
+# no existing green baseline to hold this to yet (261 pre-existing errors
+# across 7 files as of the last check; see
+# .claude/agent-memory/coder/feedback_lint_tooling_gap.md). Deliberately
+# not `strict = true` and no per-module overrides: tightening this is a
+# separate, later decision, not part of this tooling-gate phase.
+python_version = "3.12"
+ignore_missing_imports = true

@@ -15,7 +15,6 @@ from fastapi.testclient import TestClient
 
 from app.core.exceptions import (
     AppError,
-    ConflictError,
     ExternalServiceError,
     NotFoundError,
     ValidationError,
@@ -30,10 +29,6 @@ def error_client(app) -> TestClient:
     """`raise_server_exceptions=False` so the catch-all `Exception` handler's
     response is returned instead of the exception being re-raised into the
     test -- Starlette's `ServerErrorMiddleware` does both."""
-
-    @app.get("/api/v1/_test/conflict")
-    def _conflict() -> None:
-        raise ConflictError("Order 'X' already exists")
 
     @app.get("/api/v1/_test/not-found")
     def _not_found() -> None:
@@ -61,7 +56,6 @@ def error_client(app) -> TestClient:
 @pytest.mark.parametrize(
     ("path", "status", "code"),
     [
-        ("conflict", 409, "CONFLICT"),
         ("not-found", 404, "NOT_FOUND"),
         ("invalid", 422, "VALIDATION_ERROR"),
         ("upstream", 502, "EXTERNAL_SERVICE_ERROR"),
@@ -78,9 +72,9 @@ def test_app_error_maps_to_its_own_status_and_envelope(error_client, path, statu
 
 
 def test_app_error_message_reaches_the_client(error_client):
-    resp = error_client.get("/api/v1/_test/conflict")
+    resp = error_client.get("/api/v1/_test/not-found")
 
-    assert resp.json()["error"]["message"] == "Order 'X' already exists"
+    assert resp.json()["error"]["message"] == "No such thing"
 
 
 def test_app_error_detail_is_never_serialized(error_client):
@@ -130,7 +124,7 @@ def test_app_error_detail_is_logged_even_though_it_is_withheld(error_client, cap
 def test_client_errors_are_logged_without_a_traceback(error_client, caplog):
     caplog.set_level(logging.WARNING, logger="app.core.exceptions")
 
-    error_client.get("/api/v1/_test/conflict")
+    error_client.get("/api/v1/_test/not-found")
 
     record = next(r for r in caplog.records if r.name == "app.core.exceptions")
     assert record.levelno == logging.WARNING
@@ -173,7 +167,7 @@ def test_an_unsafe_inbound_request_id_is_replaced_not_echoed(error_client, unsaf
 def test_request_id_is_echoed_on_an_error_response_too(error_client):
     """Including the 500 path, which Starlette handles outside the
     request-id middleware -- the handler sets the header itself."""
-    for path in ("conflict", "boom"):
+    for path in ("not-found", "boom"):
         resp = error_client.get(f"/api/v1/_test/{path}", headers={REQUEST_ID_HEADER: f"trace-{path}"})
         assert resp.headers[REQUEST_ID_HEADER] == f"trace-{path}"
 
@@ -181,12 +175,12 @@ def test_request_id_is_echoed_on_an_error_response_too(error_client):
 def test_access_log_records_method_path_status_and_duration(error_client, caplog):
     caplog.set_level(logging.INFO, logger="app.access")
 
-    resp = error_client.get("/api/v1/_test/conflict")
+    resp = error_client.get("/api/v1/_test/not-found")
 
     record = next(r for r in caplog.records if r.name == "app.access")
     assert record.method == "GET"
-    assert record.path == "/api/v1/_test/conflict"
-    assert record.status == 409
+    assert record.path == "/api/v1/_test/not-found"
+    assert record.status == 404
     assert record.duration_ms >= 0
     assert record.request_id == resp.headers[REQUEST_ID_HEADER]
 
@@ -198,6 +192,40 @@ def test_access_log_reports_500_for_an_unhandled_exception(error_client, caplog)
 
     record = next(r for r in caplog.records if r.name == "app.access")
     assert record.status == 500
+
+
+def test_access_log_duration_excludes_background_task_time(app, caplog):
+    """Regression test: a route that schedules a `BackgroundTasks`
+    callback used to have its access-log `duration_ms` include however
+    long that background task took to run, because Starlette runs
+    background tasks *inside* the same ASGI call this middleware
+    originally wrapped in one `finally` block around the whole thing.
+    Confirmed live against the real fine-summary background job before
+    this fix -- a `202` a client received in under a second was logged as
+    if the request had taken 90+ seconds. `duration_ms` must reflect what
+    a client actually experienced (up to the response being sent), not
+    the background job's own runtime."""
+    import time as time_module
+
+    from fastapi import BackgroundTasks
+
+    def _slow_background_task() -> None:
+        time_module.sleep(0.2)
+
+    @app.get("/api/v1/_test/with-background-task")
+    def _with_background_task(background_tasks: BackgroundTasks) -> dict:
+        background_tasks.add_task(_slow_background_task)
+        return {"status": "scheduled"}
+
+    caplog.set_level(logging.INFO, logger="app.access")
+    client = TestClient(app)
+
+    client.get("/api/v1/_test/with-background-task")
+
+    record = next(r for r in caplog.records if r.name == "app.access")
+    # The background task slept 200ms -- the logged duration must not
+    # include that.
+    assert record.duration_ms < 100
 
 
 def test_fastapi_request_validation_still_returns_its_own_422_contract(client):

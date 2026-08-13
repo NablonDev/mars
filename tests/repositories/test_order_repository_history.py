@@ -1,16 +1,16 @@
 """
 Tests for the four read-only history methods added to OrderRepository
-for the projection-explanation feature: list_confirmations,
+for the fine-summary feature: list_confirmations,
 list_shipments, list_demand_exceptions, list_production_status_history.
 
 Unlike OrderRepository.build_snapshot (latest-as-of-a-date), these
 return the FULL history, oldest first -- see
-docs/FINE_ENGINE.md and app/repositories/order_repository.py.
+docs/FINE_ENGINE.md and app/repositories/order.py.
 
 list_production_status_history in particular must surface BOTH orders'
 rows on a shared (sku_id, location_id), not filter to "this order's
 own" -- reusing the same shared-plant scenario as
-tests/test_known_limitations.py, since the explanation layer's caveat
+tests/test_known_limitations.py, since the fine-summary layer's caveat
 logic depends on seeing the honest, unfiltered data.
 """
 
@@ -138,7 +138,7 @@ def test_list_production_status_history_surfaces_both_orders_on_shared_line(serv
     order's history is queried, because fact_production_schedule has no
     order_id column at all -- a production line serves whichever orders
     draw on it. Filtering this down to "this order's own" would hide
-    exactly the caveat the explanation layer needs to flag."""
+    exactly the caveat the fine-summary layer needs to flag."""
     services.master_data.add_retailer("RET-AMZ", "Amazon", "TIER_1", "SUM")
     services.master_data.add_sku("SKU-WHI20", "MAT-100587", "Whiskas")
     services.master_data.add_location("LOC-COL", "Plant", "PLANT")

@@ -1,3 +1,5 @@
+"""API schemas for fine-rule requests and responses."""
+
 from datetime import date
 from typing import Literal
 

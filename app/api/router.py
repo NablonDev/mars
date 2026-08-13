@@ -1,13 +1,12 @@
-"""Aggregates every v1 router into one -- main.py mounts this once,
-under /api/v1, instead of including each router file individually."""
+"""Aggregates all v1 API routers under the /api/v1 prefix."""
 
 from fastapi import APIRouter
 
 from app.api.v1 import (
     admin,
-    explanations,
     facts,
     fine_rules,
+    fine_summaries,
     health,
     master_data,
     orders,
@@ -21,5 +20,5 @@ router.include_router(fine_rules.router)
 router.include_router(orders.router)
 router.include_router(facts.router)
 router.include_router(projections.router)
-router.include_router(explanations.router)
+router.include_router(fine_summaries.router)
 router.include_router(admin.router)

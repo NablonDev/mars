@@ -1,18 +1,26 @@
+"""API schemas for projection requests and responses."""
+
 from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
+
+from app.schemas.fine_summaries import FineSummaryStatusResponse
 
 
 class RunProjectionRequest(BaseModel):
     order_id: str | None = None
     all_open: bool = False
     projection_date: date | None = None
-    # `Literal`, not `str`: `app.engine.orchestrator.project_order` raises a
-    # bare `ValueError` on anything other than SUM/MAX, and validating the
-    # value here means bad client input is a schema-level 422 instead of
-    # reaching the engine.
     stacking_mode_override: Literal["SUM", "MAX"] | None = None
+
+
+class OrderRunRequest(BaseModel):
+    """Body for POST /orders/{order_id}/run -- projection, then summary."""
+
+    projection_date: date | None = None
+    stacking_mode_override: Literal["SUM", "MAX"] | None = None
+    force_regenerate_summary: bool = False
 
 
 class ViolationResponse(BaseModel):
@@ -53,3 +61,10 @@ class ExposureResponse(BaseModel):
     projection_date: date
     total_expected_fine: float
     violations: list[ProjectionHistoryRow]
+
+
+class OrderRunResponse(BaseModel):
+    """Response for POST /orders/{order_id}/run."""
+
+    projection: ProjectionResultResponse
+    summary: FineSummaryStatusResponse

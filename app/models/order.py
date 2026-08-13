@@ -1,29 +1,32 @@
-"""The order header. fact_order.unit_price and other additions versus the
-conceptual schema doc are explained in docs/mars_fines_projection_schema.sql
-and docs/FINE_ENGINE.md -- the engine cannot price PERCENT_OF_PO fines
-without unit_price, so it lives here even though the original design
-didn't have it."""
+"""Database model for the order header used by the fine projection engine."""
 
-from datetime import date
+from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import Date, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import UUID_PK, Base, generate_uuid7
+from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
 
 
-class OrderORM(Base):
+class Order(Base):
     __tablename__ = "fact_order"
+    __table_args__ = ({"schema": FINES_SCHEMA},)
+
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     order_id: Mapped[str] = mapped_column(String(30), unique=True, index=True)
-    retailer_id: Mapped[str] = mapped_column(ForeignKey("dim_retailer.retailer_id"))
-    sku_id: Mapped[str] = mapped_column(ForeignKey("dim_sku.sku_id"))
-    ship_from_location_id: Mapped[str] = mapped_column(ForeignKey("dim_location.location_id"))
+    retailer_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.dim_retailer.retailer_id"))
+    sku_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.dim_sku.sku_id"))
+    ship_from_location_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.dim_location.location_id"))
     order_qty: Mapped[int] = mapped_column(Integer)
     unit_price: Mapped[float] = mapped_column(Numeric(10, 2))
     order_date: Mapped[date] = mapped_column(Date)
     requested_delivery_date: Mapped[date] = mapped_column(Date)
     required_ship_date: Mapped[date] = mapped_column(Date)
     order_status: Mapped[str] = mapped_column(String(20), default="OPEN")  # OPEN / DELIVERED / CANCELLED
-    carrier_id: Mapped[str | None] = mapped_column(ForeignKey("dim_carrier.carrier_id"), nullable=True)
+    carrier_id: Mapped[str | None] = mapped_column(
+        ForeignKey(f"{FINES_SCHEMA}.dim_carrier.carrier_id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

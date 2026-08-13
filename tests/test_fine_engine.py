@@ -20,7 +20,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from app.engine import (
+from app.services.fine_projection import (
     SHORTAGE_LOCKED_IN_PROBABILITY,
     AppointmentStatus,
     CalcType,
@@ -35,7 +35,12 @@ from app.engine import (
     project_order,
     resolve_expected_ship_date,
 )
-from app.engine.shortage import _days_points, _demand_exception_points, _gap_points, _score_to_probability
+from app.services.fine_projection.shortage import (
+    _days_points,
+    _demand_exception_points,
+    _gap_points,
+    _score_to_probability,
+)
 
 TODAY = date(2026, 8, 1)
 
@@ -353,7 +358,7 @@ class TestProductionStatusDelayCoupling:
 
 class TestFourScenarioRegression:
     def test_wmt_100234_appointment_missed_day(self):
-        from app.engine.scenario_data import WMT_RULES, wmt_days
+        from app.services.fine_projection.scenario_data import WMT_RULES, wmt_days
 
         snap, _ = wmt_days[7]  # Aug 9: appointment MISSED
         result = project_order(snap, WMT_RULES)
@@ -362,7 +367,7 @@ class TestFourScenarioRegression:
         assert delay.expected_fine == 540.00
 
     def test_amz_778501_locks_in_on_ship_day(self):
-        from app.engine.scenario_data import AMZ_RULES, amz1_days
+        from app.services.fine_projection.scenario_data import AMZ_RULES, amz1_days
 
         snap, _ = amz1_days[9]  # Aug 12: ships short, on schedule
         result = project_order(snap, AMZ_RULES)

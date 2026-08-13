@@ -31,6 +31,10 @@ def _tables_and_columns(engine) -> dict[str, set[str]]:
         table: {col["name"] for col in inspector.get_columns(table)}
         for table in inspector.get_table_names()
         if table != "alembic_version"  # Alembic's own bookkeeping table, not part of the domain schema
+        # deliberately unmapped to Base.metadata: lives in `public`, a shared
+        # staging table for a future consumer, not this project's own domain
+        # schema -- see the po_lines section of alembic/versions/0001_initial_schema.py
+        and table != "po_lines"
     }
 
 

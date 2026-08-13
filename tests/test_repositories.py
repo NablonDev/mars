@@ -1,32 +1,27 @@
-"""
-Repository-layer tests, run against in-memory SQLite (see conftest.py).
-Covers the two fixes made in this refactor round:
-  - TIERED rules load their bands from dim_fine_rule_tier correctly.
-  - An unrecognized calc_type raises a clear ValueError, not a bare
-    KeyError from the old dict-lookup implementation.
-"""
+"""Repository-layer tests, run against in-memory SQLite (see conftest.py)."""
 
 from datetime import date, datetime
 
 import pytest
 from sqlalchemy import select
 
-from app.engine import CalcType
+from app.core.exceptions import InvalidFineRuleDataError
 from app.models import (
     DemandException,
-    FineRuleORM,
+    FineRule,
     FineRuleTier,
     OrderConfirmation,
     ProductionSchedule,
     Retailer,
     Shipment,
 )
+from app.services.fine_projection import CalcType
 
 
 def test_tiered_rule_loads_its_bands(services, db_session):
     db_session.add(Retailer(retailer_id="RET-X", retailer_name="Retailer X"))
     db_session.add(
-        FineRuleORM(
+        FineRule(
             rule_id="RULE-TIERED",
             retailer_id="RET-X",
             violation_type="FILL_RATE",
@@ -45,7 +40,7 @@ def test_tiered_rule_loads_its_bands(services, db_session):
     )
     db_session.flush()
 
-    rules = services.rules.get_rules_for_retailer("RET-X")
+    rules = services.rules.list_rules_for_retailer("RET-X")
 
     assert len(rules) == 1
     assert rules[0].calc_type == CalcType.TIERED
@@ -55,10 +50,10 @@ def test_tiered_rule_loads_its_bands(services, db_session):
     assert rules[0].tiers[1].rate == 0.05
 
 
-def test_unrecognized_calc_type_raises_clear_value_error(services, db_session):
+def test_unrecognized_calc_type_raises_invalid_fine_rule_data_error(services, db_session):
     db_session.add(Retailer(retailer_id="RET-Y", retailer_name="Retailer Y"))
     db_session.add(
-        FineRuleORM(
+        FineRule(
             rule_id="RULE-BAD",
             retailer_id="RET-Y",
             violation_type="SHORT_SHIP",
@@ -71,8 +66,8 @@ def test_unrecognized_calc_type_raises_clear_value_error(services, db_session):
     )
     db_session.flush()
 
-    with pytest.raises(ValueError, match="RULE-BAD"):
-        services.rules.get_rules_for_retailer("RET-Y")
+    with pytest.raises(InvalidFineRuleDataError, match="RULE-BAD"):
+        services.rules.list_rules_for_retailer("RET-Y")
 
 
 def test_add_rule_via_repository_persists_tiers(services):
@@ -91,7 +86,7 @@ def test_add_rule_via_repository_persists_tiers(services):
         ],
     )
 
-    rules = services.rules.get_rules_for_retailer("RET-Z")
+    rules = services.rules.list_rules_for_retailer("RET-Z")
     assert len(rules) == 1
     assert len(rules[0].tiers) == 2
     assert rules[0].tiers[1].rate == 0.08

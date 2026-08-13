@@ -1,24 +1,22 @@
 """Fine rules and their optional tiered bands."""
 
-from datetime import date
+from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import UUID_PK, Base, generate_uuid7
+from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
 
 
-class FineRuleORM(Base):
+class FineRule(Base):
     __tablename__ = "dim_fine_rule"
+    __table_args__ = ({"schema": FINES_SCHEMA},)
+
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     rule_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
-    retailer_id: Mapped[str] = mapped_column(ForeignKey("dim_retailer.retailer_id"))
+    retailer_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.dim_retailer.retailer_id"))
     violation_type: Mapped[str] = mapped_column(String(30))
-    # FRACTION, e.g. 0.02 for 2% -- never a whole-number percent. See
-    # docs/FINE_ENGINE.md changelog: this file and the schema doc both
-    # used to disagree on the convention, which is exactly the kind of
-    # thing that silently prices a rule 100x too aggressively.
     threshold_pct: Mapped[float] = mapped_column(Numeric(6, 4), default=0.0)
     calc_type: Mapped[str] = mapped_column(String(20))  # PER_UNIT / PERCENT_OF_PO / FLAT_FEE / TIERED
     rate: Mapped[float] = mapped_column(Numeric(10, 4), default=0.0)
@@ -28,17 +26,23 @@ class FineRuleORM(Base):
     effective_start_date: Mapped[date] = mapped_column(Date, default=date(2026, 1, 1))
     effective_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     source_doc_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class FineRuleTier(Base):
-    """One band of a TIERED rule. See app.engine.FineTier -- this table
-    is the DB-backed source that gets loaded into that dataclass by
-    repositories/fine_rule_repository.py."""
+    """One tier band belonging to a tiered fine rule."""
 
     __tablename__ = "dim_fine_rule_tier"
+    __table_args__ = ({"schema": FINES_SCHEMA},)
+
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     tier_id: Mapped[str] = mapped_column(String(40), unique=True, index=True)
-    rule_id: Mapped[str] = mapped_column(ForeignKey("dim_fine_rule.rule_id"))
+    rule_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.dim_fine_rule.rule_id"))
     band_min: Mapped[float] = mapped_column(Numeric(6, 4))
     band_max: Mapped[float] = mapped_column(Numeric(6, 4))
     rate: Mapped[float] = mapped_column(Numeric(10, 4))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
