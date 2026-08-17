@@ -1,5 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+myvenv/
+.venv/
+venv/
+env/
+ENV/
+
+# Environment / secrets
 .env
 local.settings.json
-myvenv/
-__pyc   ache__/
-*.pyc
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Packaging
+*.egg-info/
+dist/
+build/
+
+# Type checking / linting / tooling
+.mypy_cache/
+.ruff_cache/
+.pyre/
+
+# IDEs / editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local
+.claude/
+CLAUDE.md
+
+# Project docs -- only the public reference set is tracked; engineering-notes/
+# history docs (architecture.md, flow.md, memory.md, progress.md,
+# po_validation_agent.md, cmir_scd2_versioning.md, Folder_structure.md, prd.md)
+# stay local-only.
+docs/*
+!docs/API.md
+!docs/DATABASE.md
+!docs/RUNBOOK.md

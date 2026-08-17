@@ -27,52 +27,58 @@ Do not use sender email, `batch_id`, `agent_run_id`, or `email_id` as the review
 ## Project Layout
 
 ```text
-cmir_agent/
-  api.py                         FastAPI app and /api/v1 routes
-  schemas.py                     Pydantic request/response schemas
-  services.py                    API workflow orchestration and business checks
-  container.py                   Dependency injection composition root
-  config.py                      Environment-based typed config
-  main.py                        Legacy CLI entry point
-
-  domain/
-    models.py                    CMIR, EmailMessage, WorkflowThread models
-    validators.py                Mandatory-field validation
-
-  interfaces/
-    email_reader.py              EmailReader port
-    extractor.py                 CMIRExtractor port
-    repositories.py              Email/CMIR repository ports
-    observability.py             Run/thread/pending-action repository ports
-    human_review.py              CLI human review port
-
-  infrastructure/
-    database.py                  SQLAlchemy engine/session factory
-    orm_models.py                SQLAlchemy ORM models
-    gmail_email_reader.py        Gmail IMAP adapter
-    azure_openai.py              Azure OpenAI CMIR extractor
-    postgres_repositories.py     SQLAlchemy email/CMIR repositories
-    postgres_observability.py    SQLAlchemy run/thread/audit repositories
+app/
+  main.py                        FastAPI app factory + ASGI entrypoint
+  core/
+    config.py                    Environment-based typed config
+    container.py                 Dependency injection composition root
+    exceptions.py                ServiceError (PRD API error contract)
+    tracing.py                   Per-node LangGraph trace logging
+  api/
+    dependencies.py              Lazy per-app-instance service singletons
+    router.py                    Aggregates all /api/v1 routers
+    v1/
+      cmir.py                    CMIR routes
+      po_validation.py           PO Validation routes
+  db/
+    base.py                      SQLAlchemy DeclarativeBase
+    session.py                   SQLAlchemy engine/session factory
+  models/                        SQLAlchemy ORM models (email, cmir, observability, po_validation)
+  schemas/                       Pydantic DTOs + internal value objects/graph-state shapes
+  repositories/                  Concrete Postgres repositories
+  services/
+    cmir_run_service.py          CMIR API workflow orchestration
+    po_validation_service.py     PO Validation API workflow orchestration
+    cmir_validation.py           Mandatory-field validation
+    cmir_merge.py                SCD2-style field merge
+    identity.py                  Identity-key normalization
+    email_reader.py              Gmail IMAP client
+    cmir_extractor.py            Azure OpenAI CMIR extractor
     cli_human_review.py          Legacy console review adapter
+  agents/
+    cmir/                        LangGraph state, nodes, graph for the CMIR agent
+    po_validation/                LangGraph state, nodes, graph for the PO Validation agent
+  queue/
+    producer.py                  Azure Service Bus producer
+  workers/
+    service_bus_consumer.py      Standalone Service Bus consumer process
+  jobs/
+    cli_ingest.py                Legacy CLI entry point
 
-  workflow/
-    state.py                     LangGraph state shape
-    nodes.py                     LangGraph node functions
-    graph.py                     LangGraph topology
-    tracing.py                   Per-node trace logging
+scripts/
+  run_cli_ingest.py              Thin wrapper for app/jobs/cli_ingest.py
+
+alembic/
+  versions/                      Schema migrations (0001-0005)
 
 docs/
   prd.md                         Product requirements
   coding_guide.md                Mandatory engineering standards
   debug_flow.html                Debugging guide
 
-migrations/
-  schema.sql                     Postgres schema changes
-
 tests/
-  test_api.py
-  test_services.py
-  test_sqlalchemy_repositories.py
+  unit/                          Fakes/mocks only, no live dependencies
+  integration/                   Real Postgres connection (skips if unreachable)
 ```
 
 ## Main API Endpoints
@@ -156,6 +162,12 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+Or, if you have [uv](https://docs.astral.sh/uv/) installed (the project's `pyproject.toml`/`uv.lock` are the source of truth; `requirements.txt` is kept in sync for Azure Functions deployment):
+
+```bash
+uv sync
+```
+
 ### 4. Create `.env`
 
 Create a `.env` file in the project root. This file is ignored by git.
@@ -198,26 +210,28 @@ CREATE DATABASE cmir_db;
 
 ### 2. Apply Schema
 
+Schema changes are managed by [Alembic](https://alembic.sqlalchemy.org/):
+
 ```bash
-psql -d cmir_db -f migrations/schema.sql
+alembic upgrade head
 ```
 
-The migration defines the PRD thread model:
+Revisions `0001`-`0005` under `alembic/versions/` define the PRD thread model:
 
-- `workflow_threads`
-- `pending_human_actions`
-- `source_message_id` on `email_events`
-- `batch_id`, `thread_id`, and `email_id` on `agent_runs`
-- thread audit fields on `hitl_actions`
+- `0001`: bootstraps the base tables (`agent_runs`, `email_events`, `hitl_actions`, `cmir_records`, `email_action_log`, `agent_trace`) for a genuinely fresh database
+- `0002`: `workflow_threads`, `pending_human_actions`, `source_message_id` on `email_events`, `batch_id`/`thread_id`/`email_id` on `agent_runs`, thread audit fields on `hitl_actions`
+- `0003`: PO Validation Agent tables (`po_lines`, `material_master`, `po_line_errors`) and shared `po_line_id` columns
+- `0004`: SCD2 CMIR versioning (`is_current`, `valid_to`, `superseded_by_id`)
+- `0005`: format-insensitive identity matching keys
 
-Note: `migrations/schema.sql` currently assumes the pre-existing base tables exist. It includes a TODO because the authoritative pre-PRD base schema is not documented in the repo.
+**If you already have a database from before this repo used Alembic**, its base tables already exist — do not run `alembic upgrade` from scratch against it. Run `alembic stamp head` instead so Alembic's revision tracking starts from the correct point without re-running DDL against live tables. See `CLAUDE.md`'s Database migrations section for the full explanation.
 
 ## Running the API
 
 Start the FastAPI server:
 
 ```bash
-uvicorn cmir_agent.api:app --reload
+uvicorn app.main:app --reload
 ```
 
 Default local URL:
@@ -267,7 +281,7 @@ GET http://127.0.0.1:8000/api/v1/runs?view=threads&status=waiting_approval
 The API is the current primary path. The legacy CLI entry point still exists:
 
 ```bash
-python -m cmir_agent.main
+python scripts/run_cli_ingest.py
 ```
 
 Use the API for PRD thread-based review flows.
@@ -278,7 +292,14 @@ Use the API for PRD thread-based review flows.
 python -m unittest discover -s tests
 ```
 
-The tests use fakes for API, service, and repository boundaries. They should not require real Gmail, Azure OpenAI, or Postgres connections.
+Or split by kind:
+
+```bash
+python -m unittest discover -s tests/unit          # fakes/mocks only, no live dependencies
+python -m unittest discover -s tests/integration   # real Postgres; skips (not fails) if unreachable
+```
+
+`tests/unit/` uses fakes for API, service, and repository boundaries and never requires real Gmail, Azure OpenAI, or Postgres connections. `tests/integration/` deliberately exercises a real Postgres connection and session — run `docker compose up -d postgres` first, or point `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` at any reachable Postgres.
 
 ## Debugging Guide
 
@@ -336,6 +357,15 @@ Check `workflow_threads.status`.
 
 - Missing fields API requires `waiting_missing_fields`.
 - Update and decision APIs require `waiting_approval`.
+
+### Decision returns `CMIR_VERSION_CONFLICT`
+
+Another thread's approval already superseded the active `cmir_records` row for this
+customer/material while this thread was waiting for a decision (HTTP 409). The thread
+closes to `COMPLETED_CONFLICT`/`completed_conflict` — it does not reopen for retry
+automatically. Fetch `GET /threads/{thread_id}/snapshot` for another thread against
+the same customer/material, or start a new one, to see and act on the record that
+actually won.
 
 ## Security
 

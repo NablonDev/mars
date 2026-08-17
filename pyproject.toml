@@ -1,0 +1,64 @@
+[project]
+name = "mars"
+version = "0.1.0"
+description = "Mars Petcare backend -- CMIR email resolution + PO validation agents (this project), merging into the shared Mars dependency/tooling baseline."
+readme = "README.md"
+authors = [
+    { name = "Kaustubh Trivedi", email = "kaustubh.trivedi@nablon.ai" },
+    { name = "Bhupendra Singh Shekhawat", email = "bhupendra.singh@nablon.ai" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.18,<2.0",
+    "azure-functions>=1.21,<2.0",
+    "azure-identity>=1.19,<2.0",
+    "azure-servicebus>=7.14,<8.0",
+    "beautifulsoup4>=4.12,<5.0",
+    "fastapi>=0.139,<1.0",
+    "httpx>=0.28,<1.0",
+    "langchain-core>=1.5,<2.0",
+    "langchain-openai>=1.4,<2.0",
+    "langgraph>=1.2,<2.0",
+    "langgraph-checkpoint-postgres>=3.1,<4.0",
+    "psycopg[binary,pool]>=3.3,<4.0",
+    "psycopg2-binary>=2.9,<3.0",
+    "pydantic>=2.13,<3.0",
+    "pydantic-settings>=2.14,<3.0",
+    "python-dotenv>=1.2,<2.0",
+    "sqlalchemy>=2.0.51,<3.0",
+    "uvicorn[standard]>=0.51,<1.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18,<2.0",
+    "ruff>=0.16,<1.0",
+    "pytest>=9.1,<10.0",
+]
+
+[tool.uv]
+# Not a distributable package: the importable code lives in `app/` at the
+# repo root and is run in place (`uvicorn app.main:app`, tests from the
+# repo root), so there is nothing to build or install. Declared explicitly
+# so `uv run` does not try to build a `src/` layout that does not exist.
+package = false
+
+[tool.ruff]
+# 110 comfortably covers this project's existing line lengths (185 of 5547
+# lines already exceed the 88-char default; only 12 exceed 110) without
+# forcing a repo-wide reformat the moment ruff is turned on.
+line-length = 110
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's `Depends(...)`/`Query(...)`/`Path(...)` as argument defaults is
+# the framework's documented, intentional pattern (used throughout
+# app/api/) -- not the mutable-default-argument bug B008 exists to catch.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path"]
+
+[tool.mypy]
+# Minimal, permissive baseline so the tool is runnable at all -- mypy has not
+# been run against this codebase before, so there is no existing green
+# baseline to hold it to yet. Deliberately not `strict = true` and no
+# per-module overrides: tightening this is a separate, later decision.
+python_version = "3.12"
+ignore_missing_imports = true

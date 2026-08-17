@@ -4,33 +4,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-FastAPI + LangGraph backend that ingests inbound CMIR emails, extracts CMIR draft data with Azure OpenAI, pauses for human-in-the-loop (HITL) review, and persists approved records in Postgres. Deploys as an Azure Function App (`function_app.py`) alongside the FastAPI process. The authoritative spec is `docs/prd.md` — read it before making changes to workflow/queue/reviewer behavior; it documents the identity model, stage/status mapping, API contract, and data model in detail.
+FastAPI + LangGraph backend that ingests inbound CMIR emails, extracts CMIR draft data with Azure OpenAI, pauses for human-in-the-loop (HITL) review, and persists approved records in Postgres. A second agent, PO Validation, shares the same FastAPI app, Postgres connection, and checkpointer. Deploys as an Azure Function App (`function_app.py`) alongside the FastAPI process. The authoritative spec is `docs/prd.md` — read it before making changes to workflow/queue/reviewer behavior; it documents the identity model, stage/status mapping, API contract, and data model in detail.
 
 ## Commands
 
 ```bash
-# Install
-pip install -r requirements.txt
+# Install (either works; uv is the source of truth, requirements.txt is kept in sync for Azure Functions deployment)
+uv sync
+# or: pip install -r requirements.txt
 
 # Run the API
-uvicorn cmir_agent.api:app --reload
+uvicorn app.main:app --reload
 # -> http://127.0.0.1:8000, docs at /docs
 
 # Run the legacy CLI entry point (superseded by the API; queue/HITL flows require the API)
-python -m cmir_agent.main
+python scripts/run_cli_ingest.py
 
 # Run all tests
 python -m unittest discover -s tests
 
-# Run a single test file / case
-python -m unittest tests.test_services
-python -m unittest tests.test_services.SomeTestCase.test_something
+# Run only unit tests (no live dependencies required)
+python -m unittest discover -s tests/unit
+
+# Run integration tests (requires a reachable Postgres; skips gracefully if none found)
+docker compose up -d postgres
+python -m unittest discover -s tests/integration
 
 # Apply DB schema changes
-psql -d cmir_db -f migrations/schema.sql
+alembic upgrade head
+
+# Local full stack via Docker
+docker compose up -d --build
 ```
 
-Tests use fakes at the API/service/repository boundaries and must not require live Gmail, Azure OpenAI, or Postgres connections.
+A `Makefile` wraps the common ones (`make install`, `make run`, `make test`, `make test-unit`, `make test-integration`, `make migrate`, `make docker-up`).
+
+Tests use fakes at the API/service/repository boundaries and must not require live Gmail, Azure OpenAI, or Postgres connections — except `tests/integration/`, which deliberately does exercise a real Postgres connection and skips (not fails) when one isn't reachable.
 
 ## Identity Model — read before touching reviewer/queue code
 
@@ -48,7 +57,7 @@ Tests use fakes at the API/service/repository boundaries and must not require li
 Gmail/IMAP -> FastAPI ingest API -> Postgres email_events (queue_status=new)
   -> Azure Function timer trigger (function_app.py: enqueue_new_mail, runs every minute)
   -> Azure Service Bus
-  -> cmir_agent/workers/service_bus_consumer.py (thin listener, forwards via HTTP)
+  -> app/workers/service_bus_consumer.py (thin listener, forwards via HTTP)
   -> POST /api/v1/internal/process-email (FastAPI)
   -> CMIRRunService -> LangGraph (PostgreSQL checkpointer) -> Postgres workflow/audit tables
 
@@ -59,17 +68,19 @@ The Service Bus consumer never runs workflow logic itself — it deserializes th
 
 ### Checkpointing
 
-LangGraph uses the official `PostgresSaver` checkpointer (see `cmir_agent/container.py`), keyed by `thread_id`, stored in the same application Postgres database. This lets queue-driven processing interrupt in one process and reviewer resume continue later in a different request, and survives restarts/redeploys. LangGraph checkpoint tables are framework-owned — never store execution state in `email_events`, `agent_runs`, `hitl_actions`, or `cmir_records`; business state (thread status, pending actions, audit log) is intentionally persisted separately from graph checkpoint state, and both must be kept consistent (see PRD §7 for the exact invariants around `pending_human_actions`).
+LangGraph uses the official `PostgresSaver` checkpointer (see `app/core/container.py`), keyed by `thread_id`, stored in the same application Postgres database. This lets queue-driven processing interrupt in one process and reviewer resume continue later in a different request, and survives restarts/redeploys. LangGraph checkpoint tables are framework-owned — never store execution state in `email_events`, `agent_runs`, `hitl_actions`, or `cmir_records`; business state (thread status, pending actions, audit log) is intentionally persisted separately from graph checkpoint state, and both must be kept consistent (see PRD §7 for the exact invariants around `pending_human_actions`).
 
-### Layering (ports & adapters)
+### Layering
 
-- `interfaces/` — abstract ports (`EmailReader`, `CMIRExtractor`, repositories, `HumanReviewPort`).
-- `infrastructure/` — concrete adapters implementing those ports (Gmail IMAP, Azure OpenAI, SQLAlchemy/Postgres repositories, Service Bus).
-- `domain/` — framework-free models (`CMIR`, `EmailMessage`, `WorkflowThread`) and mandatory-field validation.
-- `workflow/` — LangGraph state (`state.py`), node functions (`nodes.py`), graph topology (`graph.py`), per-node trace logging (`tracing.py`).
-- `container.py` — single composition root; `Container.build()` is a process-wide singleton that wires config, adapters, the compiled graph, and the checkpointer. Use `Container.build()` rather than constructing adapters directly.
-- `services.py` — orchestration layer between the API and the graph (`CMIRRunService`); owns reviewer state-transition rules and the resume-then-persist transaction.
-- `api.py` — route contract only; delegates to `services.py`.
+- `app/schemas/` — Pydantic API request/response DTOs, plus the internal value objects/graph-state shapes that flow through LangGraph (`CMIR`, `EmailMessage`, `WorkflowThread`, `PendingHumanAction`, `PoLine`, `MaterialMasterRecord`, `PoLineError`) and mandatory-field constants.
+- `app/models/` — SQLAlchemy ORM models only (`app/models/__init__.py` imports every submodule so Alembic's autogenerate sees the full `Base.metadata`).
+- `app/repositories/` — concrete Postgres-backed repository classes (email, CMIR, action log, observability, PO validation). No abstract port layer — repositories are constructed directly against `app.db.session.Database` and duck-typed by tests, not inherited from an interface.
+- `app/services/` — business orchestration (`CMIRRunService`, `PoValidationService`), framework-free domain rules (`cmir_validation.py`, `cmir_merge.py`, `identity.py`), and external-service clients (`email_reader.py` Gmail IMAP, `cmir_extractor.py` Azure OpenAI, `cli_human_review.py` console I/O for the legacy CLI job).
+- `app/agents/` — LangGraph state (`state.py`), node functions (`nodes.py`), and graph topology (`graph.py`) for each agent (`app/agents/cmir/`, `app/agents/po_validation/`), plus the shared per-node trace logging decorator in `app/core/tracing.py`.
+- `app/api/` — route contracts only (`app/api/v1/cmir.py`, `app/api/v1/po_validation.py`), aggregated by `app/api/router.py`; `app/api/dependencies.py` builds and memoizes the per-app-instance service singletons FastAPI's `Depends()` resolves against.
+- `app/core/container.py` — single composition root; `Container.build()` is a process-wide singleton that wires config, adapters, both compiled graphs, and the shared checkpointer. Use `Container.build()` rather than constructing adapters directly.
+- `app/main.py` — FastAPI app factory (`create_app`) and the ASGI entrypoint (`app = create_app()`) `uvicorn app.main:app` runs.
+- `app/queue/`, `app/workers/`, `app/jobs/` — Service Bus producer, the standalone Service Bus consumer process, and the legacy CLI ingest job, respectively.
 
 ### LangGraph node sequence
 
@@ -87,6 +98,12 @@ Reviewer-facing `stage` and internal `workflow_threads.status`/`current_node` ar
 
 ## Configuration
 
-Env vars are loaded once into typed, frozen dataclasses in `config.py` (`EmailConfig`, `DatabaseConfig`, `LLMConfig`, `ServiceBusConfig`) rather than read ad hoc via `os.getenv` elsewhere — add new settings there. Required at minimum: `EMAIL_USERNAME`/`EMAIL_PASSWORD`/`IMAP_SERVER`, `DB_HOST`/`DB_NAME`/`DB_USER`/`DB_PASSWORD`, `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_ENDPOINT`/`AZURE_OPENAI_DEPLOYMENT_NAME`. Service Bus settings have working defaults for local dev but need `SERVICEBUS_FULLY_QUALIFIED_NAMESPACE`/`SERVICE_BUS_CONNECTION_STRING` for real queue use.
+Env vars are loaded once into typed, frozen dataclasses in `app/core/config.py` (`EmailConfig`, `DatabaseConfig`, `LLMConfig`, `ServiceBusConfig`) rather than read ad hoc via `os.getenv` elsewhere — add new settings there. Required at minimum: `EMAIL_USERNAME`/`EMAIL_PASSWORD`/`IMAP_SERVER`, `DB_HOST`/`DB_NAME`/`DB_USER`/`DB_PASSWORD`, `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_ENDPOINT`/`AZURE_OPENAI_DEPLOYMENT_NAME`. Service Bus settings have working defaults for local dev but need `SERVICEBUS_FULLY_QUALIFIED_NAMESPACE`/`SERVICE_BUS_CONNECTION_STRING` for real queue use. Copy `.env.example` to `.env` and fill in real values — never commit `.env`.
 
-`migrations/schema.sql` assumes pre-existing base tables and only layers on the PRD thread model (`workflow_threads`, `pending_human_actions`, thread columns on `agent_runs`/`hitl_actions`/`email_events`) — the pre-PRD base schema isn't in the repo.
+## Database migrations
+
+Schema changes are managed by Alembic (`alembic/`), targeting `app.db.base.Base.metadata` (populated via `app/models/__init__.py`, which imports every ORM module). Revisions `0001`-`0005` under `alembic/versions/` port the project's pre-Alembic `migrations/schema.sql` history (now removed — see git history if the original raw SQL is ever needed) faithfully, including its `DO $$...$$` conditional blocks, partial unique indexes, and the SCD2 `ROW_NUMBER() OVER (PARTITION BY ...)` backfill, all kept as raw `op.execute()` SQL rather than re-expressed declaratively, to guarantee behavioral parity.
+
+**Already-deployed environments**: their base tables (`agent_runs`, `email_events`, `hitl_actions`, `cmir_records`, `email_action_log`, `agent_trace`) already exist from before this repo's Alembic conversion. Do **not** run `alembic upgrade` from scratch there — run `alembic stamp head` (or `alembic stamp 0001` if only the base tables exist and 0002-0005 haven't been applied yet) so Alembic's revision tracking starts from the correct point without re-running DDL against live tables. `alembic upgrade head` from an empty database is only for genuinely fresh environments (local dev, CI, a new deployment).
+
+New schema changes: `alembic revision -m "description"` (or `--autogenerate` once the ORM models are updated), then `alembic upgrade head`.
