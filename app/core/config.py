@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # Application
-    project_name: str = "Mars Petcare -- Projected Fines API"
+    project_name: str = "Mars Petcare — CMIR Resolution System & Projected Fines"
     version: str = "0.1.0"
     environment: str = "development"  # "production" | "staging" | "development"
     docs_enabled: bool = True
