@@ -6,9 +6,10 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
-from typing import Any, Literal
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -23,9 +24,10 @@ from app.agents.fine_summary_context import (
     ViolationEntry,
 )
 from app.agents.fine_summary_schema import FineSummaryOutput
-from app.agents.prompts.fine_summary.v2 import PROMPT_VERSION, SYSTEM_PROMPT
+from app.agents.prompts.fine_summary.v3 import PROMPT_VERSION, SYSTEM_PROMPT
 from app.agents.providers.azure_openai import AzureOpenAIChatClient
 from app.agents.tools.fine_summary import build_fine_summary_tools
+from app.core.config import get_settings
 from app.core.exceptions import (
     InvalidAsOfDateError,
     NoProjectionExistsError,
@@ -33,6 +35,7 @@ from app.core.exceptions import (
     OrderNotFoundError,
     ToolLoopExhaustedError,
 )
+from app.models.enums import SummaryStatus
 from app.repositories.agent_registry import PromptRegistryRepository
 from app.repositories.fine_rule import FineRuleRepository
 from app.repositories.fine_summary import FineSummaryRepository
@@ -44,13 +47,10 @@ from app.services.fine_projection import DELAY_VIOLATION_TYPES, SHORTAGE_VIOLATI
 MAX_TOOL_ROUNDS = 4
 _UPSTREAM_FAILURE_MESSAGE = "Fine summary generation failed upstream"
 
-# This agent's identity in the dim_agent/dim_prompt_version registry (see
-# app/repositories/agent_registry.py). Registered idempotently on the
-# service's own read/write path, not at app startup -- see get_or_schedule
-# and run_generation.
+# Registered lazily on the service's read/write path rather than at startup.
 _AGENT_NAME = "fine_summary"
 _AGENT_SOURCE = "fines"
-_PROMPT_MODULE_PATH = "app.agents.prompts.fine_summary.v2"
+_PROMPT_MODULE_PATH = "app.agents.prompts.fine_summary.v3"
 _LLM_PROVIDER = "azure_openai"
 
 logger = logging.getLogger(__name__)
@@ -67,12 +67,66 @@ def _wrap_data(payload: dict | list) -> str:
     return f"<DATA>\n{body}\n</DATA>"
 
 
+def _fmt_number(value: float) -> str:
+    """Format numbers deterministically for fingerprinting."""
+    return f"{float(value):.6f}"
+
+
+def _compute_content_fingerprint(mandatory_context: FineSummaryContext) -> str:
+    """Hash the facts that determine the generated narrative.
+
+    Excludes dates and other values that may change without changing the
+    narrative, such as `days_to_delivery`.
+    """
+    current_entry = mandatory_context.daily_history[-1] if mandatory_context.daily_history else None
+
+    violations = sorted(
+        (v.violation_type, _fmt_number(v.probability), _fmt_number(v.expected_fine))
+        for v in (current_entry.violations if current_entry is not None else [])
+    )
+    active_rule_ids = sorted(rule.rule_id for rule in mandatory_context.active_rules)
+
+    payload = {
+        "violations": violations,
+        "stacking_mode": mandatory_context.stacking_mode,
+        "total_expected_fine": _fmt_number(current_entry.total_expected_fine if current_entry else 0.0),
+        "order_status": mandatory_context.order.order_status,
+        "confirmed_qty": current_entry.confirmed_qty if current_entry else None,
+        "production_status": current_entry.production_status if current_entry else None,
+        "appointment_status": current_entry.appointment_status if current_entry else None,
+        "actual_ship_date": (
+            current_entry.actual_ship_date.isoformat()
+            if current_entry is not None and current_entry.actual_ship_date is not None
+            else None
+        ),
+        "expected_ship_date_override": (
+            current_entry.expected_ship_date_override.isoformat()
+            if current_entry is not None and current_entry.expected_ship_date_override is not None
+            else None
+        ),
+        "demand_exception_flagged": current_entry.demand_exception_flagged if current_entry else None,
+        "active_rule_ids": active_rule_ids,
+    }
+
+    body = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+class FineSummaryOutputWithReuse(FineSummaryOutput):
+    """FineSummaryOutput with fields describing narrative reuse."""
+
+    is_reused: bool = False
+    generated_for_date: date | None = None
+    unchanged_since: date | None = None
+    unchanged_for_days: int | None = None
+
+
 @dataclass
 class FineSummaryJob:
     order_id: str
     as_of_date: date
     prompt_version: str
-    status: Literal["PENDING", "READY", "FAILED"]
+    status: SummaryStatus
     output: FineSummaryOutput | None = None
     error_message: str | None = None
 
@@ -115,6 +169,13 @@ class FineSummaryService:
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
+        content_fingerprint = _compute_content_fingerprint(mandatory_context)
+        logger.info(
+            "Fine summary content fingerprint: order_id=%s as_of_date=%s fingerprint=%s",
+            order_id,
+            as_of_date,
+            content_fingerprint,
+        )
 
         if not force_regenerate:
             cached = self.summaries.get_cached(
@@ -127,9 +188,20 @@ class FineSummaryService:
                     order_id=order_id,
                     as_of_date=as_of_date,
                     prompt_version=PROMPT_VERSION,
-                    status="READY",
+                    status=SummaryStatus.READY,
                     output=self._to_output(cached),
                 )
+
+            if get_settings().summary_reuse_enabled:
+                reused = self._try_reuse(order_id, as_of_date, content_fingerprint, context_hash)
+                if reused is not None:
+                    return FineSummaryJob(
+                        order_id=order_id,
+                        as_of_date=as_of_date,
+                        prompt_version=PROMPT_VERSION,
+                        status=SummaryStatus.READY,
+                        output=self._to_output(reused),
+                    )
 
         agent_id = self._ensure_registered()
         self.summaries.create_pending(
@@ -138,6 +210,7 @@ class FineSummaryService:
             agent_id=agent_id,
             prompt_version=PROMPT_VERSION,
             context_hash=context_hash,
+            content_fingerprint=content_fingerprint,
         )
         self.summaries.commit()
 
@@ -145,8 +218,54 @@ class FineSummaryService:
             order_id=order_id,
             as_of_date=as_of_date,
             prompt_version=PROMPT_VERSION,
-            status="PENDING",
+            status=SummaryStatus.PENDING,
         )
+
+    def _try_reuse(
+        self,
+        order_id: str,
+        as_of_date: date,
+        content_fingerprint: str,
+        context_hash: str,
+    ) -> dict | None:
+        """Reuse the latest matching narrative within the configured window."""
+        settings = get_settings()
+        earliest_source_date = as_of_date - timedelta(days=settings.summary_max_reuse_days)
+
+        candidate = self.summaries.find_reusable(
+            order_id=order_id,
+            prompt_version=PROMPT_VERSION,
+            content_fingerprint=content_fingerprint,
+            earliest_source_date=earliest_source_date,
+            not_after=as_of_date,
+        )
+        if candidate is None:
+            return None
+
+        original_source_date = candidate["source_as_of_date"] or candidate["as_of_date"]
+
+        reused = self.summaries.create_reused(
+            order_id=order_id,
+            as_of_date=as_of_date,
+            agent_id=self._ensure_registered(),
+            prompt_version=PROMPT_VERSION,
+            context_hash=context_hash,
+            content_fingerprint=content_fingerprint,
+            model_name=candidate["model_name"],
+            summary=candidate["summary"],
+            source_as_of_date=original_source_date,
+        )
+        self.summaries.commit()
+
+        logger.info(
+            "Fine summary reused: order_id=%s as_of_date=%s source_as_of_date=%s fingerprint=%s",
+            order_id,
+            as_of_date,
+            original_source_date,
+            content_fingerprint,
+        )
+
+        return reused
 
     def get_status(
         self,
@@ -176,12 +295,20 @@ class FineSummaryService:
 
     @staticmethod
     def _to_output(row: dict) -> FineSummaryOutput:
-        return FineSummaryOutput(
+        source_as_of_date = row.get("source_as_of_date")
+        is_reused = source_as_of_date is not None
+        as_of_date = row["as_of_date"]
+
+        return FineSummaryOutputWithReuse(
             order_id=row["order_id"],
-            as_of_date=row["as_of_date"],
+            as_of_date=as_of_date,
             prompt_version=row["prompt_version"],
             model_name=row["model_name"],
             summary=row["summary"],
+            is_reused=is_reused,
+            generated_for_date=source_as_of_date if is_reused else as_of_date,
+            unchanged_since=source_as_of_date if is_reused else None,
+            unchanged_for_days=(as_of_date - source_as_of_date).days if is_reused else None,
         )
 
     def run_generation(
@@ -189,7 +316,14 @@ class FineSummaryService:
         order_id: str,
         as_of_date: date,
         prompt_version: str,
-    ) -> None:
+        heartbeat: Callable[[], None] | None = None,
+    ) ->  None:
+        """Generate the summary and persist success or failure.
+
+        Failures are persisted and re-raised so queue callers can apply their
+        retry/dead-letter policy. Heartbeats are best-effort and never abort
+        generation.
+        """
         order = self.orders.get_order(order_id)
         if order is None:
             logger.error(
@@ -205,12 +339,20 @@ class FineSummaryService:
                 as_of_date,
                 history,
             )
+            content_fingerprint = _compute_content_fingerprint(mandatory_context)
+            logger.info(
+                "Fine summary content fingerprint: order_id=%s as_of_date=%s fingerprint=%s",
+                order_id,
+                as_of_date,
+                content_fingerprint,
+            )
             summary = self._run_tool_loop(
                 order_id,
                 order["retailer_id"],
                 order["order_status"],
                 as_of_date,
                 mandatory_context,
+                heartbeat=heartbeat,
             )
         except ToolLoopExhaustedError as exc:
             logger.error(
@@ -225,7 +367,7 @@ class FineSummaryService:
                 prompt_version,
                 exc.message,
             )
-            return
+            raise
         except Exception:
             logger.exception(
                 "Fine summary generation crashed: order_id=%s date=%s",
@@ -238,7 +380,7 @@ class FineSummaryService:
                 prompt_version,
                 _UPSTREAM_FAILURE_MESSAGE,
             )
-            return
+            raise
 
         self.summaries.mark_ready(
             order_id=order_id,
@@ -247,6 +389,7 @@ class FineSummaryService:
             prompt_version=prompt_version,
             model_name=self.llm.model_name,
             summary=summary,
+            content_fingerprint=content_fingerprint,
         )
 
     def _safe_mark_failed(
@@ -467,6 +610,7 @@ class FineSummaryService:
         order_status: str,
         as_of_date: date,
         mandatory_context: FineSummaryContext,
+        heartbeat: Callable[[], None] | None = None,
     ) -> str:
         messages: list[BaseMessage] = [
             SystemMessage(content=SYSTEM_PROMPT),
@@ -481,6 +625,9 @@ class FineSummaryService:
 
         try:
             for round_number in range(1, MAX_TOOL_ROUNDS):
+                # Heartbeat between LLM calls keeps long-running workers alive.
+                self._invoke_heartbeat(heartbeat, order_id)
+
                 logger.info(
                     "Calling LLM for order_id=%s round=%s/%s",
                     order_id,
@@ -549,6 +696,19 @@ class FineSummaryService:
             )
 
         return final_response.content
+
+    @staticmethod
+    def _invoke_heartbeat(heartbeat: Callable[[], None] | None, order_id: str) -> None:
+        """Best-effort heartbeat; callback failures never abort generation."""
+        if heartbeat is None:
+            return
+        try:
+            heartbeat()
+        except Exception:
+            logger.exception(
+                "Fine summary heartbeat callback failed for order_id=%s; continuing generation",
+                order_id,
+            )
 
     def _get_carrier_reliability(
         self,
