@@ -89,7 +89,7 @@ class NoSummaryJobExistsError(NotFoundError):
     def __init__(self, order_id: str, as_of_date: date) -> None:
         super().__init__(
             f"No fine-summary job found for order_id={order_id!r}, "
-            f"as_of_date={as_of_date!r} -- POST /orders/{{order_id}}/summary first."
+            f"as_of_date={as_of_date.isoformat()!r} -- POST /orders/{{order_id}}/summary first."
         )
         self.order_id = order_id
         self.as_of_date = as_of_date
