@@ -1,0 +1,34 @@
+"""Health endpoint that verifies database connectivity."""
+
+import logging
+
+from fastapi import APIRouter, Depends, Response
+from sqlalchemy import text
+
+from app.api.dependencies import get_database
+from app.db.session import Database
+from app.schemas.common import HealthResponse
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["health"])
+
+
+@router.get(
+    "/health",
+    response_model=HealthResponse,
+    responses={503: {"model": HealthResponse}},
+)
+def health(
+    response: Response,
+    database: Database = Depends(get_database),
+) -> HealthResponse:
+    try:
+        with database.engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception:
+        logger.warning("database health check failed", exc_info=True)
+        response.status_code = 503
+        return HealthResponse(status="degraded", database="unreachable")
+
+    return HealthResponse(status="ok", database="ok")

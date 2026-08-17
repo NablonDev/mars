@@ -1,17 +1,17 @@
-langgraph>=0.2.0
-langgraph-checkpoint-postgres>=2.0.0
-langchain-core>=0.3.0
-langchain-openai>=0.2.0
-pydantic>=2.0.0
-psycopg[binary,pool]>=3.2.0
-psycopg2-binary>=2.9.0
-beautifulsoup4>=4.12.0
-python-dotenv>=1.0.0
-fastapi>=0.115.0
-uvicorn>=0.30.0
-httpx>=0.27.0
-SQLAlchemy>=2.0.0
-azure-functions>=1.21.0
-azure-identity>=1.17.0
-azure-servicebus>=7.13.0
-tenacity>=8.3.0
+# Mars Petcare -- Projected Fines & Penalties API
+alembic>=1.18,<2.0,
+fastapi>=0.139,<1.0,
+httpx>=0.28,<1.0,
+langchain-core>=1.5,<2.0,
+langchain-openai>=1.4,<2.0,
+psycopg[binary]>=3.3,<4.0,
+pydantic>=2.13,<3.0,
+pydantic-settings>=2.14,<3.0,
+python-dotenv>=1.2,<2.0,
+sqlalchemy>=2.0.51,<3.0,
+uvicorn[standard]>=0.51,<1.0,
+
+# tests / scripts
+mypy>=1.18,<2.0,
+ruff>=0.16,<1.0,
+pytest>=9.1,<10.0,
