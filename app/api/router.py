@@ -12,9 +12,13 @@ from app.api.v1 import (
     orders,
     projections,
 )
+from app.api.v1.cmir import create_router as create_cmir_router
+from app.api.v1.po_validation import create_router as create_po_validation_router
 
 router = APIRouter()
 router.include_router(health.router)
+router.include_router(create_cmir_router())
+router.include_router(create_po_validation_router())
 router.include_router(master_data.router)
 router.include_router(fine_rules.router)
 router.include_router(orders.router)

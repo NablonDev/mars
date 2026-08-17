@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 
 # Virtual environment
+myvenv/
 .venv/
 venv/
 env/
@@ -11,6 +12,7 @@ ENV/
 
 # Environment / secrets
 .env
+local.settings.json
 
 # Testing / coverage
 .pytest_cache/

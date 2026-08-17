@@ -4,7 +4,8 @@ import secrets
 import time
 from uuid import UUID
 
-from sqlalchemy import MetaData, Uuid
+from sqlalchemy import JSON, MetaData, Uuid
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase
 
 CMIR_SCHEMA = "cmir"
@@ -34,3 +35,7 @@ def generate_uuid7() -> UUID:
 
 
 UUID_PK = Uuid(as_uuid=True)
+
+# JSONB on Postgres (containment/indexing), plain JSON everywhere else
+# SQLite (the whole test suite) has no JSONB compiler at all.
+JSONB_OR_JSON = JSON().with_variant(JSONB(), "postgresql")

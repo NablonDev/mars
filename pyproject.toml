@@ -1,19 +1,27 @@
 [project]
 name = "mars"
 version = "0.1.0"
-description = "Add your description here"
+description = "Mars Petcare backend -- CMIR email resolution, PO validation agents, and Projected Fines."
 readme = "README.md"
 authors = [
-    { name = "Kaustubh Trivedi", email = "kaustubh.trivedi@nablon.ai" }
+    { name = "Bhupendra Singh Shekhawat", email = "bhupendra.singh@nablon.ai" },
+    { name = "Kaustubh Trivedi", email = "kaustubh.trivedi@nablon.ai" },
 ]
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.18,<2.0",
+    "azure-functions>=1.21,<2.0",
+    "azure-identity>=1.19,<2.0",
+    "azure-servicebus>=7.14,<8.0",
+    "beautifulsoup4>=4.12,<5.0",
     "fastapi>=0.139,<1.0",
     "httpx>=0.28,<1.0",
     "langchain-core>=1.5,<2.0",
     "langchain-openai>=1.4,<2.0",
-    "psycopg[binary]>=3.3,<4.0",
+    "langgraph>=1.2,<2.0",
+    "langgraph-checkpoint-postgres>=3.1,<4.0",
+    "psycopg[binary,pool]>=3.3,<4.0",
+    "psycopg2-binary>=2.9,<3.0",
     "pydantic>=2.13,<3.0",
     "pydantic-settings>=2.14,<3.0",
     "python-dotenv>=1.2,<2.0",
@@ -29,18 +37,17 @@ dependencies = [
 package = false
 
 [tool.ruff]
-# No ruff config existed before this change; 110 matches the line length
-# already in de facto use across app/ (many pre-existing lines land
-# exactly at 110 chars) -- formalized here so `ruff format` doesn't
-# rewrap the entire pre-existing codebase to the 88-char default.
+# 110 matches the line length already in de facto use across app/ -- formalized
+# here so `ruff format` doesn't rewrap the pre-existing codebase to the 88-char
+# default.
 line-length = 110
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI's `Depends(...)`/`Query(...)`/`Path(...)` as argument defaults
 # is the framework's documented, intentional pattern (used throughout
-# app/api/dependencies.py and every router) -- not the mutable-default-argument
-# bug B008 exists to catch. Silences that repo-wide false positive
-# without touching any other bugbear rule.
+# app/api/) -- not the mutable-default-argument bug B008 exists to catch.
+# Silences that repo-wide false positive without touching any other
+# bugbear rule.
 extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path"]
 
 [dependency-groups]
@@ -52,10 +59,8 @@ dev = [
 
 [tool.mypy]
 # Minimal, permissive baseline so the tool is runnable at all -- there is
-# no existing green baseline to hold this to yet (261 pre-existing errors
-# across 7 files as of the last check; see
-# .claude/agent-memory/coder/feedback_lint_tooling_gap.md). Deliberately
-# not `strict = true` and no per-module overrides: tightening this is a
+# no existing green baseline to hold this to yet. Deliberately not
+# `strict = true` and no per-module overrides: tightening this is a
 # separate, later decision, not part of this tooling-gate phase.
 python_version = "3.12"
 ignore_missing_imports = true

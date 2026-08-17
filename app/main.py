@@ -5,15 +5,23 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.dependencies import build_po_validation_service, build_service
 from app.api.router import router as api_v1_router
 from app.core.config import Settings, get_settings
+from app.core.container import Container
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import AccessLogMiddleware, RequestIdMiddleware
 from app.db.session import Database
+from app.services.cmir_run_service import CMIRRunService
+from app.services.po_validation_service import PoValidationService
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    service: CMIRRunService | None = None,
+    po_service: PoValidationService | None = None,
+    settings: Settings | None = None,
+) -> FastAPI:
     resolved = settings or get_settings()
     configure_logging(resolved.log_level)
 
@@ -26,10 +34,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             max_overflow=resolved.db_max_overflow,
             pool_timeout=resolved.db_pool_timeout,
         )
+        # CMIR/PO-validation services carry their own composition root
+        # (LangGraph + a shared Postgres checkpointer) -- built here unless a
+        # test already injected a fake via create_app(service=...).
+        if app.state.service is None:
+            app.state.service = build_service()
+        if app.state.po_service is None:
+            app.state.po_service = build_po_validation_service()
         try:
             yield
         finally:
             app.state.database.dispose()
+            Container.close()
 
     app = FastAPI(
         title=resolved.project_name,
@@ -39,6 +55,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redoc_url="/redoc" if resolved.docs_enabled else None,
         openapi_url="/openapi.json" if resolved.docs_enabled else None,
     )
+    app.state.service = service
+    app.state.po_service = po_service
 
     # Last-added middleware is outermost; request IDs must wrap access logging.
     app.add_middleware(AccessLogMiddleware)

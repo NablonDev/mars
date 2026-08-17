@@ -23,6 +23,17 @@ def apply_sqlite_schema_translation(engine: Engine) -> Engine:
     return engine
 
 
+def checkpoint_dsn(database_url: str) -> str:
+    """Convert a SQLAlchemy database URL to a plain psycopg DSN.
+
+    LangGraph's ``PostgresSaver`` connects with psycopg directly and doesn't
+    understand SQLAlchemy's ``+psycopg``/``+psycopg2`` driver suffix.
+    """
+    return database_url.replace("postgresql+psycopg2://", "postgresql://").replace(
+        "postgresql+psycopg://", "postgresql://"
+    )
+
+
 class Database:
     def __init__(
         self,
