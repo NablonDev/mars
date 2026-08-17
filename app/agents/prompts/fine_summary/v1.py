@@ -1,4 +1,4 @@
-"""System prompt for fine-summary generation, v1."""
+"""System prompt for fine-summary generation (v1)."""
 
 PROMPT_VERSION = "v1"
 
