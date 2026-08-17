@@ -10,6 +10,12 @@ endpoint-by-endpoint reference, see `docs/API.md`; for a presentation-ready
 walkthrough, open `docs/architecture-walkthrough.html` directly in a
 browser. This file is about running it.
 
+**This runbook covers the API and the single-order paths.** The batch
+worker, the job queue, every `JOB_QUEUE_*`/`SERVICE_BUS_*` setting, and the
+Azure deployment live in `docs/DEPLOYMENT.md` — go there for anything
+involving `scripts/ops/run_daily_batch.py`, `/api/v1/batches/*`, or a
+container.
+
 ## 1. Prerequisites
 
 - Python 3.12+
@@ -110,10 +116,10 @@ are idempotent: safe to call repeatedly (e.g. to reset a demo).
 
 ```bash
 # With the server running (step 4), in another terminal:
-python scripts/seed_master_data.py                    # defaults to http://127.0.0.1:8000/api/v1
-python scripts/seed_master_data.py --base-url http://localhost:9000/api/v1   # different host/port
+python scripts/demo/seed_master_data.py                    # defaults to http://127.0.0.1:8000/api/v1
+python scripts/demo/seed_master_data.py --base-url http://localhost:9000/api/v1   # different host/port
 
-python scripts/demo_daily_simulation.py               # replays all 4 scenarios, prints the day-by-day trend
+python scripts/demo/demo_daily_simulation.py               # replays all 4 scenarios, prints the day-by-day trend
 ```
 
 Or hit the endpoints directly:
@@ -136,18 +142,18 @@ that's expected, not an error.
 **Via the API** (what a real integration would call):
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/projections/run \
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/projections \
   -H "Content-Type: application/json" \
-  -d '{"order_id": "WMT-100234", "projection_date": "2026-08-05"}'
+  -d '{"projection_date": "2026-08-05"}'
 
 # Every open order, today:
 curl -X POST http://127.0.0.1:8000/api/v1/projections/run \
   -H "Content-Type: application/json" -d '{"all_open": true}'
 
 # Override the retailer's stacking policy for this run only:
-curl -X POST http://127.0.0.1:8000/api/v1/projections/run \
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/projections \
   -H "Content-Type: application/json" \
-  -d '{"order_id": "WMT-100234", "stacking_mode_override": "MAX"}'
+  -d '{"stacking_mode_override": "MAX"}'
 
 curl http://127.0.0.1:8000/api/v1/orders/WMT-100234/projections   # full dated history
 curl http://127.0.0.1:8000/api/v1/orders/WMT-100234/exposure      # latest total only
@@ -161,16 +167,16 @@ curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/run \
 **Without a server** (batch/cron-style, straight against the database):
 
 ```bash
-python scripts/run_projection_cli.py --order-id WMT-100234
-python scripts/run_projection_cli.py --order-id WMT-100234 --date 2026-08-05
-python scripts/run_projection_cli.py --all-open
-python scripts/run_projection_cli.py --all-open --date 2026-08-05 --stacking-mode MAX
+python scripts/ops/run_projection_cli.py --order-id WMT-100234
+python scripts/ops/run_projection_cli.py --order-id WMT-100234 --date 2026-08-05
+python scripts/ops/run_projection_cli.py --all-open
+python scripts/ops/run_projection_cli.py --all-open --date 2026-08-05 --stacking-mode MAX
 
 # Same projection-then-summary sequencing as POST /orders/{id}/run above,
 # for the no-HTTP-server path -- runs the fine summary inline (no
 # BackgroundTasks needed in a one-shot process) right after each order's
 # projection succeeds. Needs AZURE_OPENAI_* configured (step 8):
-python scripts/run_projection_cli.py --all-open --with-summary
+python scripts/ops/run_projection_cli.py --all-open --with-summary
 ```
 
 This is what a daily cron/Airflow task should call in production --
@@ -194,7 +200,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/orders \
        "order_date": "2026-09-01", "requested_delivery_date": "2026-09-10",
        "required_ship_date": "2026-09-08"}'
 
-# A rule has to exist for the retailer or /projections/run returns 422:
+# A rule has to exist for the retailer or /orders/{order_id}/projections returns 422:
 curl -X POST http://127.0.0.1:8000/api/v1/fine-rules \
   -H "Content-Type: application/json" \
   -d '{"rule_id": "RULE-TGT-OTIF", "retailer_id": "RET-TGT", "violation_type": "OTIF_LATE",
@@ -206,11 +212,11 @@ curl -X POST http://127.0.0.1:8000/api/v1/orders/TGT-1/confirmations \
   -d '{"confirmation_id": "CONF-TGT-1-01", "confirmed_qty": 450,
        "confirmation_date": "2026-09-03T06:00:00"}'
 
-curl -X POST http://127.0.0.1:8000/api/v1/projections/run \
-  -H "Content-Type: application/json" -d '{"order_id": "TGT-1"}'
+curl -X POST http://127.0.0.1:8000/api/v1/orders/TGT-1/projections \
+  -H "Content-Type: application/json" -d '{}'
 ```
 
-`PUT /orders/{id}/shipment` and `POST /production-schedule` work the
+`POST /orders/{id}/shipments` and `POST /production-schedules` work the
 same way -- see `docs/API.md`. Every write is historized where the
 schema calls for it (`docs/DATABASE.md` "Historization"), so posting the
 same kind of fact again doesn't overwrite the last one, it adds to the
@@ -284,18 +290,18 @@ projection date first rather than relying on today happening to fall
 inside the mock scenarios' Aug 2026 date range:
 
 ```bash
-python scripts/demo_fine_summary.py                          # every order on file
-python scripts/demo_fine_summary.py --order-id WMT-100234     # one order
-python scripts/demo_fine_summary.py --order-id WMT-100234 --force-regenerate
+python scripts/demo/demo_fine_summary.py                          # every order on file
+python scripts/demo/demo_fine_summary.py --order-id WMT-100234     # one order
+python scripts/demo/demo_fine_summary.py --order-id WMT-100234 --force-regenerate
 ```
 
 **The full tour, in one command** -- seed, replay all four scenarios,
 then explain each order's final number, chained together
-(`scripts/run_end_to_end_demo.py`):
+(`scripts/demo/run_end_to_end_demo.py`):
 
 ```bash
-python scripts/run_end_to_end_demo.py                   # needs Azure OpenAI creds for the last stage
-python scripts/run_end_to_end_demo.py --skip-fine-summary  # engine-only, no LLM cost, no creds needed
+python scripts/demo/run_end_to_end_demo.py                   # needs Azure OpenAI creds for the last stage
+python scripts/demo/run_end_to_end_demo.py --skip-fine-summary  # engine-only, no LLM cost, no creds needed
 ```
 
 Leave the `AZURE_OPENAI_*` vars unset/blank to run every other part of
@@ -336,8 +342,8 @@ one available, worth doing once:
 ```bash
 export DATABASE_URL="postgresql+psycopg://<real-connection-string>"
 alembic upgrade head
-python scripts/seed_master_data.py   # (with uvicorn running against the same DATABASE_URL)
-python scripts/demo_daily_simulation.py
+python scripts/demo/seed_master_data.py   # (with uvicorn running against the same DATABASE_URL)
+python scripts/demo/demo_daily_simulation.py
 ```
 
 and diff the printed numbers against `data/samples/mars_fines_mock_seed_data.sql`
@@ -362,12 +368,15 @@ Both must be clean before a change is done -- see
 | Reset the four demo orders to their initial state | Re-run `alembic downgrade base && alembic upgrade head`, then step 5 again |
 | Check what rules a retailer has | `curl http://127.0.0.1:8000/api/v1/fine-rules?retailer_id=RET-WMT` |
 | See an order's full projection trend | `curl http://127.0.0.1:8000/api/v1/orders/WMT-100234/projections` |
-| Run one order for a backfilled date | `python scripts/run_projection_cli.py --order-id WMT-100234 --date 2026-08-05` |
+| Run one order for a backfilled date | `python scripts/ops/run_projection_cli.py --order-id WMT-100234 --date 2026-08-05` |
 | Run projection + summary together, one call | `curl -X POST .../orders/WMT-100234/run -d '{}'` (or `run_projection_cli.py --with-summary`) |
-| See the whole system, end to end, in one command | `python scripts/run_end_to_end_demo.py` |
-| Get an LLM summary of why an order's fine is what it is | `python scripts/demo_fine_summary.py --order-id WMT-100234` |
+| See the whole system, end to end, in one command | `python scripts/demo/run_end_to_end_demo.py` |
+| Get an LLM summary of why an order's fine is what it is | `python scripts/demo/demo_fine_summary.py --order-id WMT-100234` |
 | Add a new violation type | Update `SHORTAGE_VIOLATION_TYPES`/`DELAY_VIOLATION_TYPES` in `app/services/fine_projection/models.py`, `docs/FINE_ENGINE.md`, and the client-facing `.docx` together (`docs/legacy/root-CLAUDE.md` "Conventions") |
-| Add a DB column | `app/models/*.py` + `alembic revision --autogenerate` + `docs/mars_fines_projection_schema.sql` + confirm `tests/test_migration_parity.py` still passes |
+| Add a DB column | `app/models/*.py` + `alembic revision --autogenerate` + `docs/mars_fines_projection_schema.sql` + confirm `tests/unit/db/test_migration_parity.py` still passes |
+| Run the full nightly batch locally | `python scripts/ops/run_daily_batch.py` (see `docs/DEPLOYMENT.md` §3.5) |
+| See why the queue looks stuck | `docs/DEPLOYMENT.md` §3.7 — the SQL to run and what each status means |
+| Deploy to Azure | `docs/DEPLOYMENT.md` §6 |
 
 ## 12. Troubleshooting
 
@@ -382,12 +391,14 @@ Both must be clean before a change is done -- see
   the old, pre-squash migration chain (revision `0002`-`0011`) -- see step
   3 "Migration history was squashed to a single `5589e602eefa`" for the drop/
   recreate steps; there is no forward path onto the new `5589e602eefa`.
-- **`422` from `POST /projections/run`**: the order's retailer has no
-  active fine rules yet. Seed master data (step 5) or add a rule
+- **`422` from `POST /orders/{order_id}/projections` (or `POST
+  /projections/run` with `all_open: true`)**: the order's retailer has
+  no active fine rules yet. Seed master data (step 5) or add a rule
   (step 7) first.
-- **`404` from `POST /projections/run`**: the `order_id` doesn't exist,
-  or (for `all_open`) there are no `OPEN` orders at all.
-  `GET /orders?order_status=OPEN` to check.
+- **`404` from `POST /orders/{order_id}/projections`**: the `order_id`
+  doesn't exist. For `POST /projections/run` (`all_open: true`), a `404`
+  isn't order-specific -- check `GET /orders?order_status=OPEN` if
+  nothing ran.
 - **`POST /admin/simulate-daily-run` returns `500` / `IntegrityError` /
   `duplicate key`**: fixed -- if you still see this, you're on an older
   build. Update; the fact-writing methods are idempotent on their

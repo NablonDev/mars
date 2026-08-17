@@ -73,8 +73,8 @@ what `OrderRepository.build_snapshot` reads back for a projection run.
 | GET | `/orders?order_status=` | List orders, optionally filtered |
 | GET | `/orders/{order_id}` | Fetch one order |
 | POST | `/orders/{order_id}/confirmations` | Record a SAP cut/ATP confirmation |
-| POST | `/production-schedule` | Record a production-status fact (sku/location-keyed, not order-keyed) |
-| PUT | `/orders/{order_id}/shipment` | Record a shipment/appointment fact (historized -- always an insert, never an overwrite) |
+| POST | `/production-schedules` | Record a production-status fact (sku/location-keyed, not order-keyed) |
+| POST | `/orders/{order_id}/shipments` | Record a shipment/appointment fact (historized -- always an insert, never an overwrite; append-only, no update/overwrite semantics) |
 | POST | `/orders/{order_id}/demand-exceptions` | Flag a demand exception |
 | POST | `/orders/{order_id}/actual-fines` | Record a post-delivery actual fine (for calibration) |
 | GET | `/orders/{order_id}/actual-fines` | List actual fines for an order |
@@ -85,12 +85,18 @@ Router: `app/api/v1/projections.py`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/projections/run` | Run one order (`order_id`) or every open order (`all_open: true`); optional `projection_date`, `stacking_mode_override` |
+| POST | `/orders/{order_id}/projections` | Run a projection for one order; optional `projection_date`, `stacking_mode_override` |
+| POST | `/projections/run` | Batch controller action: run every open order (`all_open: true` required); optional `projection_date`, `stacking_mode_override` |
 | GET | `/orders/{order_id}/projections` | Full dated history (the "trend") |
 | GET | `/orders/{order_id}/exposure` | Latest day's total expected fine |
 
-`POST /projections/run` returns `422` for `NoActiveRulesError` and `404`
-for a missing order (`OrderNotFoundError`), both via the shared handler in
+`POST /projections/run` now only accepts the `all_open: true` fan-out
+case -- a lone `order_id` in the body is rejected with `422` and a message
+pointing at `POST /orders/{order_id}/projections` instead (no backward
+compatibility window; this is a deliberate split, not a deprecation).
+
+Both routes return `422` for `NoActiveRulesError` and `404` for a missing
+order (`OrderNotFoundError`), both via the shared handler in
 `app/core/exceptions.py`. `stacking_mode_override` is validated at the
 schema level and only accepts `"SUM"` or `"MAX"` (`422` otherwise). Also
 returns `500` (`INVALID_FINE_RULE_DATA`) if a stored fine rule's
@@ -187,14 +193,14 @@ replacement.
 | POST | `/orders/{order_id}/run` | Run one order's projection, then run (or reuse a cached) fine summary for the same day |
 
 Body: `{projection_date?, stacking_mode_override?, force_regenerate_summary?}`
--- same fields as `POST /projections/run`'s single-order form, plus
+-- same fields as `POST /orders/{order_id}/projections`'s body, plus
 `force_regenerate_summary` (default `false`), forwarded to the summary
 step exactly as `POST /orders/{order_id}/summary`'s `force_regenerate`
 would be.
 
 Response body: `{projection: ProjectionResultResponse, summary: FineSummaryStatusResponse}`
-(the same shapes `POST /projections/run` and `GET /orders/{order_id}/summary`
-already return, nested together) --
+(the same shapes `POST /orders/{order_id}/projections` and
+`GET /orders/{order_id}/summary` already return, nested together) --
 
 - **`200`**: the summary was already cached (`READY`) for this order/day
   under the current prompt version -- `summary.summary` is populated,
@@ -207,13 +213,98 @@ already return, nested together) --
 
 Failure modes are the projection step's, since it runs first and gates
 the summary step entirely -- `404`/`422`/`500` exactly as documented
-above for `POST /projections/run`. If the projection fails, no summary
-job is scheduled at all (no `PENDING` row is left behind to poll).
+above for `POST /orders/{order_id}/projections`. If the projection fails,
+no summary job is scheduled at all (no `PENDING` row is left behind to
+poll).
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/run \
   -H "Content-Type: application/json" -d '{}'
 ```
+
+## Batches
+
+Router: `app/api/v1/batches.py`. Trigger and observe queue-backed batch
+runs. Background on the queue itself: `docs/JOB-QUEUE-WALKTHROUGH.md`;
+how to run and deploy it: `docs/DEPLOYMENT.md`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/batches/run` | Enqueue one `ORDER_RUN` job per OPEN order |
+| GET | `/batches/{job_run_id}` | Status counts and completion for one run |
+| GET | `/batches/{job_run_id}/items` | Per-item detail, filterable and paged |
+
+### `POST /batches/run`
+
+**Enqueue-only. It never runs a projection or a summary inline.** Returns
+`202` immediately.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/batches/run \
+  -H "Content-Type: application/json" \
+  -d '{"projection_date": "2026-08-15", "stacking_mode_override": "MAX"}'
+```
+
+Both body fields are optional -- `projection_date` defaults to today (UTC),
+`stacking_mode_override` to each retailer's configured policy.
+
+```json
+{
+  "job_run_id": "0f3c…",
+  "requested_item_count": 4,
+  "dispatch_mode": "postgres",
+  "execution_note": "Enqueued; will be processed by the next scheduled batch drain."
+}
+```
+
+Read `execution_note` literally, because `202` means different things per
+backend:
+
+| `dispatch_mode` | What actually happens next |
+|---|---|
+| `postgres` | Rows are written. **Nothing runs them** until a drain (`scripts/ops/run_daily_batch.py`, or the nightly job) picks them up |
+| `service_bus` | A consumer is woken within seconds |
+
+`requested_item_count` is the number of items **this** run owns. It can be
+lower than the OPEN order count: if an order already has an in-flight item
+from an earlier run, that item stays with its original run rather than
+being double-counted here.
+
+### `GET /batches/{job_run_id}`
+
+`404` if the run does not exist.
+
+```json
+{
+  "job_run_id": "0f3c…",
+  "requested_item_count": 4,
+  "counts": {"PENDING": 1, "RUNNING": 1, "SUCCEEDED": 2, "DEAD": 0},
+  "total_items": 4,
+  "is_complete": false
+}
+```
+
+`is_complete` is `SUCCEEDED + DEAD == total_items`, reconciled against rows
+that actually exist rather than `requested_item_count` (a pre-enqueue
+forecast). A run with zero items is never complete -- it never started.
+
+### `GET /batches/{job_run_id}/items`
+
+| Param | Type | Default |
+|---|---|---|
+| `status` | `PENDING` \| `RUNNING` \| `SUCCEEDED` \| `DEAD` | all |
+| `limit` | 1–200 | 50 |
+| `offset` | ≥ 0 | 0 |
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/batches/0f3c…/items?status=DEAD"
+```
+
+Each item carries `order_id`, `task_type`, `status`, `attempt_count`,
+`max_attempts`, `last_error_code`, and timestamps. **`last_error_message`
+is derived from the error code, never the raw exception text** -- consistent
+with the no-internal-detail rule in "Errors" above. For the real exception,
+read `job_item.last_error` in the database or the worker logs.
 
 ## Admin
 
