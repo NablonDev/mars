@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     admin,
+    batches,
     facts,
     fine_rules,
     fine_summaries,
@@ -21,4 +22,5 @@ router.include_router(orders.router)
 router.include_router(facts.router)
 router.include_router(projections.router)
 router.include_router(fine_summaries.router)
+router.include_router(batches.router)
 router.include_router(admin.router)
