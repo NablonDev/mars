@@ -8,11 +8,11 @@ where standing up an HTTP server just to run a batch job is unnecessary
 anything that should go through HTTP.
 
 Examples:
-    python scripts/run_projection_cli.py --order-id WMT-100234
-    python scripts/run_projection_cli.py --order-id WMT-100234 --date 2026-08-05
-    python scripts/run_projection_cli.py --all-open
-    python scripts/run_projection_cli.py --all-open --date 2026-08-05 --stacking-mode MAX
-    python scripts/run_projection_cli.py --all-open --with-summary
+    python scripts/ops/run_projection_cli.py --order-id WMT-100234
+    python scripts/ops/run_projection_cli.py --order-id WMT-100234 --date 2026-08-05
+    python scripts/ops/run_projection_cli.py --all-open
+    python scripts/ops/run_projection_cli.py --all-open --date 2026-08-05 --stacking-mode MAX
+    python scripts/ops/run_projection_cli.py --all-open --with-summary
 
 --with-summary additionally runs the fine-summary generation for each
 order right after its projection succeeds -- the same sequential
@@ -23,16 +23,18 @@ this script is meant to be invoked on a schedule.
 """
 
 import argparse
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.agents.providers.azure_openai import AzureOpenAIChatClient
 from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.db.session import Database
+from app.models.enums import SummaryStatus
 from app.repositories.agent_registry import PromptRegistryRepository
 from app.repositories.fine_rule import FineRuleRepository
 from app.repositories.fine_summary import FineSummaryRepository
@@ -41,6 +43,8 @@ from app.repositories.order import OrderRepository
 from app.repositories.projection import ProjectionRepository
 from app.services.fine_summary import FineSummaryService
 from app.services.projection import ProjectionService
+
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
@@ -125,8 +129,26 @@ def main() -> None:
 
             try:
                 job = fine_summary_service.get_or_schedule(order_id, as_of_date=result.projection_date)
-                if job.status == "PENDING":
-                    fine_summary_service.run_generation(job.order_id, job.as_of_date, job.prompt_version)
+                if job.status == SummaryStatus.PENDING:
+                    try:
+                        fine_summary_service.run_generation(job.order_id, job.as_of_date, job.prompt_version)
+                    except Exception:
+                        # run_generation re-raises after persisting a
+                        # FAILED ledger row (see
+                        # FineSummaryService.run_generation) so a queue
+                        # worker can classify retry-vs-dead. This
+                        # one-shot CLI has always printed the resulting
+                        # status line below regardless of success or
+                        # failure -- get_status reads that same ledger
+                        # row -- so swallow here rather than falling into
+                        # the `except AppError` below, which prints a
+                        # different "[summary skipped]" message reserved
+                        # for get_or_schedule failing outright.
+                        logger.exception(
+                            "Fine summary generation failed: order_id=%s as_of_date=%s",
+                            job.order_id,
+                            job.as_of_date,
+                        )
                     job = fine_summary_service.get_status(order_id, as_of_date=result.projection_date)
             except AppError as exc:
                 print(f"    [summary skipped] {order_id}: {exc}")

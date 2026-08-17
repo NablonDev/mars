@@ -8,9 +8,9 @@ would use.
 
 Usage:
     uvicorn app.main:app --reload &        # in one terminal
-    python scripts/seed_master_data.py       # in another
+    python scripts/demo/seed_master_data.py       # in another
 
-    python scripts/seed_master_data.py --base-url http://localhost:8000
+    python scripts/demo/seed_master_data.py --base-url http://localhost:8000
 """
 
 import argparse
