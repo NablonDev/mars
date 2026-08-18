@@ -43,7 +43,7 @@ def enqueue_new_mail(timer: func.TimerRequest) -> None:
 
         try:
             logger.info("=" * 80)
-            logger.info("Service Bus Namespace : %s", container.config.servicebus_fully_qualified_namespace)
+            logger.info("Service Bus Namespace : %s", container.config.service_bus_fully_qualified_namespace)
             logger.info("Service Bus Queue     : %s", container.config.service_bus_queue_name)
             logger.info("Session ID            : %s", repr(container.config.service_bus_session_id))
             logger.info("Has Connection String : %s", bool(container.config.service_bus_connection_string))
