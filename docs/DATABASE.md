@@ -11,7 +11,7 @@ database, split across separate **schemas**:
 
 - **`cmir`** -- every table the CMIR/PO-validation domain owns, declared in
   `app/db/base.py::CMIR_SCHEMA`. This currently includes CMIR's own
-  domain tables (`cmir_records`, `email_events`, `email_action_log`,
+  domain tables (`cmir_records`, `email_events`, `email_action_logs`,
   `po_lines`, `material_master`, `po_line_errors`, `workflow_threads`)
   *and* its per-run observability/HITL tables (`agent_runs`,
   `agent_traces`, `hitl_actions`, `pending_human_actions`) -- see "CMIR /
@@ -81,7 +81,7 @@ One row per inbound email, doubling as the Service Bus queue's work item.
 | `queue_status` | `new` -> `enqueueing` -> `queued` -> `processing` -> `processed` / `failed` |
 | `queue_message_id`, `queue_delivery_count`, `queue_error` | Service Bus delivery bookkeeping |
 
-### `email_action_log` (`EmailActionLogORM`)
+### `email_action_logs` (`EmailActionLogORM`)
 Append-only audit log of email-level workflow events. Write-only from the
 app's perspective -- no read path in the API today.
 
@@ -152,7 +152,7 @@ collide.
 
 | Shared by both agents | CMIR-agent-only | PO-Validation-only |
 |---|---|---|
-| `agent_runs`, `workflow_threads`, `pending_human_actions`, `hitl_actions`, `agent_traces`, `cmir_records` | `email_events`, `email_action_log` | `po_lines`, `material_master`, `po_line_errors` |
+| `agent_runs`, `workflow_threads`, `pending_human_actions`, `hitl_actions`, `agent_traces`, `cmir_records` | `email_events`, `email_action_logs` | `po_lines`, `material_master`, `po_line_errors` |
 
 ## Primary keys
 
@@ -164,7 +164,7 @@ primary key. Business identifiers (`order_id`, `retailer_id`, `rule_id`,
 tests, and every worked example already address resources by
 (`/orders/WMT-100234`, not `/orders/<uuid>`), and foreign keys reference
 them directly rather than the surrogate `id` where a business key exists.
-A handful of CMIR/PO-validation tables (`cmir_records`, `email_action_log`,
+A handful of CMIR/PO-validation tables (`cmir_records`, `email_action_logs`,
 `hitl_actions`, `pending_human_actions`, `agent_traces` themselves) still
 use a plain integer PK -- untouched by this convention, since they have no
 business key and nothing FKs into them from outside their own domain.

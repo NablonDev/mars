@@ -88,10 +88,18 @@ target_metadata = Base.metadata
 
 
 def include_name(name: str | None, type_: str, parent_names: dict[str, str | None]) -> bool:
-    """Restrict Alembic autogenerate to schemas owned by this project."""
+    """Restrict Alembic autogenerate to schemas owned by this project.
+
+    Excludes the version table itself by name: normally Alembic skips its
+    own bookkeeping table from comparison automatically, but that implicit
+    exclusion is bypassed once a custom include_name is supplied and the
+    version table's schema (`public`) is itself an included schema --
+    without this, autogenerate proposes dropping `alembic_version` every
+    time.
+    """
     if type_ == "schema":
         return name is None or name in (CMIR_SCHEMA, FINES_SCHEMA, PUBLIC_SCHEMA)
-    return True
+    return not (type_ == "table" and name == "alembic_version")
 
 
 def _version_table_schema(dialect_name: str) -> str | None:

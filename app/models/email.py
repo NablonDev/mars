@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from uuid import UUID as PyUUID
 
-from sqlalchemy import DateTime, Integer, String, Text, func, text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import CMIR_SCHEMA, Base
+from app.db.base import CMIR_SCHEMA, UUID_PK, Base, generate_uuid7
 
 
 class EmailEventORM(Base):
@@ -16,9 +17,7 @@ class EmailEventORM(Base):
     __tablename__ = "email_events"
     __table_args__ = ({"schema": CMIR_SCHEMA},)
 
-    id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, server_default=text("gen_random_uuid()")
-    )
+    id: Mapped[PyUUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     sender: Mapped[str] = mapped_column(Text)
     subject: Mapped[str] = mapped_column(Text)
     raw_content: Mapped[str] = mapped_column(Text)
@@ -41,11 +40,11 @@ class EmailEventORM(Base):
 class EmailActionLogORM(Base):
     """Audit log for email-level workflow events."""
 
-    __tablename__ = "email_action_log"
+    __tablename__ = "email_action_logs"
     __table_args__ = ({"schema": CMIR_SCHEMA},)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    email_id: Mapped[str] = mapped_column(UUID(as_uuid=False))
+    id: Mapped[PyUUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
+    email_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey(f"{CMIR_SCHEMA}.email_events.id"))
     action: Mapped[str] = mapped_column(Text)
     actor: Mapped[str] = mapped_column(Text)
     details: Mapped[dict[str, Any]] = mapped_column(JSON)

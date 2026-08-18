@@ -2,7 +2,7 @@
 
 Revision ID: 8209afe73fa4
 Revises: 5589e602eefa
-Create Date: 2026-08-17 21:42:15.345207
+Create Date: 2026-08-18 12:15:48.465857
 
 """
 
@@ -45,46 +45,8 @@ def upgrade() -> None:
         schema="cmir",
     )
     op.create_table(
-        "cmir_records",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("email_id", sa.UUID(as_uuid=False), nullable=True),
-        sa.Column("sender_type", sa.Text(), nullable=False),
-        sa.Column("customer_identity", sa.Text(), nullable=False),
-        sa.Column("material_identity", sa.Text(), nullable=False),
-        sa.Column("intent_phrase", sa.Text(), nullable=False),
-        sa.Column("existing_cmir_ref", sa.Text(), nullable=False),
-        sa.Column("brand", sa.Text(), nullable=False),
-        sa.Column("site", sa.Text(), nullable=False),
-        sa.Column("target_grd_code", sa.Text(), nullable=False),
-        sa.Column("target_customer_material_ref", sa.Text(), nullable=False),
-        sa.Column("effective_date", sa.Date(), nullable=True),
-        sa.Column("reason", sa.Text(), nullable=False),
-        sa.Column("customer_identity_key", sa.Text(), nullable=False),
-        sa.Column("target_customer_material_ref_key", sa.Text(), nullable=False),
-        sa.Column("is_current", sa.Boolean(), nullable=False),
-        sa.Column("valid_from", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("valid_to", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("superseded_by_id", sa.Integer(), nullable=True),
-        sa.ForeignKeyConstraint(
-            ["superseded_by_id"],
-            ["cmir.cmir_records.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        schema="cmir",
-    )
-    op.create_table(
-        "email_action_log",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("email_id", sa.UUID(as_uuid=False), nullable=False),
-        sa.Column("action", sa.Text(), nullable=False),
-        sa.Column("actor", sa.Text(), nullable=False),
-        sa.Column("details", postgresql.JSON(astext_type=sa.Text()), nullable=False),
-        sa.PrimaryKeyConstraint("id"),
-        schema="cmir",
-    )
-    op.create_table(
         "email_events",
-        sa.Column("id", sa.UUID(as_uuid=False), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("sender", sa.Text(), nullable=False),
         sa.Column("subject", sa.Text(), nullable=False),
         sa.Column("raw_content", sa.Text(), nullable=False),
@@ -106,8 +68,54 @@ def upgrade() -> None:
         schema="cmir",
     )
     op.create_table(
+        "cmir_records",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("email_id", sa.UUID(as_uuid=False), nullable=True),
+        sa.Column("sender_type", sa.Text(), nullable=False),
+        sa.Column("customer_identity", sa.Text(), nullable=False),
+        sa.Column("material_identity", sa.Text(), nullable=False),
+        sa.Column("intent_phrase", sa.Text(), nullable=False),
+        sa.Column("existing_cmir_ref", sa.Text(), nullable=False),
+        sa.Column("brand", sa.Text(), nullable=False),
+        sa.Column("site", sa.Text(), nullable=False),
+        sa.Column("target_grd_code", sa.Text(), nullable=False),
+        sa.Column("target_customer_material_ref", sa.Text(), nullable=False),
+        sa.Column("effective_date", sa.Date(), nullable=True),
+        sa.Column("reason", sa.Text(), nullable=False),
+        sa.Column("customer_identity_key", sa.Text(), nullable=False),
+        sa.Column("target_customer_material_ref_key", sa.Text(), nullable=False),
+        sa.Column("is_current", sa.Boolean(), nullable=False),
+        sa.Column("valid_from", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("valid_to", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("superseded_by_id", sa.Uuid(), nullable=True),
+        sa.ForeignKeyConstraint(
+            ["email_id"],
+            ["cmir.email_events.id"],
+        ),
+        sa.ForeignKeyConstraint(
+            ["superseded_by_id"],
+            ["cmir.cmir_records.id"],
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        schema="cmir",
+    )
+    op.create_table(
+        "email_action_logs",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("email_id", sa.UUID(as_uuid=False), nullable=False),
+        sa.Column("action", sa.Text(), nullable=False),
+        sa.Column("actor", sa.Text(), nullable=False),
+        sa.Column("details", postgresql.JSON(astext_type=sa.Text()), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["email_id"],
+            ["cmir.email_events.id"],
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        schema="cmir",
+    )
+    op.create_table(
         "material_master",
-        sa.Column("id", sa.UUID(as_uuid=False), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("sap_material_number", sa.Text(), nullable=False),
         sa.Column("plant", sa.Text(), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
@@ -124,7 +132,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "po_lines",
-        sa.Column("id", sa.UUID(as_uuid=False), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("batch_id", sa.Text(), nullable=False),
         sa.Column("po_number", sa.Text(), nullable=False),
         sa.Column("po_line_number", sa.Text(), nullable=False),
@@ -147,7 +155,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "agent_traces",
-        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("run_id", sa.Uuid(), nullable=False),
         sa.Column("batch_id", sa.Text(), nullable=True),
         sa.Column("thread_id", sa.Text(), nullable=True),
@@ -168,7 +176,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "hitl_actions",
-        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("run_id", sa.Uuid(), nullable=False),
         sa.Column("batch_id", sa.Text(), nullable=True),
         sa.Column("email_id", sa.UUID(as_uuid=False), nullable=True),
@@ -192,8 +200,8 @@ def upgrade() -> None:
     )
     op.create_table(
         "po_line_errors",
-        sa.Column("id", sa.UUID(as_uuid=False), server_default=sa.text("gen_random_uuid()"), nullable=False),
-        sa.Column("po_line_id", sa.UUID(as_uuid=False), nullable=False),
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("po_line_id", sa.Uuid(), nullable=False),
         sa.Column("agent_run_id", sa.Uuid(), nullable=True),
         sa.Column("error_type", sa.Text(), nullable=False),
         sa.Column("error_code", sa.Text(), nullable=True),
@@ -221,7 +229,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "workflow_threads",
-        sa.Column("id", sa.UUID(), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("thread_id", sa.Text(), nullable=False),
         sa.Column("batch_id", sa.Text(), nullable=False),
         sa.Column("agent_run_id", sa.Uuid(), nullable=False),
@@ -258,7 +266,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "pending_human_actions",
-        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("batch_id", sa.Text(), nullable=False),
         sa.Column("agent_run_id", sa.Uuid(), nullable=False),
         sa.Column("thread_id", sa.Text(), nullable=False),
@@ -311,8 +319,8 @@ def downgrade() -> None:
     op.drop_table("agent_traces", schema="cmir")
     op.drop_table("po_lines", schema="cmir")
     op.drop_table("material_master", schema="cmir")
-    op.drop_table("email_events", schema="cmir")
-    op.drop_table("email_action_log", schema="cmir")
+    op.drop_table("email_action_logs", schema="cmir")
     op.drop_table("cmir_records", schema="cmir")
+    op.drop_table("email_events", schema="cmir")
     op.drop_table("agent_runs", schema="cmir")
     # ### end Alembic commands ###

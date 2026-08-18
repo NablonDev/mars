@@ -4,11 +4,10 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, Text, func, text
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import CMIR_SCHEMA, JSONB_OR_JSON, UUID_PK, Base
+from app.db.base import CMIR_SCHEMA, JSONB_OR_JSON, UUID_PK, Base, generate_uuid7
 
 
 class PoLineORM(Base):
@@ -17,9 +16,7 @@ class PoLineORM(Base):
     __tablename__ = "po_lines"
     __table_args__ = ({"schema": CMIR_SCHEMA},)
 
-    id: Mapped[str] = mapped_column(
-        PG_UUID(as_uuid=False), primary_key=True, server_default=text("gen_random_uuid()")
-    )
+    id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     batch_id: Mapped[str] = mapped_column(Text)
     po_number: Mapped[str] = mapped_column(Text)
     po_line_number: Mapped[str] = mapped_column(Text)
@@ -41,9 +38,7 @@ class MaterialMasterORM(Base):
     __tablename__ = "material_master"
     __table_args__ = ({"schema": CMIR_SCHEMA},)
 
-    id: Mapped[str] = mapped_column(
-        PG_UUID(as_uuid=False), primary_key=True, server_default=text("gen_random_uuid()")
-    )
+    id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     sap_material_number: Mapped[str] = mapped_column(Text)
     plant: Mapped[str] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
@@ -63,10 +58,8 @@ class PoLineErrorORM(Base):
     __tablename__ = "po_line_errors"
     __table_args__ = ({"schema": CMIR_SCHEMA},)
 
-    id: Mapped[str] = mapped_column(
-        PG_UUID(as_uuid=False), primary_key=True, server_default=text("gen_random_uuid()")
-    )
-    po_line_id: Mapped[str] = mapped_column(PG_UUID(as_uuid=False), ForeignKey(f"{CMIR_SCHEMA}.po_lines.id"))
+    id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
+    po_line_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{CMIR_SCHEMA}.po_lines.id"))
     agent_run_id: Mapped[UUID | None] = mapped_column(UUID_PK, ForeignKey(f"{CMIR_SCHEMA}.agent_runs.id"))
     error_type: Mapped[str] = mapped_column(Text)
     error_code: Mapped[str | None] = mapped_column(Text)
