@@ -1,0 +1,12 @@
+.git
+.github
+.venv
+myvenv
+__pycache__
+*.pyc
+.env
+local.settings.json
+.claude
+docs
+tests
+*.md

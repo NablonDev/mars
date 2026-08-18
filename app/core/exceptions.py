@@ -120,6 +120,31 @@ class InvalidFineRuleDataError(AppError):
     code: ClassVar[str] = "INVALID_FINE_RULE_DATA"
 
 
+class ServiceError(Exception):
+    """CMIR/PO-validation application error, mapping to the PRD error contract.
+
+    Kept as its own exception type (not an ``AppError`` subclass) since it
+    carries a ``details`` dict rather than a single ``detail`` string, and
+    changing that shape would touch every ``raise ServiceError(...)`` call
+    site across the cmir/po_validation services. Routed through the same
+    ``register_exception_handlers`` entry point as ``AppError`` below.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        status_code: int,
+        details: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+        self.details = details or {}
+
+
 def _error_body(code: str, message: str) -> dict:
     return ErrorResponse(error=ErrorBody(code=code, message=message)).model_dump()
 
@@ -162,6 +187,44 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content=_error_body(exc.code, exc.message),
+            headers={REQUEST_ID_HEADER: request_id},
+        )
+
+    @app.exception_handler(ServiceError)
+    async def _service_error_handler(
+        request: Request,
+        exc: ServiceError,
+    ) -> JSONResponse:
+        request_id = _resolve_request_id(request)
+        is_server_error = exc.status_code >= 500
+
+        logger.log(
+            logging.ERROR if is_server_error else logging.WARNING,
+            "%s %s -> %s %s: %s",
+            request.method,
+            request.url.path,
+            exc.status_code,
+            exc.code,
+            exc.message,
+            exc_info=exc if is_server_error else None,
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status": exc.status_code,
+                "error_code": exc.code,
+            },
+        )
+
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                }
+            },
             headers={REQUEST_ID_HEADER: request_id},
         )
 

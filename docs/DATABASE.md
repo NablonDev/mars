@@ -1,33 +1,181 @@
 # Database
 
-Conceptual/canonical schema: `docs/mars_fines_projection_schema.sql`.
-Runnable ORM: `app/models/`. Migrations: `alembic/` (repo root, run
+Conceptual/canonical schema (fines domain only): `docs/mars_fines_projection_schema.sql`.
+Runnable ORM for both domains: `app/models/`. Migrations: `alembic/` (repo root, run
 with `alembic upgrade head`). Sample data: `data/samples/mars_fines_mock_seed_data.sql`.
+
+## Postgres schema separation (`cmir` / `fines` / `public`)
+
+This one FastAPI app hosts two domains against one physical Postgres
+database, split across separate **schemas**:
+
+- **`cmir`** -- every table the CMIR/PO-validation domain owns, declared in
+  `app/db/base.py::CMIR_SCHEMA`. This currently includes CMIR's own
+  domain tables (`cmir_records`, `email_events`, `email_action_log`,
+  `po_lines`, `material_master`, `po_line_errors`, `workflow_threads`)
+  *and* its per-run observability/HITL tables (`agent_runs`,
+  `agent_traces`, `hitl_actions`, `pending_human_actions`) -- see "CMIR /
+  PO Validation tables" below for the per-table reference.
+- **`fines`** -- every table the Projected Fines domain owns (all 16, see
+  "Tables" below), plus the shared Alembic bookkeeping table
+  (`fines.alembic_version` -- one linear migration history covers both
+  schemas, so it doesn't matter which one anchors the version table).
+  Declared in `app/db/base.py::FINES_SCHEMA`.
+- **`public`** -- currently unused by either domain. A future split that
+  moves the genuinely cross-domain agent-observability tables
+  (`agent_runs`, `agent_traces`, `hitl_actions`) into `public` so a third,
+  unrelated agent project could consume them without depending on `cmir`
+  internals is a real idea that came up while merging the two domains
+  together, but was explicitly deferred -- not implemented in this pass.
+  If/when it happens, `workflow_threads` and `pending_human_actions` stay
+  in `cmir` (they FK into cmir-private tables like
+  `email_events`/`po_lines`), so revisit this split table-by-table rather
+  than moving the whole set at once.
+
+Every FK string across both domains is schema-qualified
+(`ForeignKey(f"{CMIR_SCHEMA}.agent_runs.id")`, matching the existing
+`FINES_SCHEMA` convention) -- nothing relies on the connection's default
+`search_path`.
+
+On SQLite (the whole test suite, plus the `sqlite:////tmp/...` local-dev
+recipe), schemas don't exist at all -- `app/db/session.py` and
+`alembic/env.py` both apply SQLAlchemy's `schema_translate_map` at the
+connection level to translate `fines` and `cmir` away, so nothing in
+`app/` or `tests/` needs to know schemas are involved.
+
+### Migration history
+
+One linear chain, two migrations:
+
+| Revision | File | What it adds |
+|---|---|---|
+| (see `alembic/versions/`) | `8209afe73fa4_cmir_initial_schema.py`, `down_revision=5589e602eefa` | Every `cmir`-schema table, replacing the CMIR branch's old standalone `0001`-`0005` raw-SQL chain |
+| `5589e602eefa` | `alembic/versions/5589e602eefa_initial_schema.py` | Every `fines`-schema table |
+
+Both the old fines `0001`-`0011` chain and the CMIR branch's own `0001`-`0005`
+chain were squashed rather than reconciled migration-by-migration -- neither
+had shipped to an environment carrying real data (demo/seed rows only), so
+there was nothing an incremental history needed to preserve, and every
+residual naming/type issue either chain had accumulated (stale
+`dim_penalty_rule_*` constraint names, `agent_trace` -> `agent_traces`,
+`agent_runs.id` `SERIAL` -> UUIDv7) is gone with it. A database still on
+either old chain has no forward path onto the new one -- see
+`docs/RUNBOOK.md`'s "Database: migrate" section for the drop/recreate steps.
+
+## CMIR / PO Validation tables
+
+All of the following live in the `cmir` schema (`app/models/cmir.py`,
+`app/models/email.py`, `app/models/observability.py`,
+`app/models/po_validation.py`).
+
+### `email_events` (`EmailEventORM`)
+One row per inbound email, doubling as the Service Bus queue's work item.
+
+| Column | Notes |
+|---|---|
+| `id` | UUID PK |
+| `sender`, `subject`, `raw_content` | Raw email content |
+| `source_message_id`, `source_imap_id` | Duplicate-detection keys |
+| `extracted_json`, `missing_fields`, `status` | Latest CMIR extraction result |
+| `queue_status` | `new` -> `enqueueing` -> `queued` -> `processing` -> `processed` / `failed` |
+| `queue_message_id`, `queue_delivery_count`, `queue_error` | Service Bus delivery bookkeeping |
+
+### `email_action_log` (`EmailActionLogORM`)
+Append-only audit log of email-level workflow events. Write-only from the
+app's perspective -- no read path in the API today.
+
+### `cmir_records` (`CMIRRecordORM`)
+SCD2 history of approved CMIR mappings -- **not** an append-only log. Exactly
+one `is_current = TRUE` row per `(customer_identity_key,
+target_customer_material_ref_key)`, enforced by a partial unique index (see
+`app/repositories/cmir.py::PostgresCMIRRepository.supersede_and_insert`,
+which retires the old row and inserts the new one in one transaction,
+catching the index violation as `CMIRVersionConflict` on a lost race).
+Written by both agents (CMIR's `persist_cmir` node; PO Validation's
+`create_cmir_record` node for manual mappings); read by PO Validation's
+`validate_against_cmir` node -- shared table, shared repository class.
+
+### `agent_runs` (`AgentRunORM`)
+One row per independent agent execution (one email, or one PO line). `id`
+is a UUIDv7 surrogate key (converted from the CMIR branch's original
+`SERIAL` int during the fines/cmir merge, to match the house convention
+every other surrogate-keyed table in this repo already uses). `run_type`
+(`email_ingest` vs `PO_VALIDATION`) and the nullable `email_id`/`po_line_id`
+columns distinguish which agent owns a given run. `batch_id` groups every
+run created by one ingest request.
+
+### `workflow_threads` (`WorkflowThreadORM`)
+The reviewer-facing thread -- **the only identifier reviewer/UI actions may
+key on** (see the README's Identity Rule). Shared by both agents,
+distinguished by whether `email_id` or `po_line_id` is populated.
+`agent_run_id` is a UUID FK into `agent_runs.id`.
+
+### `pending_human_actions` (`PendingHumanActionORM`)
+Open/completed human-review interrupts, one per thread at a time.
+`agent_run_id` is a UUID FK into `agent_runs.id`; `thread_id` FKs into
+`workflow_threads.thread_id` (both now within the same `cmir` schema).
+
+### `hitl_actions` (`HITLActionORM`)
+Audit trail of every reviewer answer/decision, written transactionally
+alongside the `pending_human_actions` transition by
+`PostgresHITLStateRepository.apply_human_action`. `run_id` is a UUID FK
+into `agent_runs.id`.
+
+### `agent_traces` (`AgentTraceORM`)
+One row per LangGraph node execution (`completed` / `paused` / `failed`),
+written by the `traced()` decorator (`app/core/tracing.py`) wrapping every
+node in both graphs. Operational/debugging surface only. Renamed from
+`agent_trace` (singular) during the fines/cmir merge; `run_id` is a UUID
+FK into `agent_runs.id`.
+
+### `po_lines` (`PoLineORM`)
+One row per PO line submitted for validation.
+
+### `material_master` (`MaterialMasterORM`)
+Local mirror of SAP MARC fields, keyed by `(sap_material_number, plant)`.
+Populated by an out-of-scope external sync process.
+
+### `po_line_errors` (`PoLineErrorORM`)
+System/lookup failures on a PO line -- distinct from `hitl_actions` (human
+decisions). `agent_run_id` is a UUID FK into `agent_runs.id`.
+
+### LangGraph checkpoint tables
+Created and owned entirely by `PostgresSaver.setup()`
+(`app/core/container.py`) -- never created via Alembic and never
+queried/written directly by application code. Both agents' graphs share one
+`PostgresSaver` instance; checkpoint `thread_id`s are namespaced
+(`thread_po_...` for PO Validation) so the two graphs' checkpoints never
+collide.
+
+### Cross-agent sharing summary
+
+| Shared by both agents | CMIR-agent-only | PO-Validation-only |
+|---|---|---|
+| `agent_runs`, `workflow_threads`, `pending_human_actions`, `hitl_actions`, `agent_traces`, `cmir_records` | `email_events`, `email_action_log` | `po_lines`, `material_master`, `po_line_errors` |
 
 ## Primary keys
 
-Every table has a surrogate `id` (UUIDv7, time-ordered) as its actual
-primary key -- the standard convention, matching the sibling
-`cmir_agent` project. Business identifiers (`order_id`, `retailer_id`,
-`rule_id`, `sku_id`, etc.) are separate `unique=True` columns: they're
-what the API, tests, and every worked example already address resources
-by (`/orders/WMT-100234`, not `/orders/<uuid>`), and foreign keys
-reference them directly rather than the surrogate `id` -- a FK can
-target any uniquely-constrained column, not only the primary key, and
-doing it this way meant adopting the `id` convention didn't require
-rewriting how every repository looks up or relates rows.
+Every fines-domain table, plus `agent_runs` and everything that FKs into it
+(`agent_traces`, `hitl_actions`, `pending_human_actions`, `workflow_threads`,
+`po_line_errors`), has a surrogate `id` (UUIDv7, time-ordered) as its actual
+primary key. Business identifiers (`order_id`, `retailer_id`, `rule_id`,
+`sku_id`, etc.) are separate `unique=True` columns: they're what the API,
+tests, and every worked example already address resources by
+(`/orders/WMT-100234`, not `/orders/<uuid>`), and foreign keys reference
+them directly rather than the surrogate `id` where a business key exists.
+A handful of CMIR/PO-validation tables (`cmir_records`, `email_action_log`,
+`hitl_actions`, `pending_human_actions`, `agent_traces` themselves) still
+use a plain integer PK -- untouched by this convention, since they have no
+business key and nothing FKs into them from outside their own domain.
 
 `app/db/base.py::generate_uuid7()` (a Python-side default on every
-model's `id` column) stays the real, only id-generation path the
-application itself uses -- unconditionally, unchanged. The initial
-migration (`alembic/versions/5589e602eefa_initial_schema.py`) additionally sets
+UUID-surrogate `id` column) is the id-generation path the application
+itself uses. The initial fines migration
+(`alembic/versions/5589e602eefa_initial_schema.py`) additionally sets
 `server_default=uuidv7()` (Postgres's own builtin, 18+) directly on every
-table's `id` column via raw DDL, purely as a migration-level safety net
-for a hypothetical future non-ORM writer that inserts without supplying
-`id` -- not a change to how this app generates ids. Version-gated to
-Postgres 18+ (`server_version_info`), and a no-op on SQLite (no
-`uuidv7()` function there, and none of this project's tests write around
-the ORM's own default anyway).
+`fines`-schema table's `id` column via raw DDL, purely as a migration-level
+safety net for a hypothetical future non-ORM writer that inserts without
+supplying `id`. Version-gated to Postgres 18+, and a no-op on SQLite.
 
 One exception: `fact_projected_fine` has no single natural key -- its
 business identity is the triple `(order_id, rule_id, projection_date)`,
@@ -70,92 +218,18 @@ orders that share a line will see each other's status updates; see
 `tests/test_known_limitations.py` for the one place in the mock data
 where that's a real, accepted wrinkle rather than a bug.
 
-## Postgres schema separation (`fines` / `public` / `cmir`)
-
-This service is one domain inside a physical Postgres database shared with
-the sibling `cmir` project, so tables are not split across separate
-databases but across separate **schemas**:
-
-- **`fines`** -- every table this project owns (all 16, see "Tables"
-  below), plus this project's own Alembic bookkeeping table
-  (`fines.alembic_version`). Declared once, in `app/db/base.py::FINES_SCHEMA`,
-  and `Base.metadata` is bound to it -- nothing in `app/` qualifies a table
-  name by hand, and every existing bare `ForeignKey("dim_x.y")` string
-  keeps working unchanged (SQLAlchemy resolves an unqualified FK string
-  against the owning table's `metadata.schema`).
-- **`public`** -- reserved for the shared, cross-domain tables the sibling
-  `cmir` project owns (agent registry, agent runs/traces, HITL actions).
-  This project does not create, migrate, or FK into anything in `public` --
-  that seam is deliberately not built yet (documented separately, not
-  here). Never route a `fines`-schema migration through `public`.
-- **`cmir`** -- planned, not yet in use. Reserved so the sibling project can
-  move its own tables into a dedicated schema later without another
-  `public`-splitting migration.
-
-On SQLite (the whole test suite, plus the `sqlite:////tmp/...` local-dev
-recipe), schemas don't exist at all -- `app/db/session.py` and
-`alembic/env.py` both apply SQLAlchemy's `schema_translate_map` at the
-connection level to translate `fines` away, so nothing in `app/` or
-`tests/` needs to know schemas are involved.
-
-### Migration history was squashed to a single `5589e602eefa`
-
-The `0001`-`0011` incremental chain that built up the `fines` schema
-split, several renames (`dim_penalty_rule` -> `dim_fine_rule`,
-`explanation` -> `narrative` -> `summary`), and audit-column backfills has
-been squashed into a single `alembic/versions/5589e602eefa_initial_schema.py` --
-no environment this had shipped to carried real data (demo/seed rows
-only), so there was nothing an incremental history needed to preserve,
-and every residual naming/constraint-shape issue that history had
-accumulated (stale `dim_penalty_rule_*` constraint names, a duplicate
-unique-index-vs-constraint shape, stale `fact_projection_explanation_*`
-names) is gone with it -- `5589e602eefa` creates every table fresh, with today's
-names, verified to produce zero drift against `alembic revision
---autogenerate` on a real Postgres 18.
-
-A database still on the old chain (revision `0002` through `0011`) has no
-forward path onto the new `0001` -- see `docs/RUNBOOK.md` §3 "Migration
-history was squashed to a single `5589e602eefa`" for the drop/recreate steps.
-
-### Cross-domain integration seam (`public.*` cmir tables)
-
-The "documented separately, not here" pointer above, fulfilled: this
-project does not create, migrate, or FK into any `public.*` table. The
-sibling `cmir_agent` project's current tables (`agent_runs`, `agent_trace`,
-`hitl_actions`, `pending_human_actions` -- all still `public`-qualified; no
-`agent_registry` table exists anywhere yet) are not domain-agnostic today --
-`agent_runs` carries `email_id`/`run_type` defaulting to `'email_ingest'`,
-`workflow_threads` carries `cmir_status` -- so nothing on this side is built
-against that shape or assumes it's final.
-
-If/when those tables generalize and a `fines`-side row (most likely
-`fact_fine_summary`, given it already carries an LLM-generation
-audit trail) should reference an `agent_run_id`, that's a future, explicit
-follow-up -- no speculative nullable column is being added now, since
-guessing the wrong type would be worse than waiting.
-
-One mismatch to flag for joint resolution now, rather than let either side
-silently absorb it later: `cmir_agent.agent_runs.id` is a plain integer
-`SERIAL` primary key, while every table in this project uses a UUIDv7
-surrogate `id` (see "Primary keys" above). If a `fines` table ever needs to
-FK into `public.agent_runs`, that type mismatch needs a decision from
-whoever owns the shared schema design -- not a unilateral adaptation by
-either side.
-
 ## Agent/prompt registry
 
-`dim_agent` and `dim_prompt_version` (part of the initial migration) give
+`dim_agent` and `dim_prompt_version` (part of the fines migration) give
 `fact_fine_summary.prompt_version` a real relationship to the agent that
 generated it and the module the prompt text actually lives in, in place
 of a bare unchecked string. Deliberately generic (agent_name +
 prompt_version, not fine-summary-specific) and deliberately kept in the
-`fines` schema for now -- see "Postgres schema separation" above for why
-a live, FK'd table isn't routed through `public` unilaterally; relocating
-this pair there later, if/when the sibling `cmir` project's own agent
-registry generalizes, is a future, explicit, coordinated migration.
-`dim_agent.source` (`"fines"` or `"cmir"`) records which project actually
-owns/runs a given agent, so that eventual move doesn't lose which side
-each row belongs to.
+`fines` schema, separate from the CMIR domain's own `agent_runs` (a
+different concept -- one execution, not a named/versioned agent
+definition). `dim_agent.source` (`"fines"` or `"cmir"`) records which
+domain actually owns/runs a given agent, in case these two registries are
+ever unified later.
 
 `dim_prompt_version.agent_id`/`fact_fine_summary.agent_id` reference
 `dim_agent.id` (the surrogate UUID), not `agent_name` -- unlike most other
@@ -171,22 +245,23 @@ startup, and not seeded via a migration or a script. This keeps
 registration tied to the operation that actually needs it (no separate
 boot-time side effect unrelated to any specific request) while still
 guaranteeing the FK is always satisfiable before the write that depends
-on it. Same "code is the source of truth for what exists, migrations only
-shape the schema" split already used for `dim_retailer`/`dim_sku` (seeded
-via `SeedingService`). Bumping the fine-summary prompt to a new version (a
-new `app/agents/prompts/fine_summary/vN.py`) self-registers on the next
-call; nothing has to be remembered or run by hand.
+on it. Bumping the fine-summary prompt to a new version (a new
+`app/agents/prompts/fine_summary/vN.py`) self-registers on the next call;
+nothing has to be remembered or run by hand.
 
 ## Schema-change checklist
 
-Per `docs/legacy/root-CLAUDE.md`/`./CLAUDE.local.md`: a schema change touches, together, in one commit --
-the relevant `app/models/*.py` file, a new Alembic migration
-(`alembic/versions/`), `docs/mars_fines_projection_schema.sql`, and
-`tests/test_migration_parity.py` should still pass (it builds one SQLite
-DB via the migration and another via `Base.metadata.create_all()`, then
-diffs them -- a real check that the two never drift apart).
+Per `docs/legacy/root-CLAUDE.md`/`./CLAUDE.local.md`: a **fines**-schema
+change touches, together, in one commit -- the relevant `app/models/*.py`
+file, a new Alembic migration (`alembic/versions/`),
+`docs/mars_fines_projection_schema.sql`, and `tests/test_migration_parity.py`
+should still pass (it builds one SQLite DB via the migration and another via
+`Base.metadata.create_all()`, then diffs them -- a real check that the two
+never drift apart). A **cmir**-schema change touches the model file and a
+new migration; `docs/mars_fines_projection_schema.sql` is fines-only and
+doesn't need updating for cmir tables.
 
-## Tables
+## Tables (fines schema)
 
 | Table | Business key | Notes |
 |---|---|---|

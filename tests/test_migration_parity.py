@@ -1,16 +1,18 @@
 """
-Proves the hand-authored Alembic migration (alembic/versions/0001_initial_schema.py)
-actually matches app/models/, rather than just asserting it in a
-docstring. Builds one SQLite DB via `alembic upgrade head` and another
-via `Base.metadata.create_all()`, then diffs table and column names.
+Proves the hand-authored Alembic migrations (alembic/versions/5589e602eefa_*.py
+for the fines schema, alembic/versions/3c6d4f03fe8e_*.py for the cmir schema)
+actually match app/models/, rather than just asserting it in a
+docstring. Builds one SQLite DB via `alembic upgrade head` (walks the whole
+chain) and another via `Base.metadata.create_all()`, then diffs table and
+column names.
 
 No live Postgres needed -- this only checks structural parity between
-the migration and the ORM, not Postgres-specific DDL correctness. Both
+the migrations and the ORM, not Postgres-specific DDL correctness. Both
 engines go through `apply_sqlite_schema_translation` because
-`Base.metadata` is bound to the `fines` schema (app/db/base.py), which
-SQLite cannot express -- the same translation app/db/session.py and
-alembic/env.py apply, so the tables land unqualified on both sides and
-stay comparable.
+`Base.metadata` has tables bound to the `fines` and `cmir` schemas
+(app/db/base.py), which SQLite cannot express -- the same translation
+app/db/session.py and alembic/env.py apply, so the tables land unqualified
+on both sides and stay comparable.
 """
 
 from pathlib import Path
@@ -31,10 +33,6 @@ def _tables_and_columns(engine) -> dict[str, set[str]]:
         table: {col["name"] for col in inspector.get_columns(table)}
         for table in inspector.get_table_names()
         if table != "alembic_version"  # Alembic's own bookkeeping table, not part of the domain schema
-        # deliberately unmapped to Base.metadata: lives in `public`, a shared
-        # staging table for a future consumer, not this project's own domain
-        # schema -- see the po_lines section of alembic/versions/0001_initial_schema.py
-        and table != "po_lines"
     }
 
 

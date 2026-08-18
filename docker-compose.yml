@@ -1,0 +1,111 @@
+# Local development only. Build context is the repository root.
+# One Postgres instance serves both the `fines` and `cmir` schemas -- see
+# docs/DATABASE.md for the schema split.
+
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: ${POSTGRES_DB:-}
+    ports:
+      - "5432:5432"
+    volumes:
+      - mars_postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mars -d mars"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      # Use the psycopg3 SQLAlchemy driver.
+      DATABASE_URL: postgresql+psycopg://mars:mars@db:5432/mars
+      ENVIRONMENT: development
+      DOCS_ENABLED: "true"
+
+      # Passed through from the host; empty values are allowed locally.
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_DEPLOYMENT_NAME: ${AZURE_OPENAI_DEPLOYMENT_NAME:-}
+      AZURE_OPENAI_TIMEOUT_SECONDS: ${AZURE_OPENAI_TIMEOUT_SECONDS:-90}
+      AZURE_OPENAI_MAX_ATTEMPTS: ${AZURE_OPENAI_MAX_ATTEMPTS:-3}
+
+      # CMIR: inbound email + Service Bus (optional locally -- leave blank to
+      # run only the fines side).
+      EMAIL_USERNAME: ${EMAIL_USERNAME:-}
+      EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
+      IMAP_SERVER: ${IMAP_SERVER:-imap.gmail.com}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      SERVICEBUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICEBUS_FULLY_QUALIFIED_NAMESPACE:-}
+      SERVICE_BUS_CONNECTION_STRING: ${SERVICE_BUS_CONNECTION_STRING:-}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Local stand-in for the standalone Service Bus consumer process.
+  # Run with: docker compose --profile tools run --rm cmir-consumer
+  cmir-consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m app.workers.service_bus_consumer
+    profiles:
+      - tools
+    environment:
+      DATABASE_URL: postgresql+psycopg://mars:mars@db:5432/mars
+      SERVICEBUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICEBUS_FULLY_QUALIFIED_NAMESPACE:-}
+      SERVICE_BUS_CONNECTION_STRING: ${SERVICE_BUS_CONNECTION_STRING:-}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Run explicitly: docker compose --profile tools run --rm migrate
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: alembic upgrade head
+    profiles:
+      - tools
+    environment:
+      DATABASE_URL: postgresql+psycopg://mars:mars@db:5432/mars
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Local stand-in for the Azure Container Apps Job.
+  # Run with: docker compose --profile tools run --rm worker
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python scripts/ops/run_daily_batch.py
+    profiles:
+      - tools
+    environment:
+      DATABASE_URL: postgresql+psycopg://mars:mars@db:5432/mars
+      ENVIRONMENT: development
+      JOB_QUEUE_BACKEND: ${JOB_QUEUE_BACKEND:-postgres}
+      JOB_QUEUE_WORKER_CONCURRENCY: ${JOB_QUEUE_WORKER_CONCURRENCY:-5}
+
+      # Keep DB pool capacity >= worker concurrency.
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_DEPLOYMENT_NAME: ${AZURE_OPENAI_DEPLOYMENT_NAME:-}
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  mars_postgres_data:
