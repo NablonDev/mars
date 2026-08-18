@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func, text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -43,9 +43,7 @@ class WorkflowThreadORM(Base):
     __tablename__ = "workflow_threads"
     __table_args__ = ({"schema": CMIR_SCHEMA},)
 
-    id: Mapped[Any] = mapped_column(
-        PG_UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
-    )
+    id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     thread_id: Mapped[str] = mapped_column(Text, unique=True)
     batch_id: Mapped[str] = mapped_column(Text)
     agent_run_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{CMIR_SCHEMA}.agent_runs.id"))
@@ -76,7 +74,7 @@ class PendingHumanActionORM(Base):
     __tablename__ = "pending_human_actions"
     __table_args__ = ({"schema": CMIR_SCHEMA},)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     batch_id: Mapped[str] = mapped_column(Text)
     agent_run_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{CMIR_SCHEMA}.agent_runs.id"))
     thread_id: Mapped[str] = mapped_column(Text, ForeignKey(f"{CMIR_SCHEMA}.workflow_threads.thread_id"))
@@ -102,7 +100,7 @@ class AgentTraceORM(Base):
     __tablename__ = "agent_traces"
     __table_args__ = ({"schema": CMIR_SCHEMA},)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     run_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{CMIR_SCHEMA}.agent_runs.id"))
     batch_id: Mapped[str | None] = mapped_column(Text)
     thread_id: Mapped[str | None] = mapped_column(Text)
@@ -122,7 +120,7 @@ class HITLActionORM(Base):
     __tablename__ = "hitl_actions"
     __table_args__ = ({"schema": CMIR_SCHEMA},)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     run_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{CMIR_SCHEMA}.agent_runs.id"))
     batch_id: Mapped[str | None] = mapped_column(Text)
     email_id: Mapped[str | None] = mapped_column(PG_UUID(as_uuid=False))
