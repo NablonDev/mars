@@ -1,20 +1,31 @@
-# Local development only. Build context is the repository root.
-# One Postgres instance serves both the `fines` and `cmir` schemas -- see
-# docs/DATABASE.md for the schema split.
+# One Compose file for local development and production.
+#
+# Local:
+#   docker compose --profile local up --build
+#
+# Production with an external PostgreSQL:
+#   DATABASE_URL=postgresql+psycopg://... docker compose up --build
+#
+# The application always consumes DATABASE_URL.
+# Local Compose supplies a Docker-network URL by default.
+
+x-app-database: &app-database
+  DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-mars}:${POSTGRES_PASSWORD:-mars}@db:5432/${POSTGRES_DB:-mars}}
+
 
 services:
   db:
     image: postgres:18-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
-      POSTGRES_DB: ${POSTGRES_DB:-}
+      POSTGRES_USER: ${POSTGRES_USER:-mars}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mars}
+      POSTGRES_DB: ${POSTGRES_DB:-mars}
     ports:
       - "5432:5432"
     volumes:
       - mars_postgres_data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mars -d mars"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mars} -d ${POSTGRES_DB:-mars}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -27,10 +38,9 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Use the psycopg3 SQLAlchemy driver.
-      DATABASE_URL: postgresql+psycopg://mars:mars@db:5432/mars
-      ENVIRONMENT: development
-      DOCS_ENABLED: "true"
+      <<: *app-database
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DOCS_ENABLED: ${DOCS_ENABLED:-true}
 
       # Passed through from the host; empty values are allowed locally.
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
@@ -45,7 +55,7 @@ services:
       EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
       IMAP_SERVER: ${IMAP_SERVER:-imap.gmail.com}
       IMAP_PORT: ${IMAP_PORT:-993}
-      SERVICEBUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICEBUS_FULLY_QUALIFIED_NAMESPACE:-}
+      SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE:-}
       SERVICE_BUS_CONNECTION_STRING: ${SERVICE_BUS_CONNECTION_STRING:-}
     depends_on:
       db:
@@ -61,8 +71,8 @@ services:
     profiles:
       - tools
     environment:
-      DATABASE_URL: postgresql+psycopg://mars:mars@db:5432/mars
-      SERVICEBUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICEBUS_FULLY_QUALIFIED_NAMESPACE:-}
+      <<: *app-database
+      SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE:-}
       SERVICE_BUS_CONNECTION_STRING: ${SERVICE_BUS_CONNECTION_STRING:-}
     depends_on:
       db:
@@ -77,7 +87,7 @@ services:
     profiles:
       - tools
     environment:
-      DATABASE_URL: postgresql+psycopg://mars:mars@db:5432/mars
+      <<: *app-database
     depends_on:
       db:
         condition: service_healthy
@@ -92,8 +102,8 @@ services:
     profiles:
       - tools
     environment:
-      DATABASE_URL: postgresql+psycopg://mars:mars@db:5432/mars
-      ENVIRONMENT: development
+      <<: *app-database
+      ENVIRONMENT: ${ENVIRONMENT:-development}
       JOB_QUEUE_BACKEND: ${JOB_QUEUE_BACKEND:-postgres}
       JOB_QUEUE_WORKER_CONCURRENCY: ${JOB_QUEUE_WORKER_CONCURRENCY:-5}
 
