@@ -10,11 +10,22 @@ endpoint-by-endpoint reference, see `docs/API.md`; for a presentation-ready
 walkthrough, open `docs/architecture-walkthrough.html` directly in a
 browser. This file is about running it.
 
-**Sections 2 onward cover the API and the single-order paths.** The batch
-worker, the job queue, every `JOB_QUEUE_*`/`SERVICE_BUS_*` setting, and the
-Azure deployment live in `docs/DEPLOYMENT.md` -- go there for anything
-involving `scripts/ops/run_daily_batch.py`, `/api/v1/batches/*`, or a
-container.
+**Sections 2 onward cover the API and the single-order paths.** For the
+batch job queue -- every OPEN order, scheduled and run as a group -- see
+`docs/DEPLOYMENT.md`:
+
+- **The scheduled daily run is `scripts/ops/run_daily_batch.py`**, executed
+  as the Azure Container Apps Job on a nightly cron (§6.6). It both
+  enqueues today's work *and* drains it in the same call -- nothing else
+  needs to run.
+- **`POST /api/v1/batches/run` is not a substitute for the schedule.**
+  Under the default `postgres` backend it only enqueues; nothing processes
+  those rows until a drain happens (the same script, or the nightly job).
+  It's for triggering a run on demand from outside, not for scheduling
+  (§6.7). Endpoint reference: `docs/API.md` "Batches".
+- Full local walkthrough (enqueue, watch, drain, inspect a stuck queue),
+  every `JOB_QUEUE_*`/`SERVICE_BUS_*` config variable, and the Azure build
+  sheet: `docs/DEPLOYMENT.md` §3, §4, §6.
 
 ## 1. CMIR / PO Validation operations
 
@@ -53,7 +64,7 @@ Loaded once into `app/core/config.py::Settings` (pydantic-settings), same as the
 config below. Minimum required beyond `DATABASE_URL`: `EMAIL_USERNAME`/
 `EMAIL_PASSWORD`/`IMAP_SERVER`, `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_ENDPOINT`/
 `AZURE_OPENAI_DEPLOYMENT_NAME`. Service Bus needs
-`SERVICEBUS_FULLY_QUALIFIED_NAMESPACE`/`SERVICE_BUS_CONNECTION_STRING` for anything
+`SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE`/`SERVICE_BUS_CONNECTION_STRING` for anything
 beyond local defaults. **Never commit `.env` or `local.settings.json`** -- rotate any
 credential that leaks outside a secrets manager.
 

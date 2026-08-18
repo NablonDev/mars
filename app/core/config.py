@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     email_max_per_run: int = 10
 
     # CMIR: Azure Service Bus (mail-processing queue)
-    servicebus_fully_qualified_namespace: str = "sb-mail-agent-dev.servicebus.windows.net"
+    service_bus_fully_qualified_namespace: str = "sb-mail-agent-dev.servicebus.windows.net"
     service_bus_queue_name: str = "mail-processing-queue"
     service_bus_session_id: str = "mail-processing"
     service_bus_max_wait_seconds: int = 30
@@ -182,7 +182,7 @@ class ServiceBusConfig:
     @classmethod
     def from_settings(cls, settings: Settings) -> ServiceBusConfig:
         return cls(
-            fully_qualified_namespace=settings.servicebus_fully_qualified_namespace,
+            fully_qualified_namespace=settings.service_bus_fully_qualified_namespace,
             queue_name=settings.service_bus_queue_name,
             session_id=settings.service_bus_session_id,
             max_wait_time_seconds=settings.service_bus_max_wait_seconds,
