@@ -1,27 +1,32 @@
 # One Compose file for local development and production.
 #
-# Local:
-#   docker compose --profile local up --build
+# Local Docker:
+#   docker compose up --build
+#
+# Local API running outside Docker:
+#   DATABASE_URL=postgresql+psycopg://mars:mars@localhost:5433/mars \
+#   uvicorn app.main:app --reload
 #
 # Production with an external PostgreSQL:
 #   DATABASE_URL=postgresql+psycopg://... docker compose up --build
 #
 # The application always consumes DATABASE_URL.
-# Local Compose supplies a Docker-network URL by default.
+# When DATABASE_URL is not explicitly provided, Compose uses the
+# local Docker PostgreSQL service.
 
 x-app-database: &app-database
-  DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-mars}:${POSTGRES_PASSWORD:-mars}@db:5432/${POSTGRES_DB:-mars}}
-
+  DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-mars}:${POSTGRES_PASSWORD:-mars}@${POSTGRES_HOST:-localhost}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-mars}}
 
 services:
-  db:
+  postgres:
     image: postgres:18-alpine
+    container_name: mars-db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mars}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mars}
       POSTGRES_DB: ${POSTGRES_DB:-mars}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - mars_postgres_data:/var/lib/postgresql
     healthcheck:
@@ -30,10 +35,11 @@ services:
       timeout: 5s
       retries: 10
 
-  api:
+  backend:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: mars-backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
@@ -58,7 +64,7 @@ services:
       SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE:-}
       SERVICE_BUS_CONNECTION_STRING: ${SERVICE_BUS_CONNECTION_STRING:-}
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
 
   # Local stand-in for the standalone Service Bus consumer process.
@@ -67,6 +73,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: mars-cmir-consumer
     command: python -m app.workers.service_bus_consumer
     profiles:
       - tools
@@ -75,7 +82,7 @@ services:
       SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE:-}
       SERVICE_BUS_CONNECTION_STRING: ${SERVICE_BUS_CONNECTION_STRING:-}
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
 
   # Run explicitly: docker compose --profile tools run --rm migrate
@@ -89,18 +96,19 @@ services:
     environment:
       <<: *app-database
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
 
   # Local stand-in for the Azure Container Apps Job.
   # Run with: docker compose --profile tools run --rm worker
-  worker:
+  fines-projection-worker:
     build:
       context: .
       dockerfile: Dockerfile
     command: python scripts/ops/run_daily_batch.py
     profiles:
       - tools
+    container_name: mars-fines-projection-worker
     environment:
       <<: *app-database
       ENVIRONMENT: ${ENVIRONMENT:-development}
@@ -114,7 +122,7 @@ services:
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
       AZURE_OPENAI_DEPLOYMENT_NAME: ${AZURE_OPENAI_DEPLOYMENT_NAME:-}
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
 
 volumes:
