@@ -56,7 +56,7 @@ class PostgresCMIRRepositoryIntegrationTests(unittest.TestCase):
     def tearDown(self) -> None:
         with self.database.session() as session:
             session.execute(
-                text("DELETE FROM cmir_records WHERE customer_identity = :customer_identity"),
+                text("DELETE FROM cmir.cmir_records WHERE customer_identity = :customer_identity"),
                 {"customer_identity": self.customer_identity},
             )
 

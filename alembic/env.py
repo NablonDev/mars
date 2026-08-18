@@ -14,9 +14,13 @@ This project uses three PostgreSQL schemas:
 
     public
         Models without an explicit schema in __table_args__ live here.
-        Currently unused -- a future public/cmir cross-domain split
-        (shared agent registry/observability tables consumable by other
-        projects) is deferred, not yet implemented.
+        Currently holds no domain tables of either project's -- a future
+        public/cmir cross-domain split (shared agent registry/observability
+        tables consumable by other projects) is deferred, not yet
+        implemented. It does, however, already hold Alembic's own version
+        table (see below): that's app-wide bookkeeping, not fines- or
+        cmir-specific, so it belongs here rather than in either domain's
+        schema.
 
     cmir
         CMIR/PO-validation models explicitly use:
@@ -33,9 +37,10 @@ This project uses three PostgreSQL schemas:
                 "schema": FINES_SCHEMA
             }
 
-Alembic's own version table lives in `fines` so that a single linear
-migration history covers every schema this project owns -- there's no
-second project with a competing history in `public` anymore.
+Alembic's own version table lives in `public` -- it tracks one linear
+migration history covering every schema this project owns, so it belongs
+in the schema neither domain owns, not tucked inside `fines` or `cmir` as
+if it were one domain's private bookkeeping.
 
 Autogenerate is restricted to the schemas owned by this project:
     - public
@@ -67,7 +72,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from app.core.config import get_settings
-from app.db.base import CMIR_SCHEMA, FINES_SCHEMA
+from app.db.base import CMIR_SCHEMA, FINES_SCHEMA, PUBLIC_SCHEMA
 from app.db.session import apply_sqlite_schema_translation
 from app.models import Base
 
@@ -85,13 +90,19 @@ target_metadata = Base.metadata
 def include_name(name: str | None, type_: str, parent_names: dict[str, str | None]) -> bool:
     """Restrict Alembic autogenerate to schemas owned by this project."""
     if type_ == "schema":
-        return name is None or name in (CMIR_SCHEMA, FINES_SCHEMA)
+        return name is None or name in (CMIR_SCHEMA, FINES_SCHEMA, PUBLIC_SCHEMA)
     return True
 
 
 def _version_table_schema(dialect_name: str) -> str | None:
-    """Return the schema in which Alembic should store its version table."""
-    return None if dialect_name == "sqlite" else FINES_SCHEMA
+    """Return the schema in which Alembic should store its version table.
+
+    `public` rather than `fines`/`cmir`: the version table tracks one
+    history spanning both domains' schemas, so it belongs in the schema
+    neither domain owns. `public` always exists on Postgres already, so
+    unlike `fines`/`cmir` it needs no explicit `CREATE SCHEMA` step.
+    """
+    return None if dialect_name == "sqlite" else PUBLIC_SCHEMA
 
 
 def ensure_project_schemas_exist(connection: Connection) -> None:
@@ -99,8 +110,9 @@ def ensure_project_schemas_exist(connection: Connection) -> None:
 
     Runs once before migrations so a brand-new database doesn't need a
     hand-run `CREATE SCHEMA` before `alembic upgrade head` -- covers both
-    the schema the version table lives in (fines) and every other schema a
-    migration might create tables in (cmir), not just the former.
+    domain schemas a migration might create tables in. `public` (where the
+    version table lives, see `_version_table_schema`) is not listed here:
+    it's Postgres's own default schema and always exists already.
     """
     if connection.dialect.name == "sqlite":
         return

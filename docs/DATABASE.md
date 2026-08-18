@@ -17,20 +17,21 @@ database, split across separate **schemas**:
   `agent_traces`, `hitl_actions`, `pending_human_actions`) -- see "CMIR /
   PO Validation tables" below for the per-table reference.
 - **`fines`** -- every table the Projected Fines domain owns (all 16, see
-  "Tables" below), plus the shared Alembic bookkeeping table
-  (`fines.alembic_version` -- one linear migration history covers both
-  schemas, so it doesn't matter which one anchors the version table).
-  Declared in `app/db/base.py::FINES_SCHEMA`.
-- **`public`** -- currently unused by either domain. A future split that
-  moves the genuinely cross-domain agent-observability tables
-  (`agent_runs`, `agent_traces`, `hitl_actions`) into `public` so a third,
-  unrelated agent project could consume them without depending on `cmir`
-  internals is a real idea that came up while merging the two domains
-  together, but was explicitly deferred -- not implemented in this pass.
-  If/when it happens, `workflow_threads` and `pending_human_actions` stay
-  in `cmir` (they FK into cmir-private tables like
-  `email_events`/`po_lines`), so revisit this split table-by-table rather
-  than moving the whole set at once.
+  "Tables" below). Declared in `app/db/base.py::FINES_SCHEMA`.
+- **`public`** -- holds no domain tables of either project's yet (a future
+  split that moves the genuinely cross-domain agent-observability tables
+  -- `agent_runs`, `agent_traces`, `hitl_actions` -- into `public` so a
+  third, unrelated agent project could consume them without depending on
+  `cmir` internals is a real idea that came up while merging the two
+  domains together, but was explicitly deferred, not implemented in this
+  pass; if/when it happens, `workflow_threads` and `pending_human_actions`
+  stay in `cmir` since they FK into cmir-private tables like
+  `email_events`/`po_lines`, so revisit this split table-by-table rather
+  than moving the whole set at once). It does already hold Alembic's own
+  bookkeeping table, `public.alembic_version` -- one linear migration
+  history covers both domain schemas, so that table belongs in the schema
+  neither domain owns, not tucked inside `fines` or `cmir` as if it were
+  one domain's private state.
 
 Every FK string across both domains is schema-qualified
 (`ForeignKey(f"{CMIR_SCHEMA}.agent_runs.id")`, matching the existing

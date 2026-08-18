@@ -10,6 +10,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 CMIR_SCHEMA = "cmir"
 FINES_SCHEMA = "fines"
+PUBLIC_SCHEMA = "public"
 
 # Keep index names aligned with the names used by Alembic migrations.
 INDEX_NAMING_CONVENTION = {

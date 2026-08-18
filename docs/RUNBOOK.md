@@ -220,9 +220,10 @@ that.
 
 Three consequences worth knowing:
 
-- Alembic's own `alembic_version` bookkeeping table lives in `fines`
-  (`version_table_schema` in `alembic/env.py`) -- one linear migration
-  history covers both schemas, so there's nothing for it to collide with.
+- Alembic's own `alembic_version` bookkeeping table lives in `public`
+  (`version_table_schema` in `alembic/env.py`), not in either domain's own
+  schema -- it tracks one linear migration history covering both, so it
+  belongs in the schema neither domain owns.
 - `alembic/env.py::ensure_project_schemas_exist` runs `CREATE SCHEMA IF
   NOT EXISTS for both `cmir` and `fines` before Alembic touches anything
   else, so `alembic upgrade head` bootstraps a brand-new empty database
