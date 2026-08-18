@@ -24,43 +24,24 @@ date via `GET /orders/{id}/projections` and passes that as `as_of_date`
 sensible answer while the mock scenario dates (Aug 2026) and the real
 calendar date coincide. Summarizing an order with no projections yet is a
 clean skip, not a crash -- run `demo_daily_simulation.py` (or
-`projections/run`) first.
+`POST /orders/{order_id}/projections`) first.
 
 Usage:
     uvicorn app.main:app --reload &
-    python scripts/seed_master_data.py
-    python scripts/demo_daily_simulation.py
+    python scripts/demo/seed_master_data.py
+    python scripts/demo/demo_daily_simulation.py
 
-    python scripts/demo_fine_summary.py                              # every order on file
-    python scripts/demo_fine_summary.py --order-id WMT-100234         # one order
-    python scripts/demo_fine_summary.py --order-id WMT-100234 --force-regenerate
+    python scripts/demo/demo_fine_summary.py                              # every order on file
+    python scripts/demo/demo_fine_summary.py --order-id WMT-100234         # one order
+    python scripts/demo/demo_fine_summary.py --order-id WMT-100234 --force-regenerate
 """
 
 import argparse
 import sys
-import time
 from datetime import UTC, datetime
 
 import httpx
-
-POLL_INTERVAL_SECONDS = 2.0
-POLL_TIMEOUT_SECONDS = 120.0
-
-
-def _error_message(resp: httpx.Response) -> str:
-    """Handles both this app's `{"error": {"message": ...}}` envelope
-    (app/core/exceptions.py) and the plain `{"detail": ...}` shape a few
-    not-yet-migrated routes still raise via bare `HTTPException` --
-    see the reviewer's carried-over note in PROGRESS.local.md."""
-    try:
-        body = resp.json()
-    except ValueError:
-        return resp.text
-    if isinstance(body, dict) and "error" in body:
-        return body["error"].get("message", resp.text)
-    if isinstance(body, dict) and "detail" in body:
-        return str(body["detail"])
-    return resp.text
+from _helpers import POLL_TIMEOUT_SECONDS, _error_message, _poll_until_ready
 
 
 def _latest_projection_date(base_url: str, order_id: str) -> str | None:
@@ -84,23 +65,6 @@ def _latest_projection_date(base_url: str, order_id: str) -> str | None:
 def _print_summary(order_id: str, body: dict) -> None:
     print(f"\n=== {order_id} -- as of {body['as_of_date']} (model={body['model_name']}) ===")
     print(body["summary"])
-
-
-def _poll_until_ready(base_url: str, order_id: str, as_of_date: str) -> dict | None:
-    """Polls `GET .../summary` until the job leaves PENDING, or gives
-    up after POLL_TIMEOUT_SECONDS. Returns the job body (status READY or
-    FAILED) or None on timeout."""
-    deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        resp = httpx.get(
-            f"{base_url}/orders/{order_id}/summary", params={"as_of_date": as_of_date}, timeout=30
-        )
-        resp.raise_for_status()
-        job = resp.json()
-        if job["status"] != "PENDING":
-            return job
-        time.sleep(POLL_INTERVAL_SECONDS)
-    return None
 
 
 def _summarize_one(base_url: str, order_id: str, force_regenerate: bool) -> None:
@@ -158,7 +122,7 @@ def main() -> None:
         resp.raise_for_status()
         order_ids = [o["order_id"] for o in resp.json()]
         if not order_ids:
-            print("No orders on file -- run scripts/seed_master_data.py first", file=sys.stderr)
+            print("No orders on file -- run scripts/demo/seed_master_data.py first", file=sys.stderr)
             sys.exit(1)
 
     for order_id in order_ids:

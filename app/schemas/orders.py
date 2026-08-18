@@ -1,6 +1,7 @@
 """API schemas for order-related operations."""
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -17,6 +18,10 @@ class OrderRequest(BaseModel):
     required_ship_date: date
     carrier_id: str | None = None
     order_status: str = "OPEN"
+
+
+class OrderResponse(OrderRequest):
+    pass
 
 
 class ConfirmationRequest(BaseModel):
@@ -38,7 +43,7 @@ class ShipmentEventRequest(BaseModel):
     carrier_id: str | None = None
     expected_ship_date: date | None = None
     actual_ship_date: date | None = None
-    appointment_status: str = "SCHEDULED"
+    appointment_status: Literal["SCHEDULED", "RESCHEDULED", "MISSED", "COMPLETED"] = "SCHEDULED"
     expected_transit_days: int = 2
     recorded_at: datetime
 

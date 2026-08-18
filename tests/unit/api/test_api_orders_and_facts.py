@@ -68,8 +68,8 @@ def test_shipment_history_backfills_correctly(seeded_client):
     into a single current-state row."""
 
     # Day 1: appointment scheduled normally.
-    seeded_client.put(
-        "/api/v1/orders/WMT-100234/shipment",
+    seeded_client.post(
+        "/api/v1/orders/WMT-100234/shipments",
         json={
             "carrier_id": "CAR-SWIFT",
             "appointment_status": "SCHEDULED",
@@ -78,8 +78,8 @@ def test_shipment_history_backfills_correctly(seeded_client):
         },
     )
     # Day 2 (later): appointment gets missed.
-    seeded_client.put(
-        "/api/v1/orders/WMT-100234/shipment",
+    seeded_client.post(
+        "/api/v1/orders/WMT-100234/shipments",
         json={
             "carrier_id": "CAR-SWIFT",
             "appointment_status": "MISSED",
@@ -91,23 +91,21 @@ def test_shipment_history_backfills_correctly(seeded_client):
     # Backfilled projection for Aug 5 (after the first event, before the
     # second) must see SCHEDULED, not MISSED.
     before = seeded_client.post(
-        "/api/v1/projections/run",
+        "/api/v1/orders/WMT-100234/projections",
         json={
-            "order_id": "WMT-100234",
             "projection_date": "2026-08-05",
         },
-    ).json()[0]
+    ).json()
     delay_before = next(v for v in before["violations"] if v["violation_type"] == "OTIF_LATE")
 
     # Projection for Aug 9 (after the second event) must see MISSED,
     # which pushes delay probability up sharply.
     after = seeded_client.post(
-        "/api/v1/projections/run",
+        "/api/v1/orders/WMT-100234/projections",
         json={
-            "order_id": "WMT-100234",
             "projection_date": "2026-08-09",
         },
-    ).json()[0]
+    ).json()
     delay_after = next(v for v in after["violations"] if v["violation_type"] == "OTIF_LATE")
 
     assert delay_after["probability"] > delay_before["probability"]

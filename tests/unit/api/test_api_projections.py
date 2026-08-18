@@ -31,14 +31,13 @@ class _FakeChatClient:
 
 def test_baseline_projection_matches_calibration_doc(seeded_client):
     resp = seeded_client.post(
-        "/api/v1/projections/run",
+        "/api/v1/orders/WMT-100234/projections",
         json={
-            "order_id": "WMT-100234",
             "projection_date": "2026-08-02",
         },
     )
-    assert resp.status_code == 200, resp.text
-    [result] = resp.json()
+    assert resp.status_code == 201, resp.text
+    result = resp.json()
 
     assert result["shortage_probability"] == 0.05
     assert result["delay_probability"] == 0.05
@@ -50,9 +49,8 @@ def test_baseline_projection_matches_calibration_doc(seeded_client):
 
 def test_projection_history_and_exposure_after_run(seeded_client):
     seeded_client.post(
-        "/api/v1/projections/run",
+        "/api/v1/orders/WMT-100234/projections",
         json={
-            "order_id": "WMT-100234",
             "projection_date": "2026-08-02",
         },
     )
@@ -68,16 +66,14 @@ def test_projection_history_and_exposure_after_run(seeded_client):
 
 def test_rerunning_same_order_date_updates_not_duplicates(seeded_client):
     seeded_client.post(
-        "/api/v1/projections/run",
+        "/api/v1/orders/WMT-100234/projections",
         json={
-            "order_id": "WMT-100234",
             "projection_date": "2026-08-02",
         },
     )
     seeded_client.post(
-        "/api/v1/projections/run",
+        "/api/v1/orders/WMT-100234/projections",
         json={
-            "order_id": "WMT-100234",
             "projection_date": "2026-08-02",
         },
     )
@@ -86,13 +82,23 @@ def test_rerunning_same_order_date_updates_not_duplicates(seeded_client):
 
 
 def test_run_projection_for_unknown_order_is_404(seeded_client):
-    resp = seeded_client.post("/api/v1/projections/run", json={"order_id": "NOPE-999"})
+    resp = seeded_client.post("/api/v1/orders/NOPE-999/projections", json={})
     assert resp.status_code == 404
 
 
-def test_run_projection_without_order_id_or_all_open_is_422(seeded_client):
+def test_run_projection_without_all_open_is_422(seeded_client):
     resp = seeded_client.post("/api/v1/projections/run", json={})
     assert resp.status_code == 422
+
+
+def test_run_projection_with_lone_order_id_is_422_and_points_at_new_route(seeded_client):
+    """The narrowed /projections/run contract: a lone order_id (no
+    all_open=true) is rejected, pointing the caller at
+    POST /orders/{order_id}/projections instead -- no backward-compat
+    window, this is a deliberate split."""
+    resp = seeded_client.post("/api/v1/projections/run", json={"order_id": "WMT-100234"})
+    assert resp.status_code == 422
+    assert "orders/{order_id}/projections" in resp.json()["error"]["message"]
 
 
 def test_run_projection_for_retailer_with_no_rules_is_422(client):
@@ -114,7 +120,7 @@ def test_run_projection_for_retailer_with_no_rules_is_422(client):
         },
     )
 
-    resp = client.post("/api/v1/projections/run", json={"order_id": "ORD-NORULES"})
+    resp = client.post("/api/v1/orders/ORD-NORULES/projections", json={})
     assert resp.status_code == 422
 
 
@@ -158,7 +164,7 @@ def test_run_projection_with_corrupt_calc_type_is_500(client, db_session):
     )
     db_session.commit()
 
-    resp = client.post("/api/v1/projections/run", json={"order_id": "ORD-CORRUPT"})
+    resp = client.post("/api/v1/orders/ORD-CORRUPT/projections", json={})
 
     assert resp.status_code == 500, resp.text
     assert resp.json()["error"]["code"] == "INVALID_FINE_RULE_DATA"

@@ -12,9 +12,6 @@ from pydantic import SecretStr
 
 from app.core.config import Settings
 
-DEFAULT_TIMEOUT_SECONDS = 90.0
-DEFAULT_MAX_RETRIES = 2
-
 
 class AzureOpenAIConfigError(RuntimeError):
     """Raised when Azure OpenAI configuration is missing."""
@@ -27,8 +24,8 @@ class AzureOpenAIChatClient:
         self,
         settings: Settings,
         *,
-        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
-        max_retries: int = DEFAULT_MAX_RETRIES,
+        timeout_seconds: float | None = None,
+        max_retries: int | None = None,
     ) -> None:
         if not (
             settings.azure_openai_api_key
@@ -40,6 +37,11 @@ class AzureOpenAIChatClient:
                 "AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and "
                 "AZURE_OPENAI_DEPLOYMENT_NAME."
             )
+
+        if timeout_seconds is None:
+            timeout_seconds = settings.azure_openai_timeout_seconds
+        if max_retries is None:
+            max_retries = settings.azure_openai_max_attempts
 
         self._model_name = settings.azure_openai_deployment_name
         self._llm = ChatOpenAI(

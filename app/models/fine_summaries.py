@@ -7,6 +7,7 @@ from sqlalchemy import Date, DateTime, ForeignKey, ForeignKeyConstraint, String,
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
+from app.models.enums import SummaryStatus
 
 
 class FineSummary(Base):
@@ -31,7 +32,13 @@ class FineSummary(Base):
     agent_id: Mapped[UUID] = mapped_column(UUID_PK)
     prompt_version: Mapped[str] = mapped_column(String(20))
     context_hash: Mapped[str] = mapped_column(String(64))  # sha256 hex digest, diagnostic only
-    status: Mapped[str] = mapped_column(String(20), default="PENDING")  # PENDING / READY / FAILED
+    content_fingerprint: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )  # sha256 hex digest of the generated narrative; nullable so existing rows migrate cleanly
+    source_as_of_date: Mapped[date | None] = mapped_column(
+        Date, nullable=True
+    )  # the date the narrative was actually generated for, when a summary is reused across days
+    status: Mapped[str] = mapped_column(String(20), default=SummaryStatus.PENDING)  # PENDING / READY / FAILED
     model_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)  # free-text; null until READY
     error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)  # set only when FAILED

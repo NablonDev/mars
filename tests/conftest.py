@@ -7,7 +7,7 @@ service required.
 No composition-root class to stub here: the FastAPI app builds its own
 `Database` in a `lifespan` handler, and `TestClient(app)` used outside a
 `with` block never runs lifespan -- so `app.state.database` is never
-populated in tests. Both `get_db` (per-request Session) and
+populated in tests. Both `get_session` (per-request Session) and
 `get_database` (the process-wide engine, used by the health check) are
 overridden to point at the SQLite fixture instead.
 """
@@ -18,9 +18,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 
-from app.api.dependencies import get_database, get_db
+from app.api.dependencies import get_database, get_job_queue, get_session
+from app.core.config import Settings
 from app.db.session import Database
 from app.main import create_app
+from app.queue.factory import build_job_queue
 from app.repositories.agent_registry import PromptRegistryRepository
 from app.repositories.fine_rule import FineRuleRepository
 from app.repositories.master_data import MasterDataRepository
@@ -42,7 +44,20 @@ def database() -> Database:
 
 
 @pytest.fixture
-def app(database: Database):
+def job_queue(database: Database):
+    """The default ("postgres") backend, built against the SQLite test
+    `database` fixture -- `PostgresJobQueue` only ever wraps
+    `JobQueueRepository` calls, which already has a SQLite-compatible
+    fallback for every method (see that module's docstring), so this
+    needs no real Postgres. A plain `Settings()` (not `get_settings()`)
+    is used deliberately so this is never affected by whatever
+    `JOB_QUEUE_BACKEND` happens to be set in the local environment/.env.
+    """
+    return build_job_queue(Settings(), database)
+
+
+@pytest.fixture
+def app(database: Database, job_queue):
     application = create_app()
 
     def _get_test_db():
@@ -56,8 +71,9 @@ def app(database: Database):
         finally:
             session.close()
 
-    application.dependency_overrides[get_db] = _get_test_db
+    application.dependency_overrides[get_session] = _get_test_db
     application.dependency_overrides[get_database] = lambda: database
+    application.dependency_overrides[get_job_queue] = lambda: job_queue
     return application
 
 

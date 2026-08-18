@@ -24,7 +24,7 @@ from alembic import command
 from app.db.session import apply_sqlite_schema_translation
 from app.models import Base
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _tables_and_columns(engine) -> dict[str, set[str]]:

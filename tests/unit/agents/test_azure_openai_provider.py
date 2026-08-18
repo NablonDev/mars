@@ -55,7 +55,7 @@ def test_constructor_defaults_match_module_constants(mock_chat_openai: MagicMock
         api_key=SecretStr("fake-key"),
         model="fake-deployment",
         timeout=90.0,
-        max_retries=2,
+        max_retries=3,
     )
 
 

@@ -1,14 +1,16 @@
 """Tests for FineSummaryService, using a hand-written fake chat client instead of a LangChain mock."""
 
+from contextlib import suppress
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from langchain_core.messages import ToolMessage
 
 from app.agents.fine_summary_schema import FineSummaryOutput
-from app.agents.prompts.fine_summary.v2 import PROMPT_VERSION
-from app.core.exceptions import OrderNotFoundError
+from app.agents.prompts.fine_summary.v3 import PROMPT_VERSION
+from app.core.exceptions import OrderNotFoundError, ToolLoopExhaustedError
 from app.repositories.fine_summary import FineSummaryRepository
 from app.services.fine_projection import ProjectionResult, ViolationProjection
 from app.services.fine_summary import (
@@ -111,6 +113,75 @@ def _seed_flat_rule_order(services, order_id: str = "ORD-EXP") -> None:
     )
 
 
+def _seed_identical_projection(
+    services,
+    order_id: str,
+    projection_date: date,
+    *,
+    days_to_delivery: int = 0,
+) -> None:
+    """Same violations/total/stacking as _seed_flat_rule_order's own
+    projection -- with no confirmation/production/appointment rows ever
+    recorded, OrderRepository.build_snapshot returns identical defaults
+    for any date, so together this produces a content_fingerprint
+    identical to the one _seed_flat_rule_order's day produces.
+    `days_to_delivery` defaults to a value deliberately different from
+    _seed_flat_rule_order's (3) -- it's excluded from the fingerprint, so
+    that alone must never gate reuse."""
+    services.projections.save_result(
+        ProjectionResult(
+            order_id=order_id,
+            projection_date=projection_date,
+            days_to_delivery=days_to_delivery,
+            shortage_probability=0.05,
+            delay_probability=0.05,
+            violations=[
+                ViolationProjection(
+                    violation_type="OTIF_LATE",
+                    rule_id="RULE-EXP-FLAT",
+                    probability=0.05,
+                    fine_if_realized=50.0,
+                    expected_fine=2.5,
+                )
+            ],
+            total_expected_fine=2.5,
+            stacking_mode="SUM",
+        )
+    )
+
+
+def _seed_different_projection(services, order_id: str, projection_date: date) -> None:
+    """A projection whose outputs genuinely differ from
+    _seed_flat_rule_order's day -- a different content_fingerprint."""
+    services.projections.save_result(
+        ProjectionResult(
+            order_id=order_id,
+            projection_date=projection_date,
+            days_to_delivery=0,
+            shortage_probability=0.55,
+            delay_probability=0.55,
+            violations=[
+                ViolationProjection(
+                    violation_type="OTIF_LATE",
+                    rule_id="RULE-EXP-FLAT",
+                    probability=0.55,
+                    fine_if_realized=50.0,
+                    expected_fine=27.5,
+                )
+            ],
+            total_expected_fine=27.5,
+            stacking_mode="SUM",
+        )
+    )
+
+
+def _enable_reuse(monkeypatch, *, max_reuse_days: int = 7) -> None:
+    monkeypatch.setattr(
+        "app.services.fine_summary.get_settings",
+        lambda: SimpleNamespace(summary_reuse_enabled=True, summary_max_reuse_days=max_reuse_days),
+    )
+
+
 @pytest.fixture
 def summary_repo(db_session) -> FineSummaryRepository:
     return FineSummaryRepository(db_session)
@@ -135,11 +206,18 @@ def _schedule_and_run(
     force_regenerate: bool = False,
 ) -> FineSummaryJob:
     """Runs get_or_schedule, then run_generation inline on a PENDING result --
-    what a BackgroundTasks worker does, minus an actual background thread."""
+    what a BackgroundTasks worker does, minus an actual background thread.
+
+    run_generation re-raises on failure (see the "run_generation re-raises
+    on failure" tests below) after persisting the FAILED ledger row --
+    swallow it here exactly as app.api.dependencies.get_fine_summary_job_runner
+    does, since this helper's callers care about the resulting ledger state
+    (via get_status), not about propagating the exception themselves."""
     job = service.get_or_schedule(order_id, as_of_date=as_of_date, force_regenerate=force_regenerate)
     if job.status != "PENDING":
         return job
-    service.run_generation(job.order_id, job.as_of_date, job.prompt_version)
+    with suppress(Exception):
+        service.run_generation(job.order_id, job.as_of_date, job.prompt_version)
     return service.get_status(job.order_id, as_of_date=job.as_of_date)
 
 
@@ -583,3 +661,342 @@ def test_ready_output_reconstructed_from_the_rows_own_columns(services, summary_
     assert job.output.prompt_version == PROMPT_VERSION
     assert job.output.model_name == "fake-model"
     assert job.output.summary == "The current total is $2.50 because of a flat OTIF fee."
+
+
+# ---------------------------------------------------------------------------
+# Reuse (settings.summary_reuse_enabled)
+# ---------------------------------------------------------------------------
+
+
+def test_reuse_disabled_by_default_makes_a_fresh_llm_call(services, summary_repo):
+    """Reuse is opt-in (summary_reuse_enabled defaults to False) -- a
+    second day with an identical content_fingerprint must still generate
+    a fresh summary when the setting is untouched."""
+    _seed_flat_rule_order(services)
+    _seed_identical_projection(services, "ORD-EXP", date(2026, 8, 6))
+    fake_llm = FakeChatClient()
+    service = _build_service(services, summary_repo, fake_llm)
+
+    _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 5))
+    assert len(fake_llm.invocations) == 2
+
+    second = _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 6))
+
+    assert second.status == "READY"
+    assert len(fake_llm.invocations) == 4  # a second, fresh generation ran
+    assert second.output.is_reused is False
+
+
+def test_reuse_enabled_with_matching_fingerprint_reuses_without_an_llm_call(
+    services, summary_repo, monkeypatch
+):
+    _enable_reuse(monkeypatch)
+    _seed_flat_rule_order(services)
+    _seed_identical_projection(services, "ORD-EXP", date(2026, 8, 6))
+    fake_llm = FakeChatClient(final_content="Flat $2.50 expected OTIF fee, unchanged.")
+    service = _build_service(services, summary_repo, fake_llm)
+
+    first = _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 5))
+    assert first.status == "READY"
+    invocations_after_first = len(fake_llm.invocations)
+
+    job = service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 6))
+
+    # READY immediately -- no PENDING step, no new LLM call.
+    assert job.status == "READY"
+    assert len(fake_llm.invocations) == invocations_after_first
+    assert job.output.summary == first.output.summary
+    assert job.output.is_reused is True
+    assert job.output.generated_for_date == date(2026, 8, 5)
+    assert job.output.unchanged_since == date(2026, 8, 5)
+    assert job.output.unchanged_for_days == 1
+
+
+def test_reuse_outside_the_window_does_not_reuse(services, summary_repo, monkeypatch):
+    _enable_reuse(monkeypatch, max_reuse_days=1)
+    _seed_flat_rule_order(services)
+    # 3 days later, past the 1-day window, despite an identical fingerprint.
+    _seed_identical_projection(services, "ORD-EXP", date(2026, 8, 8))
+    fake_llm = FakeChatClient()
+    service = _build_service(services, summary_repo, fake_llm)
+
+    _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 5))
+    invocations_after_first = len(fake_llm.invocations)
+
+    job = service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 8))
+
+    assert job.status == "PENDING"  # no reuse hit -- scheduled fresh instead
+    assert len(fake_llm.invocations) == invocations_after_first
+
+
+def test_reuse_with_a_changed_fingerprint_does_not_reuse(services, summary_repo, monkeypatch):
+    _enable_reuse(monkeypatch)
+    _seed_flat_rule_order(services)
+    _seed_different_projection(services, "ORD-EXP", date(2026, 8, 6))
+    fake_llm = FakeChatClient()
+    service = _build_service(services, summary_repo, fake_llm)
+
+    _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 5))
+    invocations_after_first = len(fake_llm.invocations)
+
+    job = service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 6))
+
+    assert job.status == "PENDING"
+    assert len(fake_llm.invocations) == invocations_after_first
+
+
+def test_force_regenerate_bypasses_reuse_entirely(services, summary_repo, monkeypatch):
+    _enable_reuse(monkeypatch)
+    _seed_flat_rule_order(services)
+    _seed_identical_projection(services, "ORD-EXP", date(2026, 8, 6))
+    fake_llm = FakeChatClient()
+    service = _build_service(services, summary_repo, fake_llm)
+
+    _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 5))
+    invocations_after_first = len(fake_llm.invocations)
+
+    job = service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 6), force_regenerate=True)
+
+    # force_regenerate skips reuse (and the cache) just like it always
+    # has -- straight to a fresh PENDING job.
+    assert job.status == "PENDING"
+    assert len(fake_llm.invocations) == invocations_after_first
+
+    service.run_generation(job.order_id, job.as_of_date, job.prompt_version)
+    assert len(fake_llm.invocations) > invocations_after_first
+
+
+def test_reuse_chain_preserves_the_original_source_as_of_date(services, summary_repo, monkeypatch):
+    """Reusing FROM an already-reused row must still record the TRUE
+    origin date, not the date of the row that was actually matched --
+    otherwise a long chain of reuses would drift its "unchanged since"
+    date forward by one hop every time."""
+    _enable_reuse(monkeypatch, max_reuse_days=30)
+    _seed_flat_rule_order(services)
+    _seed_identical_projection(services, "ORD-EXP", date(2026, 8, 6))
+    _seed_identical_projection(services, "ORD-EXP", date(2026, 8, 7))
+    fake_llm = FakeChatClient()
+    service = _build_service(services, summary_repo, fake_llm)
+
+    _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 5))
+    invocations_after_first = len(fake_llm.invocations)
+
+    day2 = service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 6))
+    assert day2.status == "READY"
+    assert day2.output.unchanged_since == date(2026, 8, 5)
+
+    day3 = service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 7))
+
+    assert day3.status == "READY"
+    assert len(fake_llm.invocations) == invocations_after_first  # still no new LLM call
+    assert day3.output.unchanged_since == date(2026, 8, 5)  # the ORIGIN, not day2
+    assert day3.output.unchanged_for_days == 2
+
+
+# ---------------------------------------------------------------------------
+# run_generation re-raises on failure
+# ---------------------------------------------------------------------------
+
+
+def test_run_generation_reraises_after_persisting_the_failed_ledger_row(services, summary_repo):
+    """The worker-blocking fix: a caller that awaits run_generation
+    directly must be able to tell success from failure, so a background
+    worker can classify retry-vs-dead -- the old contract (swallow and
+    return None) made every failure look identical to success."""
+    _seed_flat_rule_order(services)
+    fake_llm = FakeChatClient(fail_invoke_on_round=0)
+    service = _build_service(services, summary_repo, fake_llm)
+
+    job = service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 5))
+    assert job.status == "PENDING"
+
+    with pytest.raises(ToolLoopExhaustedError):
+        service.run_generation(job.order_id, job.as_of_date, job.prompt_version)
+
+    # The FAILED ledger row was still written before the re-raise.
+    persisted = summary_repo.get_by_key("ORD-EXP", date(2026, 8, 5), PROMPT_VERSION)
+    assert persisted["status"] == "FAILED"
+    assert persisted["error_message"] == "Fine summary generation failed upstream"
+
+
+def test_run_generation_reraise_leaves_ledger_write_failure_handling_intact(services, summary_repo):
+    """_safe_mark_failed's own guarantee (a ledger-write failure never
+    masks the original error) still holds after the re-raise change."""
+    _seed_flat_rule_order(services)
+    fake_llm = FakeChatClient(fail_invoke_on_round=0)
+    service = _build_service(services, summary_repo, fake_llm)
+
+    job = service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 5))
+
+    with (
+        patch.object(summary_repo, "mark_failed", side_effect=RuntimeError("db is down")),
+        pytest.raises(ToolLoopExhaustedError, match="Fine summary generation failed upstream"),
+    ):
+        service.run_generation(job.order_id, job.as_of_date, job.prompt_version)
+
+
+def test_dependencies_job_runner_swallows_the_reraise_and_still_marks_failed(services, summary_repo):
+    """Regression test for app/api/dependencies.py's
+    get_fine_summary_job_runner guard: it must absorb run_generation's
+    re-raise (a BackgroundTasks callable has no retry contract of its own)
+    while the ledger row it reads back is already FAILED."""
+    _seed_flat_rule_order(services)
+    fake_llm = FakeChatClient(fail_invoke_on_round=0)
+    service = _build_service(services, summary_repo, fake_llm)
+
+    job = service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 5))
+
+    def _run(order_id: str, as_of_date: date, prompt_version: str) -> None:
+        """The exact guard shape used in get_fine_summary_job_runner._run."""
+        with suppress(Exception):
+            service.run_generation(order_id, as_of_date, prompt_version)
+
+    _run(job.order_id, job.as_of_date, job.prompt_version)  # must not raise
+
+    status = service.get_status("ORD-EXP", as_of_date=date(2026, 8, 5))
+    assert status.status == "FAILED"
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat
+# ---------------------------------------------------------------------------
+
+
+def test_heartbeat_is_invoked_once_per_tool_round(services, summary_repo):
+    _seed_flat_rule_order(services)
+    tool_call_plan = [
+        [{"id": "call-1", "name": "get_carrier_reliability_detail", "args": {"carrier_id": "CAR-EXP"}}],
+        [],  # second round: no more tool calls, breaks out of the loop
+    ]
+    fake_llm = FakeChatClient(tool_call_plan=tool_call_plan)
+    service = _build_service(services, summary_repo, fake_llm)
+
+    job = service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 5))
+    heartbeats: list[None] = []
+
+    service.run_generation(
+        job.order_id,
+        job.as_of_date,
+        job.prompt_version,
+        heartbeat=lambda: heartbeats.append(None),
+    )
+
+    # 2 tool rounds ran (round 1 called a tool, round 2 broke the loop) --
+    # one heartbeat per round, not one per llm.invoke() call (the final,
+    # tools-less call is outside the round loop and gets no heartbeat).
+    assert len(heartbeats) == 2
+
+
+def test_heartbeat_defaults_to_none_and_does_not_change_existing_behavior(services, summary_repo):
+    _seed_flat_rule_order(services)
+    fake_llm = FakeChatClient()
+    service = _build_service(services, summary_repo, fake_llm)
+
+    job = service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 5))
+    service.run_generation(job.order_id, job.as_of_date, job.prompt_version)  # no heartbeat kwarg
+
+    status = service.get_status("ORD-EXP", as_of_date=date(2026, 8, 5))
+    assert status.status == "READY"
+
+
+def test_a_raising_heartbeat_does_not_break_generation(services, summary_repo):
+    _seed_flat_rule_order(services)
+    fake_llm = FakeChatClient(final_content="All clear despite a flaky heartbeat.")
+    service = _build_service(services, summary_repo, fake_llm)
+
+    job = service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 5))
+
+    def _flaky_heartbeat() -> None:
+        raise RuntimeError("lease renewal transiently failed")
+
+    service.run_generation(
+        job.order_id,
+        job.as_of_date,
+        job.prompt_version,
+        heartbeat=_flaky_heartbeat,
+    )
+
+    status = service.get_status("ORD-EXP", as_of_date=date(2026, 8, 5))
+    assert status.status == "READY"
+    assert status.output.summary == "All clear despite a flaky heartbeat."
+
+
+# ---------------------------------------------------------------------------
+# Response schema backward compatibility
+# ---------------------------------------------------------------------------
+
+
+def test_non_reused_output_carries_backward_compatible_reuse_defaults(services, summary_repo):
+    """A freshly-generated (non-reused) summary's additive fields must be
+    exactly the documented defaults, and every pre-existing field must be
+    byte-identical to what it was before this feature existed."""
+    _seed_flat_rule_order(services)
+    fake_llm = FakeChatClient(final_content="Flat $2.50 expected OTIF fee.")
+    service = _build_service(services, summary_repo, fake_llm)
+
+    job = _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 5))
+
+    assert job.status == "READY"
+    assert job.output.order_id == "ORD-EXP"
+    assert job.output.as_of_date == date(2026, 8, 5)
+    assert job.output.prompt_version == PROMPT_VERSION
+    assert job.output.model_name == "fake-model"
+    assert job.output.summary == "Flat $2.50 expected OTIF fee."
+    assert job.output.is_reused is False
+    assert job.output.generated_for_date == date(2026, 8, 5)
+    assert job.output.unchanged_since is None
+    assert job.output.unchanged_for_days is None
+
+
+def test_fine_summary_response_schema_additive_fields_default(services, summary_repo):
+    """Schema-level check: FineSummaryResponse.model_validate against a
+    plain (non-reuse-aware) FineSummaryOutput -- the shape existing
+    clients built against -- still resolves the new fields to their
+    documented defaults instead of raising."""
+    from app.schemas.fine_summaries import FineSummaryResponse
+
+    plain_output = FineSummaryOutput(
+        order_id="ORD-EXP",
+        as_of_date=date(2026, 8, 5),
+        prompt_version=PROMPT_VERSION,
+        model_name="fake-model",
+        summary="Flat $2.50 expected OTIF fee.",
+    )
+
+    response = FineSummaryResponse.model_validate(plain_output)
+
+    assert response.order_id == "ORD-EXP"
+    assert response.as_of_date == date(2026, 8, 5)
+    assert response.prompt_version == PROMPT_VERSION
+    assert response.model_name == "fake-model"
+    assert response.summary == "Flat $2.50 expected OTIF fee."
+    assert response.is_reused is False
+    assert response.generated_for_date is None
+    assert response.unchanged_since is None
+    assert response.unchanged_for_days is None
+
+
+# ---------------------------------------------------------------------------
+# v3 prompt registration
+# ---------------------------------------------------------------------------
+
+
+def test_v3_prompt_version_is_registered_on_first_use(services, summary_repo):
+    """_ensure_registered must insert a new dim_prompt_version row keyed
+    on (agent_id, "v3") the first time this service runs against a fresh
+    registry -- exercising the same FK the fact_fine_summary row depends
+    on (fk_fine_summary_agent_prompt_version)."""
+    _seed_flat_rule_order(services)
+    fake_llm = FakeChatClient()
+    service = _build_service(services, summary_repo, fake_llm)
+
+    assert PROMPT_VERSION == "v3"
+
+    job = _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 5))
+
+    assert job.status == "READY"
+    assert job.output.prompt_version == "v3"
+
+    persisted = summary_repo.get_by_key("ORD-EXP", date(2026, 8, 5), "v3")
+    assert persisted is not None
+    assert persisted["status"] == "READY"
