@@ -1,6 +1,6 @@
 """Integration tests for the fine-summary endpoints; TestClient runs BackgroundTasks synchronously before returning, so a PENDING job is already resolved by the time a later GET polls it."""
 
-from app.agents.prompts.fine_summary.v2 import PROMPT_VERSION
+from app.agents.prompts.fine_summary.v3 import PROMPT_VERSION
 from app.api.dependencies import get_llm_client
 
 
@@ -83,10 +83,10 @@ def test_fine_summary_get_422s_when_no_projection_exists_yet(seeded_client):
 
 def test_fine_summary_get_404s_when_no_job_was_ever_scheduled(seeded_client):
     run_resp = seeded_client.post(
-        "/api/v1/projections/run",
-        json={"order_id": "WMT-100234", "projection_date": "2026-08-09"},
+        "/api/v1/orders/WMT-100234/projections",
+        json={"projection_date": "2026-08-09"},
     )
-    assert run_resp.status_code == 200, run_resp.text
+    assert run_resp.status_code == 201, run_resp.text
 
     resp = seeded_client.get("/api/v1/orders/WMT-100234/summary", params={"as_of_date": "2026-08-09"})
 
@@ -95,10 +95,10 @@ def test_fine_summary_get_404s_when_no_job_was_ever_scheduled(seeded_client):
 
 def test_fine_summary_202s_then_ready_on_poll_for_a_real_projected_order(seeded_client):
     run_resp = seeded_client.post(
-        "/api/v1/projections/run",
-        json={"order_id": "WMT-100234", "projection_date": "2026-08-09"},
+        "/api/v1/orders/WMT-100234/projections",
+        json={"projection_date": "2026-08-09"},
     )
-    assert run_resp.status_code == 200, run_resp.text
+    assert run_resp.status_code == 201, run_resp.text
 
     _override_llm_client(seeded_client)
 
@@ -148,10 +148,10 @@ def test_fine_summary_422s_for_an_as_of_date_in_the_future(seeded_client):
     client here would raise if it were ever actually invoked -- this
     validation must happen before anything is scheduled."""
     run_resp = seeded_client.post(
-        "/api/v1/projections/run",
-        json={"order_id": "WMT-100234", "projection_date": "2026-08-09"},
+        "/api/v1/orders/WMT-100234/projections",
+        json={"projection_date": "2026-08-09"},
     )
-    assert run_resp.status_code == 200, run_resp.text
+    assert run_resp.status_code == 201, run_resp.text
 
     _exploding_llm_client(seeded_client)
 
@@ -165,10 +165,10 @@ def test_fine_summary_422s_for_an_as_of_date_in_the_future(seeded_client):
 
 def test_fine_summary_422s_for_an_as_of_date_before_the_earliest_projection(seeded_client):
     run_resp = seeded_client.post(
-        "/api/v1/projections/run",
-        json={"order_id": "WMT-100234", "projection_date": "2026-08-09"},
+        "/api/v1/orders/WMT-100234/projections",
+        json={"projection_date": "2026-08-09"},
     )
-    assert run_resp.status_code == 200, run_resp.text
+    assert run_resp.status_code == 201, run_resp.text
 
     _exploding_llm_client(seeded_client)
 
@@ -185,10 +185,10 @@ def test_fine_summary_force_regenerate_against_an_existing_ready_row_succeeds(se
     PENDING and replaces it with freshly regenerated content, not the
     stale cached summary -- and raises no IntegrityError."""
     run_resp = seeded_client.post(
-        "/api/v1/projections/run",
-        json={"order_id": "WMT-100234", "projection_date": "2026-08-09"},
+        "/api/v1/orders/WMT-100234/projections",
+        json={"projection_date": "2026-08-09"},
     )
-    assert run_resp.status_code == 200, run_resp.text
+    assert run_resp.status_code == 201, run_resp.text
 
     _override_llm_client(seeded_client)
     first_resp = seeded_client.post(
@@ -221,10 +221,10 @@ def test_fine_summary_background_job_failure_surfaces_as_failed_status_not_a_raw
     only the generic client-safe FAILED message, same message/detail
     split AppError enforces everywhere else."""
     run_resp = seeded_client.post(
-        "/api/v1/projections/run",
-        json={"order_id": "WMT-100234", "projection_date": "2026-08-09"},
+        "/api/v1/orders/WMT-100234/projections",
+        json={"projection_date": "2026-08-09"},
     )
-    assert run_resp.status_code == 200, run_resp.text
+    assert run_resp.status_code == 201, run_resp.text
 
     seeded_client.app.dependency_overrides[get_llm_client] = lambda: FailingChatClient()
 

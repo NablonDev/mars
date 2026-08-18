@@ -13,6 +13,7 @@ from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import AccessLogMiddleware, RequestIdMiddleware
 from app.db.session import Database
+from app.queue.factory import build_job_queue
 from app.services.cmir_run_service import CMIRRunService
 from app.services.po_validation_service import PoValidationService
 
@@ -27,13 +28,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-        """One engine/connection pool per process; disposed on shutdown."""
+        """Create process-wide DB and queue resources and dispose them on shutdown."""
         app.state.database = Database(
             resolved.database_url,
             pool_size=resolved.db_pool_size,
             max_overflow=resolved.db_max_overflow,
             pool_timeout=resolved.db_pool_timeout,
         )
+        app.state.job_queue = build_job_queue(resolved, app.state.database)
         # CMIR/PO-validation services carry their own composition root
         # (LangGraph + a shared Postgres checkpointer) -- built here unless a
         # test already injected a fake via create_app(service=...).
@@ -44,6 +46,8 @@ def create_app(
         try:
             yield
         finally:
+            dispatcher, _source = app.state.job_queue
+            dispatcher.close()
             app.state.database.dispose()
             Container.close()
 

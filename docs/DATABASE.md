@@ -207,7 +207,7 @@ full history of every attempt.
 `fact_shipment` are all append-only: every write is a new row, never an
 update to an existing one. `OrderRepository.build_snapshot` always
 selects the latest row "as of" the requested projection date from each,
-which is what makes `--date` backfills (via `scripts/run_projection_cli.py`
+which is what makes `--date` backfills (via `scripts/ops/run_projection_cli.py`
 or `POST /projections/run`) reflect what was actually known on that day,
 not today's current state. See `docs/FINE_ENGINE.md` changelog for
 why `fact_shipment` specifically needed fixing to follow this pattern.
@@ -249,6 +249,80 @@ on it. Bumping the fine-summary prompt to a new version (a new
 `app/agents/prompts/fine_summary/vN.py`) self-registers on the next call;
 nothing has to be remembered or run by hand.
 
+## Batch job queue (`job_run` / `job_item`)
+
+Two tables backing the batch dispatch/claim pipeline for fine projections
+and summary regeneration, added alongside two new nullable columns on
+`fact_fine_summary` (`content_fingerprint`, `source_as_of_date` -- see the
+"Client-facing audit trail" note in `docs/mars_fines_projection_schema.sql`
+for what each supports).
+
+`job_run` is one row per batch trigger (`SCHEDULED_DAILY` / `MANUAL_BATCH`
+/ `ON_DEMAND`). It deliberately has **no status column** -- concurrent
+workers update `job_item` rows continuously while a run is in flight, and
+a status column here would mean every one of them also has to lock this
+single shared row, a hot-lock bottleneck for no real benefit. A run's
+status is *derived* at read time by grouping `job_item` rows by
+`job_run_id`/`status` (`JobQueueRepository.get_run_summary`). Do not add
+one back later without re-deriving why this was avoided.
+
+`job_item` is the work ledger -- one row per (order, projection_date,
+task_type) unit of work. `status` moves `PENDING -> RUNNING -> SUCCEEDED`,
+or `PENDING -> RUNNING -> PENDING` (retry, `available_at` pushed into the
+future) `-> ... -> DEAD`. There is deliberately **no resting `FAILED`
+state** -- see `app/models/job_queue.py::JobItem`'s docstring. `id` is a
+UUIDv7, which doubles as a FIFO tiebreaker when the claim query orders by
+`(available_at, id)`. `attempt_count` increments as part of the claim
+itself (not after dispatch), so a crash mid-attempt still consumes retry
+budget rather than retrying forever.
+
+### The partial unique index is migration-only, not on the ORM model
+
+`job_item` needs `UNIQUE (order_id, projection_date, task_type) WHERE
+status IN ('PENDING', 'RUNNING')` (named `uq_job_item_inflight`) to stop
+duplicate in-flight work for the same order/date/task while still
+allowing many terminal rows across days and retries. This is declared
+**only** as raw DDL in the migration
+(`alembic/versions/ff84c023d5e9_job_queue_and_fine_summary_fingerprint_.py`),
+never as an `Index(..., postgresql_where=...)` on `JobItem` itself:
+SQLAlchemy silently drops `postgresql_where=` on SQLite (the dialect the
+whole test suite runs against, see `tests/conftest.py`), which would leave
+a *full*, non-partial, unique index in the SQLite test database and
+wrongly reject a legitimate second terminal (`SUCCEEDED`/`DEAD`) row for
+the same key.
+
+Two direct consequences worth knowing about if you touch this table:
+
+- **`tests/test_migration_parity.py` cannot catch a divergence here
+  either way** -- it only diffs table/column names between the migration
+  and `Base.metadata.create_all()`, never indexes. This index's actual
+  correctness (does it exist, does it reject/permit the right rows) is
+  verified only against a real Postgres, in
+  `tests/integration/test_job_queue_postgres.py` -- which skips cleanly,
+  not silently, when no reachable `DATABASE_URL` is configured.
+- `Base.metadata.create_all()` (what `tests/conftest.py`'s SQLite fixture
+  uses) never creates this index either, so
+  `JobQueueRepository.enqueue`/`enqueue_many` cannot lean on a DB-level
+  constraint for idempotency in unit tests -- they fall back to an
+  application-level pre-check query instead. See the repository's own
+  docstrings for the exact dialect branching.
+
+The Alembic migration itself still has to run cleanly on both dialects
+(the SQLite half of that same migration is what `test_migration_parity.py`
+actually exercises), so the raw `CREATE UNIQUE INDEX ... WHERE ...`
+statement is dialect-branched inside the migration: schema-qualified
+(`fines.job_item`) on Postgres, unqualified on SQLite -- because
+`apply_sqlite_schema_translation`'s `schema_translate_map` only rewrites
+schema-qualified names inside SQLAlchemy-compiled DDL (`op.create_table`,
+`op.create_index`, ...), never inside a raw SQL string passed to
+`op.execute`. The same asymmetry, for the same reason, is why the
+migration's `op.add_column`/`op.drop_column` calls for the two new
+`fact_fine_summary` columns also branch on dialect instead of always
+passing `schema='fines'` -- unlike `create_table`/`create_index`, Alembic's
+ADD/DROP COLUMN DDL renders the schema-qualified table name directly
+rather than through the connection's translate map, so the same
+literal-schema-prefix problem shows up there too on SQLite.
+
 ## Schema-change checklist
 
 Per `docs/legacy/root-CLAUDE.md`/`./CLAUDE.local.md`: a **fines**-schema
@@ -281,3 +355,5 @@ doesn't need updating for cmir tables.
 | `fact_projected_fine` | -- (see above) | One row per order/rule/day |
 | `fact_actual_fine` | `actual_fine_id` | Populated post-delivery, for calibration (Phase 2) |
 | `fact_fine_summary` | -- (see below) | LLM-generated fine-summary audit trail, one row per order/day/prompt-version |
+| `job_run` | -- (no status column, see above) | One row per batch trigger |
+| `job_item` | -- (see "Batch job queue" above) | Work ledger; in-flight uniqueness enforced by a migration-only partial index |

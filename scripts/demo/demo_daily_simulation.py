@@ -15,8 +15,8 @@ response, which already carries every day's numbers.
 
 Usage:
     uvicorn app.main:app --reload &
-    python scripts/seed_master_data.py
-    python scripts/demo_daily_simulation.py
+    python scripts/demo/seed_master_data.py
+    python scripts/demo/demo_daily_simulation.py
 """
 
 import argparse

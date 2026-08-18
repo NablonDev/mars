@@ -15,6 +15,14 @@ class RunProjectionRequest(BaseModel):
     stacking_mode_override: Literal["SUM", "MAX"] | None = None
 
 
+class OrderProjectionRequest(BaseModel):
+    """Body for POST /orders/{order_id}/projections -- single-order run,
+    order_id comes from the path rather than the body."""
+
+    projection_date: date | None = None
+    stacking_mode_override: Literal["SUM", "MAX"] | None = None
+
+
 class OrderRunRequest(BaseModel):
     """Body for POST /orders/{order_id}/run -- projection, then summary."""
 

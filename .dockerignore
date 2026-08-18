@@ -1,12 +1,64 @@
-.git
-.github
-.venv
-myvenv
-__pycache__
-*.pyc
+# Security: keep secrets out of the image.
+# tests/unit/test_dockerignore.py checks the critical patterns.
 .env
+.env.*
+*.env
 local.settings.json
-.claude
-docs
-tests
+
+# VCS
+.git
+.gitignore
+.gitattributes
+.github/
+
+# Virtual environments
+.venv/
+myvenv/
+venv/
+ENV/
+
+# Python build/cache artifacts
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Not needed at runtime
+tests/
+docs/
+data/
+frontend/
 *.md
+!README.md
+
+# Container build files themselves
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+
+# Local tooling / agent config
+.claude/
+CLAUDE.local.md
+PROGRESS.local.md
+CLAUDE.md
+PROGRESS.md
+.python-version
+
+# Local scratch/backup directories
+.extra/
+.scratch/
+.bak/
+*.bak
+*.orig
+tmp/
+.tmp/

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import OrderAlreadyExistsError, OrderNotFoundError
@@ -19,6 +19,23 @@ from app.models import (
     Shipment,
 )
 from app.services.fine_projection import AppointmentStatus, OrderSnapshot, ProductionStatus
+
+
+def describe_no_open_orders(counts: dict[str, int]) -> str | None:
+    """Explain a zero-OPEN-order batch, or None when there is nothing to
+    explain (no orders at all, or some are OPEN after all).
+
+    A batch that enqueues nothing because every order is DELIVERED looks
+    identical to a broken one in the logs, so both callers say which it is.
+    """
+    if counts.get("OPEN") or not counts:
+        return None
+
+    breakdown = ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
+    return (
+        f"No OPEN orders to enqueue, but {sum(counts.values())} order(s) exist ({breakdown}). "
+        "Nothing will run until an order is OPEN -- re-seed, or reopen the existing orders."
+    )
 
 
 def _end_of_day(d: date) -> datetime:
@@ -146,6 +163,13 @@ class OrderRepository:
 
         rows = self._session.scalars(stmt).all()
         return [self.get_order(r.order_id) for r in rows]
+
+    def count_by_status(self) -> dict[str, int]:
+        """Order counts keyed by `order_status`, for diagnostics."""
+        rows = self._session.execute(
+            select(Order.order_status, func.count()).group_by(Order.order_status)
+        ).all()
+        return {status: count for status, count in rows}
 
     def set_order_status(self, order_id: str, order_status: str) -> None:
         order = self._get_order_row(order_id)

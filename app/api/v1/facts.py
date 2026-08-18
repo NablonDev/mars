@@ -27,7 +27,7 @@ def add_confirmation(
     return {"status": "recorded"}
 
 
-@router.post("/production-schedule", status_code=201)
+@router.post("/production-schedules", status_code=201)
 def add_production_status(
     body: ProductionStatusRequest,
     orders: OrderRepository = Depends(get_order_repository),
@@ -36,7 +36,7 @@ def add_production_status(
     return {"status": "recorded"}
 
 
-@router.put("/orders/{order_id}/shipment", status_code=201)
+@router.post("/orders/{order_id}/shipments", status_code=201)
 def record_shipment_event(
     order_id: str,
     body: ShipmentEventRequest,

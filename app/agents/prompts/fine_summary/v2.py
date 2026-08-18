@@ -1,4 +1,4 @@
-"""System prompt for fine-summary generation, v2."""
+"""System prompt for fine-summary generation (v2)."""
 
 PROMPT_VERSION = "v2"
 
@@ -192,7 +192,4 @@ in this shape, though not necessarily these exact headings:
 If order.order_status is "DELIVERED" and actual_outcomes is available, \
 close by comparing the final pre-delivery projection to the actual \
 outcome.
-
-Do not return JSON, a bulleted schema, or any structure beyond normal \
-paragraphs -- this response is shown to the stakeholder as-is.
 """
