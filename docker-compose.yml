@@ -33,7 +33,7 @@
 #   fines-projection-worker
 
 x-app-database: &app-database
-  DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-mars}:${POSTGRES_PASSWORD:-mars}@${POSTGRES_HOST:-localhost}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-mars}}
+  DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-mars}:${POSTGRES_PASSWORD:-mars}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-mars}}
 
 x-app-image: &app-image
   image: ${IMAGE_NAME:-mars-platform}:${IMAGE_TAG:-latest}
