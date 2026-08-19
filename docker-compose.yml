@@ -1,0 +1,149 @@
+# One Compose file for local development and production.
+#
+# Local Docker:
+#   docker compose up --build
+#
+# Local API running outside Docker:
+#   DATABASE_URL=postgresql+psycopg://mars:mars@localhost:5433/mars \
+#   uvicorn app.main:app --reload
+#
+# PRODUCTION:
+#   IMAGE_NAME=<your-registry>/mars-platform
+#   IMAGE_TAG=<git-sha>
+#   DATABASE_URL=postgresql+psycopg://...
+#   docker compose pull
+#   docker compose up -d
+#
+# The application always consumes DATABASE_URL.
+# When DATABASE_URL is not explicitly provided, Compose uses the
+# local Docker PostgreSQL service.
+#
+# IMAGE_TAG:
+#   - Local: defaults to "latest"
+#   - Production: should be the Git commit SHA
+#
+# Example production:
+#   IMAGE_NAME=myregistry.azurecr.io/mars-platform
+#   IMAGE_TAG=a83f42c
+#
+# This makes all application services use the exact same image:
+#   backend
+#   cmir-consumer
+#   migrate
+#   fines-projection-worker
+
+x-app-database: &app-database
+  DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-mars}:${POSTGRES_PASSWORD:-mars}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-mars}}
+
+x-app-image: &app-image
+  image: ${IMAGE_NAME:-mars-platform}:${IMAGE_TAG:-latest}
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: mars-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mars}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mars}
+      POSTGRES_DB: ${POSTGRES_DB:-mars}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - mars_postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mars} -d ${POSTGRES_DB:-mars}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    <<: *app-image
+    container_name: mars-backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *app-database
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DOCS_ENABLED: ${DOCS_ENABLED:-true}
+      # Azure OpenAI
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_DEPLOYMENT_NAME: ${AZURE_OPENAI_DEPLOYMENT_NAME:-}
+      AZURE_OPENAI_TIMEOUT_SECONDS: ${AZURE_OPENAI_TIMEOUT_SECONDS:-90}
+      AZURE_OPENAI_MAX_ATTEMPTS: ${AZURE_OPENAI_MAX_ATTEMPTS:-3}
+      # CMIR: inbound email + Service Bus
+      EMAIL_USERNAME: ${EMAIL_USERNAME:-}
+      EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
+      IMAP_SERVER: ${IMAP_SERVER:-imap.gmail.com}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE:-}
+      SERVICE_BUS_CONNECTION_STRING: ${SERVICE_BUS_CONNECTION_STRING:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Local stand-in for the standalone Service Bus consumer process.
+  # Run:
+  #   docker compose --profile tools run --rm cmir-consumer
+  cmir-consumer:
+    <<: *app-image
+    container_name: mars-cmir-consumer
+    command: python -m app.workers.service_bus_consumer
+    profiles:
+      - tools
+    environment:
+      <<: *app-database
+      SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE:-}
+      SERVICE_BUS_CONNECTION_STRING: ${SERVICE_BUS_CONNECTION_STRING:-}
+      SERVICE_BUS_QUEUE_NAME: ${SERVICE_BUS_QUEUE_NAME:-}
+      SERVICE_BUS_SESSION_ID: ${SERVICE_BUS_SESSION_ID:-}
+      CMIR_AGENT_API_BASE_URL: ${CMIR_AGENT_API_BASE_URL:-http://backend:8000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Run explicitly:
+  #   docker compose --profile tools run --rm migrate
+  migrate:
+    <<: *app-image
+    command: alembic upgrade head
+    profiles:
+      - tools
+    environment:
+      <<: *app-database
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Local stand-in for the Azure Container Apps Job.
+  # Run:
+  #   docker compose --profile tools run --rm worker
+  fines-projection-worker:
+    <<: *app-image
+    command: python scripts/ops/run_daily_batch.py
+    profiles:
+      - tools
+    container_name: mars-fines-projection-worker
+    environment:
+      <<: *app-database
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      JOB_QUEUE_BACKEND: ${JOB_QUEUE_BACKEND:-postgres}
+      JOB_QUEUE_WORKER_CONCURRENCY: ${JOB_QUEUE_WORKER_CONCURRENCY:-5}
+      # Keep DB pool capacity >= worker concurrency.
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      # Azure OpenAI
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_DEPLOYMENT_NAME: ${AZURE_OPENAI_DEPLOYMENT_NAME:-}
+      AZURE_OPENAI_TIMEOUT_SECONDS: ${AZURE_OPENAI_TIMEOUT_SECONDS:-90}
+      AZURE_OPENAI_MAX_ATTEMPTS: ${AZURE_OPENAI_MAX_ATTEMPTS:-3}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  mars_postgres_data:

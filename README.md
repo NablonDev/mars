@@ -1,83 +1,157 @@
-# CMIR Resolution Agent
+# Mars Petcare — CMIR Resolution System & Projected Fines
 
-FastAPI + LangGraph backend for processing inbound CMIR emails, extracting CMIR draft data with Azure OpenAI, pausing for human review, and persisting approved records in Postgres through SQLAlchemy.
+Two agentic backends in one FastAPI app, separated by Postgres schema:
 
-The current implementation follows `docs/prd.md`: one backend ingest batch can process many emails, and each email-derived review workflow gets its own UI-facing `thread_id`.
+- **CMIR Resolution Agent** (`cmir` schema) — processes inbound CMIR emails,
+  extracts CMIR draft data with Azure OpenAI via a LangGraph workflow, pauses
+  for human review, and persists approved records in Postgres. Also runs a
+  PO Validation agent against the same email-ingest/HITL infrastructure.
 
-## What This App Does
+- **Projected Fines** (`fines` schema) — forecasts, ahead of delivery, the
+  retailer chargebacks Mars Petcare is likely to incur on open orders,
+  driven by production shortfalls and shipment delays. A deterministic
+  rules engine computes the projection; an LLM-powered endpoint can explain,
+  in plain language, why a given order's number is what it is.
 
-1. Reads matching emails from Gmail IMAP.
-2. Creates one `batch_id` for the ingest request.
-3. Creates one `agent_runs` row per email agent execution.
-4. Creates one independent `workflow_threads` row per email.
-5. Runs each email through a LangGraph workflow.
-6. Extracts CMIR fields with Azure OpenAI.
-7. Validates mandatory fields.
-8. Pauses for human input when fields are missing or approval is required.
-9. Resumes a specific workflow using `thread_id`.
-10. Writes approved CMIR records to Postgres.
-11. Logs reviewer actions and graph traces for debugging.
+## Stack
 
-## Important Identity Rule
+Python 3.12+, FastAPI, PostgreSQL (SQLAlchemy 2.0 + Alembic), LangGraph
+(CMIR/PO-validation workflows, PostgreSQL checkpointer), Azure Service Bus
+(CMIR mail-processing queue), Azure OpenAI (CMIR extraction and the
+fine-summary feature).
 
-Reviewer/UI actions must use `thread_id`.
+## Setup
 
-Do not use sender email, `batch_id`, `agent_run_id`, or `email_id` as the review workflow key. One batch can contain multiple emails, and multiple emails can come from the same sender.
+```bash
+python -m venv .venv && source .venv/bin/activate
+uv sync   # or: pip install -e .
 
-## Project Layout
+cp .env.example .env   # edit DATABASE_URL, and AZURE_OPENAI_* / EMAIL_* /
+                        # SERVICE_BUS_* / JOB_QUEUE_* for the features you're running
 
-```text
-cmir_agent/
-  api.py                         FastAPI app and /api/v1 routes
-  schemas.py                     Pydantic request/response schemas
-  services.py                    API workflow orchestration and business checks
-  container.py                   Dependency injection composition root
-  config.py                      Environment-based typed config
-  main.py                        Legacy CLI entry point
-
-  domain/
-    models.py                    CMIR, EmailMessage, WorkflowThread models
-    validators.py                Mandatory-field validation
-
-  interfaces/
-    email_reader.py              EmailReader port
-    extractor.py                 CMIRExtractor port
-    repositories.py              Email/CMIR repository ports
-    observability.py             Run/thread/pending-action repository ports
-    human_review.py              CLI human review port
-
-  infrastructure/
-    database.py                  SQLAlchemy engine/session factory
-    orm_models.py                SQLAlchemy ORM models
-    gmail_email_reader.py        Gmail IMAP adapter
-    azure_openai.py              Azure OpenAI CMIR extractor
-    postgres_repositories.py     SQLAlchemy email/CMIR repositories
-    postgres_observability.py    SQLAlchemy run/thread/audit repositories
-    cli_human_review.py          Legacy console review adapter
-
-  workflow/
-    state.py                     LangGraph state shape
-    nodes.py                     LangGraph node functions
-    graph.py                     LangGraph topology
-    tracing.py                   Per-node trace logging
-
-docs/
-  prd.md                         Product requirements
-  coding_guide.md                Mandatory engineering standards
-  debug_flow.html                Debugging guide
-
-migrations/
-  schema.sql                     Postgres schema changes
-
-tests/
-  test_api.py
-  test_services.py
-  test_sqlalchemy_repositories.py
+alembic upgrade head
 ```
 
-## Main API Endpoints
+## Running
 
-Base path: `/api/v1`
+There is one image and one codebase, but **two things you can run**. Which
+one you want depends on whether you are serving requests or processing the
+day's backlog.
+
+### The API
+
+```bash
+uvicorn app.main:app --reload
+```
+
+Interactive docs: `http://127.0.0.1:8000/docs`. Health check:
+`curl http://127.0.0.1:8000/api/v1/health`.
+
+Start a CMIR email-ingest batch:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/ingest/emails \
+  -H "Content-Type: application/json" \
+  -d '{"max_workers":4,"source":"gmail","filters":{"subject_contains":"CMIR","unread_only":true}}'
+```
+
+List the CMIR reviewer queue: `GET /api/v1/runs?view=threads`.
+
+Seed fines demo data and try it out:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/admin/seed-master-data
+curl -X POST http://127.0.0.1:8000/api/v1/admin/simulate-daily-run
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/run \
+  -H "Content-Type: application/json" -d '{}'
+```
+
+### The batch worker
+
+Every OPEN order, projected and summarised concurrently through a durable
+queue. In production this is an Azure Container Apps Job on a nightly cron;
+locally it is the same script:
+
+```bash
+python scripts/ops/run_daily_batch.py            # enqueue + drain
+python scripts/ops/run_daily_batch.py --dry-run  # count only, writes nothing
+```
+
+The API can enqueue a batch too (`POST /api/v1/batches/run`), but under the
+default `postgres` backend that only writes the ledger rows — nothing runs
+them until a drain happens. Watch progress with
+`GET /api/v1/batches/{job_run_id}`.
+
+### A single order, no server
+
+```bash
+python scripts/ops/run_projection_cli.py --order-id WMT-100234 --date 2026-08-05
+python scripts/ops/run_projection_cli.py --all-open
+```
+
+## Tests
+
+```bash
+pytest -v
+```
+
+Runs against an in-memory SQLite database (both `cmir` and `fines` schemas
+translated away for SQLite, see `app/db/session.py`) — no live Postgres
+required. `tests/integration/` exercises a real Postgres connection and
+skips (rather than failing) when one isn't reachable at `DATABASE_URL`.
+
+## Docs
+
+Start here:
+
+- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — **how to run the whole system**: local
+  workflow with the queue, every config variable, and the Azure build sheet
+- [`docs/JOB-QUEUE-WALKTHROUGH.md`](docs/JOB-QUEUE-WALKTHROUGH.md) — code tour of the
+  queue, for someone seeing it for the first time
+- [`docs/ASYNC-EXECUTION.md`](docs/ASYNC-EXECUTION.md) — *why* the queue is designed
+  the way it is, and when to change it
+
+Reference:
+
+- [`docs/API.md`](docs/API.md) — every endpoint, request/response shapes, error codes
+- [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — setup, seeding, troubleshooting, in depth
+- [`docs/DATABASE.md`](docs/DATABASE.md) — schema, migrations, conventions
+- [`docs/FINE_ENGINE.md`](docs/FINE_ENGINE.md) — the projection calculation itself
+- [`docs/DOCKER.md`](docs/DOCKER.md) — image internals
+
+## Layout
+
+```
+app/
+  main.py                 -- FastAPI app factory
+  api/v1/                   -- routers (cmir + po_validation + fines + batches)
+  core/                       -- config, exceptions, container (CMIR composition root), rate_limit
+  services/                     -- business logic (cmir_run_service, po_validation_service, projection, seeding, fine summary, ...)
+    fine_projection/                -- pure calculation, no SQLAlchemy/FastAPI
+  agents/                            -- LLM/LangGraph layer: providers, prompts, tools, cmir/ and po_validation/ graphs
+  queue/                               -- fines job-queue dispatch backends behind one Protocol, plus the CMIR Service Bus producer
+  workers/                              -- the fines claim/execute/settle loop, plus the CMIR Service Bus consumer
+  models/                                 -- SQLAlchemy ORM + enums (cmir schema + fines schema)
+  repositories/                            -- database access
+  schemas/                                   -- Pydantic request/response models
+alembic/                -- migrations (single linear history across every schema)
+tests/unit/             -- pytest (in-memory SQLite)
+tests/integration/      -- pytest against a live Postgres
+scripts/ops/            -- operational entry points (nightly batch, CLI)
+scripts/demo/           -- seed and demo scripts
+```
+
+## CMIR Resolution Agent — feature notes
+
+The current implementation follows `docs/prd.md`: one backend ingest batch
+can process many emails, and each email-derived review workflow gets its
+own UI-facing `thread_id`.
+
+**Important identity rule**: reviewer/UI actions must use `thread_id` — not
+sender email, `batch_id`, `agent_run_id`, or `email_id`. One batch can
+contain multiple emails, and multiple emails can come from the same sender.
+
+Main endpoints (base path `/api/v1`):
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -91,252 +165,24 @@ Base path: `/api/v1`
 | `POST` | `/threads/{thread_id}/update` | Save reviewer draft edits. |
 | `POST` | `/threads/{thread_id}/decision` | Approve or reject a draft. |
 
-## Ingest Request Example
-
-```json
-{
-  "max_workers": 4,
-  "source": "gmail",
-  "filters": {
-    "subject_contains": "CMIR",
-    "unread_only": true
-  }
-}
-```
-
-Field behavior:
-
-| Field | Meaning |
-|---|---|
-| `max_workers` | Controls how many independent email workflows are processed in parallel. |
-| `source` | Currently only `gmail` is supported. |
-| `filters.subject_contains` | Request-scoped subject search override for Gmail IMAP. |
-| `filters.unread_only` | When true, only unread emails are searched. |
-
-## Environment Setup
-
-### 1. Install Python
-
-Use Python 3.11 or newer.
-
-Check that Python is available:
-
-```bash
-python --version
-```
-
-On Windows, if `python` is not found, install Python from python.org and enable "Add Python to PATH" during installation.
-
-### 2. Create a Virtual Environment
-
-Windows PowerShell:
-
-```powershell
-python -m venv myvenv
-.\myvenv\Scripts\Activate.ps1
-```
-
-If PowerShell blocks activation, allow scripts for the current user:
-
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-macOS/Linux:
-
-```bash
-python -m venv myvenv
-source myvenv/bin/activate
-```
-
-### 3. Install Dependencies
-
-```bash
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-### 4. Create `.env`
-
-Create a `.env` file in the project root. This file is ignored by git.
-
-```env
-EMAIL_USERNAME=your_gmail_address@example.com
-EMAIL_PASSWORD=your_gmail_app_password
-IMAP_SERVER=imap.gmail.com
-IMAP_PORT=993
-
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=cmir_db
-DB_USER=postgres
-DB_PASSWORD=your_postgres_password
-
-AZURE_OPENAI_API_KEY=your_azure_openai_key
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_OPENAI_API_VERSION=2024-08-01-preview
-AZURE_OPENAI_DEPLOYMENT_NAME=your_deployment_name
-```
-
-Gmail note: use a Gmail app password, not your normal Gmail password.
-
-## Database Setup
-
-### 1. Create the Database
-
-Example with `psql`:
-
-```bash
-createdb cmir_db
-```
-
-Or inside `psql`:
-
-```sql
-CREATE DATABASE cmir_db;
-```
-
-### 2. Apply Schema
-
-```bash
-psql -d cmir_db -f migrations/schema.sql
-```
-
-The migration defines the PRD thread model:
-
-- `workflow_threads`
-- `pending_human_actions`
-- `source_message_id` on `email_events`
-- `batch_id`, `thread_id`, and `email_id` on `agent_runs`
-- thread audit fields on `hitl_actions`
-
-Note: `migrations/schema.sql` currently assumes the pre-existing base tables exist. It includes a TODO because the authoritative pre-PRD base schema is not documented in the repo.
-
-## Running the API
-
-Start the FastAPI server:
-
-```bash
-uvicorn cmir_agent.api:app --reload
-```
-
-Default local URL:
-
-```text
-http://127.0.0.1:8000
-```
-
-Open generated API docs:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-Start an ingest batch:
-
-```bash
-curl -X POST "http://127.0.0.1:8000/api/v1/ingest/emails" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"max_workers\":4,\"source\":\"gmail\",\"filters\":{\"subject_contains\":\"CMIR\",\"unread_only\":true}}"
-```
-
-PowerShell alternative:
-
-```powershell
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://127.0.0.1:8000/api/v1/ingest/emails" `
-  -ContentType "application/json" `
-  -Body '{"max_workers":4,"source":"gmail","filters":{"subject_contains":"CMIR","unread_only":true}}'
-```
-
-List reviewer queue:
-
-```text
-GET http://127.0.0.1:8000/api/v1/runs?view=threads
-```
-
-List waiting approval threads:
-
-```text
-GET http://127.0.0.1:8000/api/v1/runs?view=threads&status=waiting_approval
-```
-
-## Running the Legacy CLI
-
-The API is the current primary path. The legacy CLI entry point still exists:
-
-```bash
-python -m cmir_agent.main
-```
-
-Use the API for PRD thread-based review flows.
-
-## Running Tests
-
-```bash
-python -m unittest discover -s tests
-```
-
-The tests use fakes for API, service, and repository boundaries. They should not require real Gmail, Azure OpenAI, or Postgres connections.
-
-## Debugging Guide
-
-Open this file in a browser:
-
-```text
-docs/debug_flow.html
-```
-
-It explains:
-
-- Complete ingest flow
-- Where `max_workers` and email filters are used
-- LangGraph node sequence
-- Reviewer API flow
-- Stage/status mapping
-- Database tables and debug queries
-- Common failure scenarios
-
-## Common Issues
-
-### `python` is not recognized
-
-Install Python and make sure it is added to PATH. Then recreate the virtual environment:
-
-```powershell
-Remove-Item -Recurse -Force .\myvenv
-python -m venv myvenv
-.\myvenv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-### Virtualenv points to a missing Python
-
-Delete and recreate the virtualenv. A venv stores an absolute path to the Python executable that created it.
-
-### Gmail returns no emails
-
-Check:
-
-- `filters.subject_contains`
-- `filters.unread_only`
-- Gmail app password
-- IMAP is enabled
-- `EmailConfig.lookback_days`
-- emails are actually unread when `unread_only` is true
-
-### Thread update returns `THREAD_STALE`
-
-Fetch the latest stage or snapshot and retry with the latest `updated_at` value as `expected_updated_at`.
-
-### Thread update returns `THREAD_NOT_WAITING`
-
-Check `workflow_threads.status`.
-
-- Missing fields API requires `waiting_missing_fields`.
-- Update and decision APIs require `waiting_approval`.
+Common error responses (`ServiceError`, see `app/core/exceptions.py`):
+
+- `THREAD_STALE` — refetch the latest `updated_at` and retry as `expected_updated_at`.
+- `THREAD_NOT_WAITING` — missing-fields requires `waiting_missing_fields`;
+  update/decision require `waiting_approval` (check `workflow_threads.status`).
+- `CMIR_VERSION_CONFLICT` (HTTP 409) — another thread's approval already
+  superseded the active `cmir_records` row for this customer/material while
+  this thread was waiting. The thread closes to `COMPLETED_CONFLICT` and does
+  not reopen automatically; fetch the winning thread's snapshot or start a new one.
+
+Gmail note: `EMAIL_USERNAME`/`EMAIL_PASSWORD` need a Gmail app password, not
+the normal account password, with IMAP enabled.
+
+Debugging guide: open `docs/debug_flow.html` in a browser for the full
+ingest-flow walkthrough, LangGraph node sequence, and common-failure table.
 
 ## Security
 
-Never commit `.env` or real credentials. Rotate any Gmail app password, database password, or Azure OpenAI key that has been shared outside a secure secret manager.
+Never commit `.env` or real credentials. Rotate any Gmail app password,
+database password, Azure OpenAI key, or Service Bus connection string that
+has been shared outside a secure secret manager.
