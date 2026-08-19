@@ -1,0 +1,73 @@
+# Continuous build: on every push to development (and on PRs, test-only), run the
+# test suite; only a green build on development pushes a new image to ACR. This is
+# step 1 of the two-step deploy plan -- see docs/DEPLOYMENT.md §6.8. It never
+# touches any Container App or Job; promoting a built image is deploy.yml,
+# triggered by hand.
+
+name: CI - Build Development
+
+on:
+  push:
+    branches:
+      - development
+
+  pull_request:
+    branches:
+      - development
+
+permissions:
+  id-token: write # only needed by build-and-push's Azure login
+  contents: read
+
+env:
+  ACR_NAME: marsplatformacr
+  IMAGE_NAME: mars-platform
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check app/ scripts/ tests/ alembic/
+
+      - name: Type-check
+        run: uv run mypy app/
+
+      - name: Test
+        run: uv run pytest tests/ -v
+
+  build-and-push:
+    name: Build and Push Image
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/development'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Builds inside ACR, not on the runner -- avoids an amd64/arm64
+      # mismatch and needs no local Docker daemon or registry credentials.
+      - name: Build and push image via ACR
+        run: |
+          az acr build \
+            --registry "${{ env.ACR_NAME }}" \
+            --image "${{ env.IMAGE_NAME }}:${{ github.sha }}" \
+            --image "${{ env.IMAGE_NAME }}:dev-latest" \
+            .

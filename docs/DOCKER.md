@@ -16,19 +16,19 @@ no-op.
 
 ```bash
 # API -- default CMD, no override needed
-docker run --rm -p 8000:8000 --env-file .env mars-fines:dev
+docker run --rm -p 8000:8000 --env-file .env mars-platform:dev
 
 # Nightly batch job -- explicit override
-docker run --rm --env-file .env mars-fines:dev \
+docker run --rm --env-file .env mars-platform:dev \
   python scripts/ops/run_daily_batch.py
 
 # Migration job -- explicit override
-docker run --rm --env-file .env mars-fines:dev \
+docker run --rm --env-file .env mars-platform:dev \
   alembic upgrade head
 ```
 
 The API command still works spelled out explicitly too (`docker run ...
-mars-fines:dev uvicorn app.main:app --host 0.0.0.0 --port 8000`) -- an
+mars-platform:dev uvicorn app.main:app --host 0.0.0.0 --port 8000`) -- an
 explicit `command:`/CLI argument always overrides the image's `CMD`,
 never conflicts with it. `docker-compose.yml`'s `api` service does
 exactly that, for local-dev readability.
@@ -39,7 +39,7 @@ From the repo root (`Dockerfile` and `docker-compose.yml` both live at the
 repo root):
 
 ```bash
-docker build -t mars-fines:dev .
+docker build -t mars-platform:dev .
 ```
 
 Multi-stage: a `builder` stage installs dependencies into a venv, and a
@@ -110,6 +110,12 @@ docker compose --profile tools run --rm worker
   bare-metal (`docs/RUNBOOK.md` step 8).
 
 ## Verification performed
+
+**Tag naming note:** the transcripts below predate the `mars-fines` →
+`mars-platform` product rename (see `docs/DEPLOYMENT.md` §6) and are left
+as-is because they're dated records of commands actually run, not
+prescriptive examples — don't copy the `mars-fines:*` tags from them. Every
+build/run instruction elsewhere in this file already uses `mars-platform`.
 
 Run in this environment (`docker version`: 29.6.2) against the actual
 Dockerfile above (paths below predate the `docker/` -> repo-root move; see
