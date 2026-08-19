@@ -97,7 +97,9 @@ def _fetch_all(conn: psycopg.Connection, table: str) -> list[dict]:
         return cur.fetchall()
 
 
-def _insert_many(conn: psycopg.Connection, schema: str, table: str, columns: list[str], rows: list[dict]) -> None:
+def _insert_many(
+    conn: psycopg.Connection, schema: str, table: str, columns: list[str], rows: list[dict]
+) -> None:
     if not rows:
         return
     col_list = ", ".join(columns)
@@ -112,19 +114,27 @@ def _insert_many(conn: psycopg.Connection, schema: str, table: str, columns: lis
         )
 
 
+def _fetchone(cur: psycopg.Cursor) -> tuple:
+    """cur.fetchone() typed as possibly-None even for a query that always
+    returns exactly one row (count(*), to_regclass(...)) -- narrow it once."""
+    row = cur.fetchone()
+    assert row is not None
+    return row
+
+
 def _target_row_counts(conn: psycopg.Connection) -> dict[str, int]:
     counts: dict[str, int] = {}
     with conn.cursor() as cur:
         for table in CMIR_TABLES_IN_ORDER:
             cur.execute(f"SELECT count(*) FROM cmir.{table}")
-            counts[f"cmir.{table}"] = cur.fetchone()[0]
+            counts[f"cmir.{table}"] = _fetchone(cur)[0]
         for table in CHECKPOINT_TABLES:
             cur.execute(f"SELECT to_regclass('public.{table}')")
-            if cur.fetchone()[0] is None:
+            if _fetchone(cur)[0] is None:
                 counts[f"public.{table}"] = 0
                 continue
             cur.execute(f"SELECT count(*) FROM public.{table}")
-            counts[f"public.{table}"] = cur.fetchone()[0]
+            counts[f"public.{table}"] = _fetchone(cur)[0]
     return counts
 
 
@@ -133,7 +143,7 @@ def _truncate_target(conn: psycopg.Connection) -> None:
         cur.execute("TRUNCATE " + ", ".join(f"cmir.{t}" for t in CMIR_TABLES_IN_ORDER) + " CASCADE")
         for table in CHECKPOINT_TABLES:
             cur.execute(f"SELECT to_regclass('public.{table}')")
-            if cur.fetchone()[0] is not None:
+            if _fetchone(cur)[0] is not None:
                 cur.execute(f"TRUNCATE public.{table} CASCADE")
 
 
@@ -158,7 +168,11 @@ def migrate(source_dsn: str, target_dsn: str, *, dry_run: bool, force: bool) -> 
             )
 
         if dry_run:
-            logger.info("--dry-run: would import %s (target currently: %s)", {k: len(v) for k, v in source.items()}, existing)
+            logger.info(
+                "--dry-run: would import %s (target currently: %s)",
+                {k: len(v) for k, v in source.items()},
+                existing,
+            )
             return
 
         if non_empty:
@@ -284,6 +298,18 @@ def migrate(source_dsn: str, target_dsn: str, *, dry_run: bool, force: bool) -> 
             }
             for r in source["cmir_records"]
         ]
+        # 4 source rows had NULL existing_cmir_ref, 5 had NULL target_grd_code --
+        # both are NOT NULL in the new schema, so some value here is unavoidable.
+        # '' is the correct one, not a stopgap: app.schemas.cmir.CMIR already
+        # defaults every content field (these two included) to "", and
+        # app.services.cmir_merge already treats a missing value as
+        # interchangeable with blank (`str(existing.get(field_name) or "")`) --
+        # 3-6 of the *other* rows in this same source table already stored ''
+        # rather than NULL for these two columns, so this aligns the stragglers
+        # with the representation the app (and most of the legacy data) already
+        # used, rather than inventing a new one. Verified exhaustively across
+        # every NOT NULL column in every cmir table -- these two are the only
+        # ones the source data ever left NULL.
         for r, row in zip(source["cmir_records"], cmir_records_rows, strict=True):
             for col in ("existing_cmir_ref", "target_grd_code"):
                 if row[col] is None:
@@ -458,11 +484,19 @@ def migrate(source_dsn: str, target_dsn: str, *, dry_run: bool, force: bool) -> 
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--source-dsn", default=DEFAULT_SOURCE_DSN, help="Legacy cmir_db DSN (plain postgresql://)")
-    parser.add_argument("--target-dsn", default=None, help="Override target DSN (default: settings.database_url)")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--source-dsn", default=DEFAULT_SOURCE_DSN, help="Legacy cmir_db DSN (plain postgresql://)"
+    )
+    parser.add_argument(
+        "--target-dsn", default=None, help="Override target DSN (default: settings.database_url)"
+    )
     parser.add_argument("--dry-run", action="store_true", help="Report counts only, write nothing")
-    parser.add_argument("--force", action="store_true", help="Truncate non-empty target tables before importing")
+    parser.add_argument(
+        "--force", action="store_true", help="Truncate non-empty target tables before importing"
+    )
     return parser.parse_args()
 
 
