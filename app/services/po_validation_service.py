@@ -156,7 +156,15 @@ class PoValidationService:
         limit: int = 50,
         cursor: str | None = None,
     ) -> dict[str, Any]:
-        items, next_cursor = self._po_lines.list_by_status(status=status, limit=limit, cursor=cursor)
+        try:
+            items, next_cursor = self._po_lines.list_by_status(status=status, limit=limit, cursor=cursor)
+        except ValueError as exc:
+            raise ServiceError(
+                "VALIDATION_ERROR",
+                "cursor must be an ISO 8601 timestamp, as returned in next_cursor.",
+                status_code=422,
+                details={"cursor": cursor},
+            ) from exc
         return {"items": items, "next_cursor": next_cursor}
 
     def get_errors(self, po_line_id: Any) -> dict[str, Any]:
@@ -351,7 +359,7 @@ class PoValidationService:
                         current_node=NODE_BY_INTERRUPT[reason],
                         stage=stage,
                         latest_snapshot={"po_line_id": str(po_line_id), "payload": payload},
-                        po_line_id=str(po_line_id),
+                        po_line_id=po_line_id,
                     )
                 )
                 action_id = self._pending_human_actions.create_open(
@@ -363,7 +371,7 @@ class PoValidationService:
                         interrupt_type=reason,
                         payload=payload,
                         state_snapshot=self._snapshot_state(state),
-                        po_line_id=str(po_line_id),
+                        po_line_id=po_line_id,
                     )
                 )
                 self._workflow_threads.update_status(
@@ -395,7 +403,7 @@ class PoValidationService:
                     next_pending_interrupt_type=reason,
                     next_pending_payload=payload,
                     next_pending_state_snapshot=self._snapshot_state(state),
-                    po_line_id=str(po_line_id),
+                    po_line_id=po_line_id,
                 )
             self._po_lines.update_status(po_line_id, "AWAITING_DECISION")
             return self.get_stage(checkpoint_thread_id)
@@ -436,7 +444,7 @@ class PoValidationService:
             next_stage=stage,
             next_latest_snapshot={"po_line_id": str(po_line_id)},
             completed=True,
-            po_line_id=str(po_line_id),
+            po_line_id=po_line_id,
         )
         return self.get_stage(checkpoint_thread_id)
 

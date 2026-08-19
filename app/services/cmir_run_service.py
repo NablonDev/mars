@@ -133,6 +133,20 @@ class CMIRRunService:
                 status_code=422,
                 details={"queue_message_id": queue_message_id},
             )
+        # Service Bus payloads (and the API request schema) carry email_id as a
+        # plain string -- normalize to UUID once, here, so every downstream
+        # repository/ORM write (all UUID_PK-typed) gets a real uuid.UUID rather
+        # than each call site having to know or re-derive that.
+        if not isinstance(email_id, UUID):
+            try:
+                email_id = UUID(str(email_id))
+            except ValueError as exc:
+                raise ServiceError(
+                    "VALIDATION_ERROR",
+                    "email_id must be a valid UUID.",
+                    status_code=422,
+                    details={"email_id": str(email_id), "queue_message_id": queue_message_id},
+                ) from exc
 
         if self._email_repository is not None:
             queue_state = self._email_repository.get_queue_state(email_id)
@@ -240,32 +254,40 @@ class CMIRRunService:
         cursor: str | None = None,
     ) -> dict[str, Any]:
         """Return either reviewer thread rows or batch summaries."""
-        if view == "threads":
-            items, next_cursor = self._workflow_threads.list_threads(
-                batch_id=batch_id,
-                agent_run_id=agent_run_id,
-                status=status,
-                stage=stage,
-                sender=sender,
-                limit=limit,
-                cursor=cursor,
-            )
-            return {"items": items, "next_cursor": next_cursor}
-        if view == "agents":
-            items, next_cursor = self._agent_runs.list_agents(
-                batch_id=batch_id,
-                status=status,
-                limit=limit,
-                cursor=cursor,
-            )
-            return {"items": items, "next_cursor": next_cursor}
-        if view == "batches":
-            items, next_cursor = self._agent_runs.list_batches(
-                status=status,
-                limit=limit,
-                cursor=cursor,
-            )
-            return {"items": items, "next_cursor": next_cursor}
+        try:
+            if view == "threads":
+                items, next_cursor = self._workflow_threads.list_threads(
+                    batch_id=batch_id,
+                    agent_run_id=agent_run_id,
+                    status=status,
+                    stage=stage,
+                    sender=sender,
+                    limit=limit,
+                    cursor=cursor,
+                )
+                return {"items": items, "next_cursor": next_cursor}
+            if view == "agents":
+                items, next_cursor = self._agent_runs.list_agents(
+                    batch_id=batch_id,
+                    status=status,
+                    limit=limit,
+                    cursor=cursor,
+                )
+                return {"items": items, "next_cursor": next_cursor}
+            if view == "batches":
+                items, next_cursor = self._agent_runs.list_batches(
+                    status=status,
+                    limit=limit,
+                    cursor=cursor,
+                )
+                return {"items": items, "next_cursor": next_cursor}
+        except ValueError as exc:
+            raise ServiceError(
+                "VALIDATION_ERROR",
+                "cursor must be an ISO 8601 timestamp, as returned in next_cursor.",
+                status_code=422,
+                details={"cursor": cursor},
+            ) from exc
         raise ServiceError(
             "VALIDATION_ERROR",
             "view must be 'threads', 'agents', or 'batches'.",
@@ -314,7 +336,7 @@ class CMIRRunService:
                 resume_context={
                     "pending_action_id": pending["id"],
                     "batch_id": stage["batch_id"],
-                    "email_id": stage["email_id"],
+                    "email_id": self._to_uuid(stage["email_id"]),
                     "interrupt_type": "missing_mandatory_fields",
                     "question": pending["payload"],
                     "answer": fields,
@@ -377,7 +399,7 @@ class CMIRRunService:
                 run_id=stage["agent_run_id"],
                 batch_id=stage["batch_id"],
                 thread_id=thread_id,
-                email_id=stage["email_id"],
+                email_id=self._to_uuid(stage["email_id"]),
                 pending_action_id=pending["id"],
                 interrupt_type="approval_required",
                 question=pending["payload"],
@@ -462,7 +484,7 @@ class CMIRRunService:
                 resume_context={
                     "pending_action_id": pending["id"],
                     "batch_id": stage["batch_id"],
-                    "email_id": stage["email_id"],
+                    "email_id": self._to_uuid(stage["email_id"]),
                     "interrupt_type": "approval_required",
                     "question": pending["payload"],
                     "answer": answer,
@@ -496,7 +518,7 @@ class CMIRRunService:
                         agent_run_id=run_id,
                         batch_id=state["batch_id"],
                         thread_id=thread_id,
-                        email_id=str(state["email_id"]),
+                        email_id=state["email_id"],
                         interrupt_type=reason,
                         payload=payload,
                         state_snapshot=self._snapshot_state(state),
@@ -662,6 +684,11 @@ class CMIRRunService:
         else:
             logger.warning("Graph does not expose update_state; draft update saved only in repository")
         return validated
+
+    @staticmethod
+    def _to_uuid(value: str | None) -> UUID | None:
+        """Reverse get_stage()'s str(row.email_id) for repository writes that need the UUID back."""
+        return UUID(value) if value else None
 
     @staticmethod
     def _thread_config(thread_id: str) -> dict[str, Any]:

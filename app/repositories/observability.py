@@ -16,6 +16,7 @@ from app.models.observability import (
     WorkflowThreadORM,
 )
 from app.schemas.cmir import PendingHumanAction, WorkflowThread
+from app.utils.pagination import parse_cursor
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +44,8 @@ class PostgresAgentRunRepository:
         *,
         batch_id: str | None = None,
         thread_id: str | None = None,
-        email_id: Any | None = None,
-        po_line_id: Any | None = None,
+        email_id: UUID | None = None,
+        po_line_id: UUID | None = None,
         run_type: str = "email_ingest",
     ) -> UUID:
         """Create one per-email (or per-PO-line) agent run."""
@@ -69,7 +70,7 @@ class PostgresAgentRunRepository:
         run_id: UUID,
         status: str,
         *,
-        email_id: Any | None = None,
+        email_id: UUID | None = None,
         current_node: str | None = None,
         error: str | None = None,
         completed: bool = False,
@@ -138,7 +139,7 @@ class PostgresAgentRunRepository:
         if status is not None:
             stmt = stmt.where(AgentRunORM.status == status)
         if cursor is not None:
-            stmt = stmt.having(func.max(AgentRunORM.updated_at) < cursor)
+            stmt = stmt.having(func.max(AgentRunORM.updated_at) < parse_cursor(cursor))
         stmt = stmt.order_by(func.max(AgentRunORM.updated_at).desc()).limit(limit)
 
         with self._db.session() as session:
@@ -174,7 +175,7 @@ class PostgresAgentRunRepository:
         if status is not None:
             stmt = stmt.where(AgentRunORM.status == status)
         if cursor is not None:
-            stmt = stmt.where(AgentRunORM.updated_at < cursor)
+            stmt = stmt.where(AgentRunORM.updated_at < parse_cursor(cursor))
         stmt = stmt.order_by(AgentRunORM.updated_at.desc()).limit(limit)
 
         with self._db.session() as session:
@@ -306,7 +307,7 @@ class PostgresWorkflowThreadRepository:
             thread_id=row.thread_id,
             agent_run_id=row.agent_run_id,
             batch_id=row.batch_id,
-            email_id=str(row.email_id),
+            email_id=row.email_id,
             source_message_id=row.source_message_id,
             sender=row.sender or "",
             subject=row.subject or "",
@@ -320,7 +321,7 @@ class PostgresWorkflowThreadRepository:
             po_line_id=row.po_line_id,
         )
 
-    def get_by_email_id(self, email_id: Any) -> WorkflowThread | None:
+    def get_by_email_id(self, email_id: UUID) -> WorkflowThread | None:
         with self._db.session() as session:
             row = session.scalar(
                 select(WorkflowThreadORM)
@@ -334,7 +335,7 @@ class PostgresWorkflowThreadRepository:
             thread_id=row.thread_id,
             agent_run_id=row.agent_run_id,
             batch_id=row.batch_id,
-            email_id=str(row.email_id),
+            email_id=row.email_id,
             source_message_id=row.source_message_id,
             sender=row.sender or "",
             subject=row.subject or "",
@@ -371,7 +372,7 @@ class PostgresWorkflowThreadRepository:
         if sender is not None:
             stmt = stmt.where(WorkflowThreadORM.sender == sender)
         if cursor is not None:
-            stmt = stmt.where(WorkflowThreadORM.updated_at < cursor)
+            stmt = stmt.where(WorkflowThreadORM.updated_at < parse_cursor(cursor))
         stmt = stmt.order_by(WorkflowThreadORM.updated_at.desc()).limit(limit)
 
         with self._db.session() as session:
@@ -618,7 +619,7 @@ class PostgresHITLActionRepository:
     def log(
         self,
         run_id: UUID,
-        email_id: Any | None,
+        email_id: UUID | None,
         interrupt_type: str,
         question: dict[str, Any],
         answer: dict[str, Any],
@@ -629,7 +630,7 @@ class PostgresHITLActionRepository:
         thread_id: str | None = None,
         action_type: str | None = None,
         field_changes: dict[str, Any] | None = None,
-        po_line_id: str | None = None,
+        po_line_id: UUID | None = None,
     ) -> None:
         with self._db.session() as session:
             session.add(
@@ -680,7 +681,7 @@ class PostgresHITLStateRepository:
         run_id: UUID,
         batch_id: str | None,
         thread_id: str,
-        email_id: str | None,
+        email_id: UUID | None,
         pending_action_id: int,
         interrupt_type: str,
         question: dict[str, Any],
@@ -699,7 +700,7 @@ class PostgresHITLStateRepository:
         reason: str | None = None,
         field_changes: dict[str, Any] | None = None,
         completed: bool = False,
-        po_line_id: str | None = None,
+        po_line_id: UUID | None = None,
     ) -> int | None:
         with self._db.session() as session:
             result = session.execute(
