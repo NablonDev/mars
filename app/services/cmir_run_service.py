@@ -773,7 +773,7 @@ class CMIRRunService:
         )
 
     @staticmethod
-    def _resume_failed(thread_id: str, pending_action_id: int, exc: Exception) -> ServiceError:
+    def _resume_failed(thread_id: str, pending_action_id: UUID, exc: Exception) -> ServiceError:
         logger.exception(
             "Failed to resume workflow thread %s from pending action %s",
             thread_id,

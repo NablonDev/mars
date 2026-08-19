@@ -156,7 +156,7 @@ class PoThreadStageResponse(BaseModel):
     stage: str
     status: str
     current_node: str | None = None
-    pending_action_id: int | None = None
+    pending_action_id: UUID | None = None
     updated_at: str | None = None
 
 
