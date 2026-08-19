@@ -58,7 +58,7 @@ class WorkflowNodes:
                     thread_id=thread_id,
                     agent_run_id=state["run_id"],
                     batch_id=state["batch_id"],
-                    email_id=str(email_id),
+                    email_id=email_id,
                     source_message_id=email.source_message_id,
                     sender=email.sender,
                     subject=email.subject,

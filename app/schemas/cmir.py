@@ -93,7 +93,7 @@ class WorkflowThread:
     thread_id: str
     agent_run_id: UUID
     batch_id: str
-    email_id: str | None
+    email_id: UUID | None
     source_message_id: str | None
     sender: str
     subject: str
@@ -104,7 +104,7 @@ class WorkflowThread:
     latest_snapshot: dict[str, Any] = field(default_factory=dict)
     pending_action_id: int | None = None
     error: str | None = None
-    po_line_id: str | None = None
+    po_line_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -114,12 +114,12 @@ class PendingHumanAction:
     agent_run_id: UUID
     batch_id: str
     thread_id: str
-    email_id: str | None
+    email_id: UUID | None
     interrupt_type: str
     payload: dict[str, Any]
     state_snapshot: dict[str, Any]
     status: str = "open"
-    po_line_id: str | None = None
+    po_line_id: UUID | None = None
 
 
 # ---------------------------------------------------------------------------
