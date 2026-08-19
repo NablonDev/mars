@@ -7,15 +7,39 @@
 #   DATABASE_URL=postgresql+psycopg://mars:mars@localhost:5433/mars \
 #   uvicorn app.main:app --reload
 #
-# Production with an external PostgreSQL:
-#   DATABASE_URL=postgresql+psycopg://... docker compose up --build
+# PRODUCTION:
+#   IMAGE_NAME=<your-registry>/mars-platform
+#   IMAGE_TAG=<git-sha>
+#   DATABASE_URL=postgresql+psycopg://...
+#   docker compose pull
+#   docker compose up -d
 #
 # The application always consumes DATABASE_URL.
 # When DATABASE_URL is not explicitly provided, Compose uses the
 # local Docker PostgreSQL service.
+#
+# IMAGE_TAG:
+#   - Local: defaults to "latest"
+#   - Production: should be the Git commit SHA
+#
+# Example production:
+#   IMAGE_NAME=myregistry.azurecr.io/mars-platform
+#   IMAGE_TAG=a83f42c
+#
+# This makes all application services use the exact same image:
+#   backend
+#   cmir-consumer
+#   migrate
+#   fines-projection-worker
 
 x-app-database: &app-database
   DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-mars}:${POSTGRES_PASSWORD:-mars}@${POSTGRES_HOST:-localhost}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-mars}}
+
+x-app-image: &app-image
+  image: ${IMAGE_NAME:-mars-platform}:${IMAGE_TAG:-latest}
+  build:
+    context: .
+    dockerfile: Dockerfile
 
 services:
   postgres:
@@ -26,7 +50,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mars}
       POSTGRES_DB: ${POSTGRES_DB:-mars}
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - mars_postgres_data:/var/lib/postgresql
     healthcheck:
@@ -36,9 +60,7 @@ services:
       retries: 10
 
   backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *app-image
     container_name: mars-backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
@@ -47,16 +69,13 @@ services:
       <<: *app-database
       ENVIRONMENT: ${ENVIRONMENT:-development}
       DOCS_ENABLED: ${DOCS_ENABLED:-true}
-
-      # Passed through from the host; empty values are allowed locally.
+      # Azure OpenAI
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
       AZURE_OPENAI_DEPLOYMENT_NAME: ${AZURE_OPENAI_DEPLOYMENT_NAME:-}
       AZURE_OPENAI_TIMEOUT_SECONDS: ${AZURE_OPENAI_TIMEOUT_SECONDS:-90}
       AZURE_OPENAI_MAX_ATTEMPTS: ${AZURE_OPENAI_MAX_ATTEMPTS:-3}
-
-      # CMIR: inbound email + Service Bus (optional locally -- leave blank to
-      # run only the fines side).
+      # CMIR: inbound email + Service Bus
       EMAIL_USERNAME: ${EMAIL_USERNAME:-}
       EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
       IMAP_SERVER: ${IMAP_SERVER:-imap.gmail.com}
@@ -68,11 +87,10 @@ services:
         condition: service_healthy
 
   # Local stand-in for the standalone Service Bus consumer process.
-  # Run with: docker compose --profile tools run --rm cmir-consumer
+  # Run:
+  #   docker compose --profile tools run --rm cmir-consumer
   cmir-consumer:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *app-image
     container_name: mars-cmir-consumer
     command: python -m app.workers.service_bus_consumer
     profiles:
@@ -88,11 +106,10 @@ services:
       postgres:
         condition: service_healthy
 
-  # Run explicitly: docker compose --profile tools run --rm migrate
+  # Run explicitly:
+  #   docker compose --profile tools run --rm migrate
   migrate:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *app-image
     command: alembic upgrade head
     profiles:
       - tools
@@ -103,11 +120,10 @@ services:
         condition: service_healthy
 
   # Local stand-in for the Azure Container Apps Job.
-  # Run with: docker compose --profile tools run --rm worker
+  # Run:
+  #   docker compose --profile tools run --rm worker
   fines-projection-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *app-image
     command: python scripts/ops/run_daily_batch.py
     profiles:
       - tools
@@ -117,13 +133,14 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       JOB_QUEUE_BACKEND: ${JOB_QUEUE_BACKEND:-postgres}
       JOB_QUEUE_WORKER_CONCURRENCY: ${JOB_QUEUE_WORKER_CONCURRENCY:-5}
-
       # Keep DB pool capacity >= worker concurrency.
       DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
-
+      # Azure OpenAI
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
       AZURE_OPENAI_DEPLOYMENT_NAME: ${AZURE_OPENAI_DEPLOYMENT_NAME:-}
+      AZURE_OPENAI_TIMEOUT_SECONDS: ${AZURE_OPENAI_TIMEOUT_SECONDS:-90}
+      AZURE_OPENAI_MAX_ATTEMPTS: ${AZURE_OPENAI_MAX_ATTEMPTS:-3}
     depends_on:
       postgres:
         condition: service_healthy
