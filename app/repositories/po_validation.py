@@ -8,6 +8,7 @@ from sqlalchemy import and_, select, update
 from app.db.session import Database
 from app.models.po_validation import MaterialMasterORM, PoLineErrorORM, PoLineORM
 from app.schemas.po_validation import MaterialMasterRecord, PoLine, PoLineError
+from app.utils.pagination import parse_cursor
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class PostgresPoLineRepository:
         if status is not None:
             stmt = stmt.where(PoLineORM.status == status)
         if cursor is not None:
-            stmt = stmt.where(PoLineORM.updated_at < cursor)
+            stmt = stmt.where(PoLineORM.updated_at < parse_cursor(cursor))
         stmt = stmt.order_by(PoLineORM.updated_at.desc()).limit(limit)
 
         with self._db.session() as session:
