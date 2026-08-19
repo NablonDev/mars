@@ -664,6 +664,93 @@ def test_ready_output_reconstructed_from_the_rows_own_columns(services, summary_
 
 
 # ---------------------------------------------------------------------------
+# get_status nearest-prior-date fallback (repository + service)
+# ---------------------------------------------------------------------------
+
+
+def test_get_latest_ready_not_after_returns_the_prior_ready_row(services, summary_repo):
+    _seed_flat_rule_order(services)
+    fake_llm = FakeChatClient()
+    service = _build_service(services, summary_repo, fake_llm)
+    _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 5))
+
+    found = summary_repo.get_latest_ready_not_after("ORD-EXP", date(2026, 8, 6), PROMPT_VERSION)
+
+    assert found is not None
+    assert found["as_of_date"] == date(2026, 8, 5)
+    assert found["status"] == "READY"
+
+
+def test_get_latest_ready_not_after_returns_none_with_no_ready_row(services, summary_repo):
+    _seed_flat_rule_order(services)
+    fake_llm = FakeChatClient()
+    service = _build_service(services, summary_repo, fake_llm)
+    # PENDING only -- never generated, so nothing READY exists yet.
+    service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 5))
+
+    found = summary_repo.get_latest_ready_not_after("ORD-EXP", date(2026, 8, 6), PROMPT_VERSION)
+
+    assert found is None
+
+
+def test_get_latest_ready_not_after_never_looks_ahead(services, summary_repo):
+    """A READY row dated after the requested date must never be returned --
+    this fallback is nearest-prior-date only, not nearest overall."""
+    _seed_flat_rule_order(services)
+    fake_llm = FakeChatClient()
+    service = _build_service(services, summary_repo, fake_llm)
+    _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 10))
+
+    found = summary_repo.get_latest_ready_not_after("ORD-EXP", date(2026, 8, 5), PROMPT_VERSION)
+
+    assert found is None
+
+
+def test_get_status_exact_match_wins_over_fallback(services, summary_repo):
+    """A PENDING row dated exactly on the requested date must be reported
+    as-is -- a caller polling an in-flight job must see its real status,
+    not get silently redirected to an older READY summary."""
+    _seed_flat_rule_order(services)
+    fake_llm = FakeChatClient()
+    service = _build_service(services, summary_repo, fake_llm)
+    _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 5))
+    service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 6))  # left PENDING, not run
+
+    job = service.get_status("ORD-EXP", as_of_date=date(2026, 8, 6))
+
+    assert job.status == "PENDING"
+    assert job.as_of_date == date(2026, 8, 6)
+    assert job.output is None
+
+
+def test_get_status_falls_back_to_the_nearest_prior_ready_summary(services, summary_repo):
+    _seed_flat_rule_order(services)
+    fake_llm = FakeChatClient()
+    service = _build_service(services, summary_repo, fake_llm)
+    _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 5))
+
+    job = service.get_status("ORD-EXP", as_of_date=date(2026, 8, 6))
+
+    assert job.status == "READY"
+    # Honest date: the row this actually came from, not the requested date.
+    assert job.as_of_date == date(2026, 8, 5)
+    assert job.output is not None
+    assert job.output.as_of_date == date(2026, 8, 5)
+
+
+def test_get_status_still_raises_when_no_ready_row_exists_at_or_before(services, summary_repo):
+    """A READY row exists, but only after the requested date -- the
+    fallback must not look ahead, so this is still a genuine 404."""
+    _seed_flat_rule_order(services)
+    fake_llm = FakeChatClient()
+    service = _build_service(services, summary_repo, fake_llm)
+    _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 10))
+
+    with pytest.raises(NoSummaryJobExistsError, match="ORD-EXP"):
+        service.get_status("ORD-EXP", as_of_date=date(2026, 8, 5))
+
+
+# ---------------------------------------------------------------------------
 # Reuse (settings.summary_reuse_enabled)
 # ---------------------------------------------------------------------------
 

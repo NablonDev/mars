@@ -280,13 +280,22 @@ class FineSummaryService:
             PROMPT_VERSION,
         )
         if row is None:
+            # No job dated exactly as_of_date -- fall back to the nearest
+            # prior READY summary, same reasoning as find_reusable's
+            # nearest-prior-date matching.
+            row = self.summaries.get_latest_ready_not_after(
+                order_id,
+                as_of_date,
+                PROMPT_VERSION,
+            )
+        if row is None:
             raise NoSummaryJobExistsError(order_id, as_of_date)
 
         output = self._to_output(row) if row["summary"] is not None else None
 
         return FineSummaryJob(
             order_id=order_id,
-            as_of_date=as_of_date,
+            as_of_date=row["as_of_date"],
             prompt_version=PROMPT_VERSION,
             status=row["status"],
             output=output,

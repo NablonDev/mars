@@ -78,6 +78,28 @@ class FineSummaryRepository:
         row = self._find(order_id, as_of_date, prompt_version)
         return _to_dict(row) if row is not None else None
 
+    def get_latest_ready_not_after(
+        self,
+        order_id: str,
+        as_of_date: date,
+        prompt_version: str,
+    ) -> dict | None:
+        """Latest READY row at or before as_of_date -- the same
+        nearest-prior-date reasoning as find_reusable, for read callers
+        that fall back when no row is dated exactly as_of_date."""
+        row = self._session.scalars(
+            select(FineSummary)
+            .where(
+                FineSummary.order_id == order_id,
+                FineSummary.prompt_version == prompt_version,
+                FineSummary.status == SummaryStatus.READY,
+                FineSummary.as_of_date <= as_of_date,
+            )
+            .order_by(FineSummary.as_of_date.desc())
+        ).first()
+
+        return _to_dict(row) if row is not None else None
+
     def create_pending(
         self,
         order_id: str,
