@@ -102,7 +102,7 @@ class WorkflowThread:
     stage: str = "INGESTING"
     cmir_status: str | None = None
     latest_snapshot: dict[str, Any] = field(default_factory=dict)
-    pending_action_id: int | None = None
+    pending_action_id: UUID | None = None
     error: str | None = None
     po_line_id: UUID | None = None
 
@@ -150,7 +150,7 @@ class RunThreadSummary(BaseModel):
     stage: str
     status: str
     current_node: str | None = None
-    pending_action_id: int | None = None
+    pending_action_id: UUID | None = None
     updated_at: str | None = None
 
 
@@ -179,7 +179,7 @@ class ThreadQueueItem(BaseModel):
     stage: str
     status: str
     current_node: str | None = None
-    pending_action_id: int | None = None
+    pending_action_id: UUID | None = None
     updated_at: str
 
 
@@ -254,7 +254,7 @@ class UpdateDraftResponse(BaseModel):
     thread_id: str
     stage: str
     status: str
-    pending_action_id: int
+    pending_action_id: UUID
     message: str
 
 

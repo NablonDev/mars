@@ -1,5 +1,6 @@
 """SQLAlchemy engine, connection pool, and session management."""
 
+import json
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
@@ -46,6 +47,12 @@ class Database:
     ) -> None:
         engine_kwargs.setdefault("future", True)
         engine_kwargs.setdefault("pool_pre_ping", True)
+        # UUID primary keys (agent_runs.id, email_events.id, ...) flow into JSON/JSONB
+        # columns (agent_traces.input_snapshot, pending_human_actions.payload, ...) as
+        # raw graph state -- stock json.dumps can't encode a uuid.UUID, so fall back to
+        # str() for it (and anything else it can't natively encode) at the engine level,
+        # covering every JSON/JSONB column through this one Database instance.
+        engine_kwargs.setdefault("json_serializer", lambda obj: json.dumps(obj, default=str))
 
         if pool_size is not None:
             engine_kwargs.setdefault("pool_size", pool_size)

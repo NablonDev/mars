@@ -61,8 +61,8 @@ DEFAULT_SOURCE_DSN = "postgresql://postgres:postgres@localhost:5432/cmir_db"
 # into po_lines, so po_lines has to land before them, not after).
 CMIR_TABLES_IN_ORDER = [
     "email_events",
-    "agent_runs",
     "po_lines",
+    "agent_runs",
     "material_master",
     "cmir_records",
     "email_action_logs",
@@ -223,6 +223,15 @@ def migrate(source_dsn: str, target_dsn: str, *, dry_run: bool, force: bool) -> 
             email_events_rows,
         )
 
+        po_lines_rows = list(source["po_lines"])
+        _insert_many(
+            target_conn,
+            "cmir",
+            "po_lines",
+            list(po_lines_rows[0].keys()) if po_lines_rows else [],
+            po_lines_rows,
+        )
+
         agent_runs_rows = [
             {
                 "id": agent_run_ids[r["id"]],
@@ -251,15 +260,6 @@ def migrate(source_dsn: str, target_dsn: str, *, dry_run: bool, force: bool) -> 
             "agent_runs",
             list(agent_runs_rows[0].keys()) if agent_runs_rows else [],
             agent_runs_rows,
-        )
-
-        po_lines_rows = list(source["po_lines"])
-        _insert_many(
-            target_conn,
-            "cmir",
-            "po_lines",
-            list(po_lines_rows[0].keys()) if po_lines_rows else [],
-            po_lines_rows,
         )
 
         material_master_rows = list(source["material_master"])

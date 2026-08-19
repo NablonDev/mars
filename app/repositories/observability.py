@@ -239,7 +239,7 @@ class PostgresWorkflowThreadRepository:
         current_node: str | None = None,
         cmir_status: str | None = None,
         latest_snapshot: dict[str, Any] | None = None,
-        pending_action_id: int | None = None,
+        pending_action_id: UUID | None = None,
         error: str | None = None,
         completed: bool = False,
     ) -> None:
@@ -269,7 +269,7 @@ class PostgresWorkflowThreadRepository:
         current_node: str | None = None,
         cmir_status: str | None = None,
         latest_snapshot: dict[str, Any] | None = None,
-        pending_action_id: int | None = None,
+        pending_action_id: UUID | None = None,
         error: str | None = None,
         completed: bool = False,
     ) -> bool:
@@ -479,7 +479,7 @@ class PostgresWorkflowThreadRepository:
         current_node: str | None,
         cmir_status: str | None,
         latest_snapshot: dict[str, Any] | None,
-        pending_action_id: int | None,
+        pending_action_id: UUID | None,
         error: str | None,
         completed: bool,
     ) -> dict[str, Any]:
@@ -507,7 +507,7 @@ class PostgresPendingHumanActionRepository:
     def __init__(self, database: Database) -> None:
         self._db = database
 
-    def create_open(self, action: PendingHumanAction) -> int:
+    def create_open(self, action: PendingHumanAction) -> UUID:
         with self._db.session() as session:
             record = PendingHumanActionORM(
                 batch_id=action.batch_id,
@@ -528,7 +528,7 @@ class PostgresPendingHumanActionRepository:
 
     def complete(
         self,
-        action_id: int,
+        action_id: UUID,
         *,
         answer: dict[str, Any],
         actor: str,
@@ -682,7 +682,7 @@ class PostgresHITLStateRepository:
         batch_id: str | None,
         thread_id: str,
         email_id: UUID | None,
-        pending_action_id: int,
+        pending_action_id: UUID,
         interrupt_type: str,
         question: dict[str, Any],
         answer: dict[str, Any],
@@ -701,7 +701,7 @@ class PostgresHITLStateRepository:
         field_changes: dict[str, Any] | None = None,
         completed: bool = False,
         po_line_id: UUID | None = None,
-    ) -> int | None:
+    ) -> UUID | None:
         with self._db.session() as session:
             result = session.execute(
                 update(PendingHumanActionORM)
@@ -735,7 +735,7 @@ class PostgresHITLStateRepository:
                 )
             )
 
-            new_pending_action_id: int | None = None
+            new_pending_action_id: UUID | None = None
             if next_pending_interrupt_type is not None:
                 if next_pending_payload is None or next_pending_state_snapshot is None:
                     raise ValueError("Next pending action requires payload and state snapshot.")

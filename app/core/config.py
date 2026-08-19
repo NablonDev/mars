@@ -155,6 +155,8 @@ class LLMConfig:
     api_version: str
     deployment: str
     temperature: float = 0.0
+    timeout_seconds: float = 90.0
+    max_retries: int = 3
 
     @classmethod
     def from_settings(cls, settings: Settings) -> LLMConfig:
@@ -164,6 +166,8 @@ class LLMConfig:
             api_version=settings.azure_openai_api_version,
             deployment=settings.azure_openai_deployment_name,
             temperature=settings.llm_temperature,
+            timeout_seconds=settings.azure_openai_timeout_seconds,
+            max_retries=settings.azure_openai_max_attempts,
         )
 
 

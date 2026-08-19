@@ -23,7 +23,7 @@ class FakeRunService:
                     "stage": "AWAITING_APPROVAL",
                     "status": "waiting_approval",
                     "current_node": "review_extracted_cmir",
-                    "pending_action_id": 3001,
+                    "pending_action_id": "00000000-0000-0000-0000-000000003001",
                     "updated_at": "2026-07-30T10:30:00+00:00",
                 }
             ],
@@ -48,7 +48,7 @@ class FakeRunService:
             "stage": "AWAITING_APPROVAL",
             "status": "waiting_approval",
             "current_node": "review_extracted_cmir",
-            "pending_action_id": 3001,
+            "pending_action_id": "00000000-0000-0000-0000-000000003001",
             "updated_at": "2026-07-30T10:30:00+00:00",
         }
 
@@ -80,7 +80,7 @@ class FakeRunService:
             "thread_id": thread_id,
             "stage": "AWAITING_APPROVAL",
             "status": "waiting_approval",
-            "pending_action_id": 3003,
+            "pending_action_id": "00000000-0000-0000-0000-000000003003",
             "message": "Draft saved. Review again.",
         }
 
@@ -116,7 +116,7 @@ class ApiContractTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["pending_action_id"], 3003)
+        self.assertEqual(response.json()["pending_action_id"], "00000000-0000-0000-0000-000000003003")
         self.assertEqual(response.json()["message"], "Draft saved. Review again.")
 
 
