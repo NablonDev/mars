@@ -87,6 +87,8 @@ services:
         condition: service_healthy
 
   # Local stand-in for the standalone Service Bus consumer process.
+  # Run:
+  #   docker compose --profile tools run --rm cmir-consumer
   cmir-consumer:
     <<: *app-image
     container_name: mars-cmir-consumer

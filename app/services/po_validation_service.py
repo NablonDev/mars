@@ -396,6 +396,7 @@ class PoValidationService:
                     actor=resume_context["actor"],
                     action_type=resume_context["action_type"],
                     field_changes=resume_context.get("field_changes"),
+                    decision=resume_context.get("decision"),
                     next_status=status,
                     next_stage=stage,
                     next_current_node=NODE_BY_INTERRUPT[reason],
@@ -440,6 +441,7 @@ class PoValidationService:
             actor=resume_context["actor"],
             action_type=resume_context["action_type"],
             field_changes=resume_context.get("field_changes"),
+            decision=resume_context.get("decision"),
             next_status=status,
             next_stage=stage,
             next_latest_snapshot={"po_line_id": str(po_line_id)},
@@ -501,7 +503,7 @@ class PoValidationService:
         )
 
     @staticmethod
-    def _resume_failed(thread_id: str, pending_action_id: int, exc: Exception) -> ServiceError:
+    def _resume_failed(thread_id: str, pending_action_id: UUID, exc: Exception) -> ServiceError:
         logger.exception(
             "Failed to resume PO validation thread %s from pending action %s",
             thread_id,

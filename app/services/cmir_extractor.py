@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from langchain_openai import AzureChatOpenAI
+from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from app.core.config import LLMConfig
 from app.schemas.cmir import CMIR
@@ -37,12 +38,13 @@ Email:
 
 class AzureOpenAICMIRExtractor:
     def __init__(self, config: LLMConfig) -> None:
-        self._llm = AzureChatOpenAI(
-            azure_endpoint=config.endpoint,
-            api_key=config.api_key,
-            api_version=config.api_version,
-            azure_deployment=config.deployment,
+        self._llm = ChatOpenAI(
+            base_url=config.endpoint,
+            api_key=SecretStr(config.api_key),
+            model=config.deployment,
             temperature=config.temperature,
+            timeout=config.timeout_seconds,
+            max_retries=config.max_retries,
         ).with_structured_output(CMIR)
 
     def extract(self, body: str) -> CMIR:

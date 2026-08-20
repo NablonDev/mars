@@ -59,7 +59,7 @@ class WorkflowThreadORM(Base):
     stage: Mapped[str] = mapped_column(String(50), default="INGESTING")
     cmir_status: Mapped[str | None] = mapped_column(String(50))
     latest_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB_OR_JSON)
-    pending_action_id: Mapped[int | None] = mapped_column(Integer)
+    pending_action_id: Mapped[UUID | None] = mapped_column(UUID_PK)
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(

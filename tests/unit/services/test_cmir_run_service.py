@@ -17,7 +17,7 @@ class FakeWorkflowThreads:
             "stage": stage,
             "status": status,
             "current_node": "review_extracted_cmir",
-            "pending_action_id": 3001,
+            "pending_action_id": "00000000-0000-0000-0000-000000003001",
             "updated_at": "2026-07-30T10:30:00+00:00",
             "source_message_id": "msg-001",
             "sender": "customer@example.com",
@@ -86,7 +86,7 @@ class FakeAgentRuns:
 class FakePendingActions:
     def __init__(self, interrupt_type: str = "approval_required") -> None:
         self.open_action = {
-            "id": 3001,
+            "id": "00000000-0000-0000-0000-000000003001",
             "batch_id": "batch_01",
             "agent_run_id": "00000000-0000-0000-0000-000000001042",
             "thread_id": "thread_01J4A",
@@ -310,7 +310,7 @@ class ServiceRuleTests(unittest.TestCase):
             )
 
         self.assertEqual(raised.exception.code, "WORKFLOW_RESUME_FAILED")
-        self.assertEqual(pending_actions.open_action["id"], 3001)
+        self.assertEqual(pending_actions.open_action["id"], "00000000-0000-0000-0000-000000003001")
         self.assertEqual(len(hitl_state.calls), 0)
         self.assertEqual(workflow_threads.stage_row["status"], "waiting_missing_fields")
 
@@ -363,7 +363,7 @@ class ServiceRuleTests(unittest.TestCase):
         self.assertEqual(response["status"], "waiting_approval")
         self.assertEqual(response["stage"], "AWAITING_APPROVAL")
         self.assertEqual(pending_actions.open_action["interrupt_type"], "approval_required")
-        self.assertEqual(hitl_state.calls[0]["pending_action_id"], 3001)
+        self.assertEqual(hitl_state.calls[0]["pending_action_id"], "00000000-0000-0000-0000-000000003001")
 
     def test_submit_decision_conflict_closes_thread_and_raises_version_conflict(self) -> None:
         workflow_threads = FakeWorkflowThreads()
@@ -458,7 +458,7 @@ class ServiceRuleTests(unittest.TestCase):
             )
 
         self.assertEqual(raised.exception.code, "WORKFLOW_RESUME_FAILED")
-        self.assertEqual(pending_actions.open_action["id"], 3001)
+        self.assertEqual(pending_actions.open_action["id"], "00000000-0000-0000-0000-000000003001")
         self.assertEqual(len(hitl_state.calls), 0)
 
 

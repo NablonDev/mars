@@ -237,7 +237,7 @@ class SQLAlchemyRepositoryTests(unittest.TestCase):
             batch_id="batch_01",
             thread_id="thread_01J4A",
             email_id="9c76f0b3-1e8d-4f31-9d17-15f42ad8f970",
-            pending_action_id=3001,
+            pending_action_id="00000000-0000-0000-0000-000000003001",
             interrupt_type="missing_mandatory_fields",
             question={"reason": "missing_mandatory_fields"},
             answer={"existing_cmir_ref": "CMIR-1"},

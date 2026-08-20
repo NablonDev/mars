@@ -129,7 +129,7 @@ class FakePendingActions:
 
     def create_open(self, action):
         self.open_action = {
-            "id": 5001,
+            "id": "00000000-0000-0000-0000-000000005001",
             "batch_id": action.batch_id,
             "agent_run_id": action.agent_run_id,
             "thread_id": action.thread_id,
@@ -159,8 +159,10 @@ class FakeHITLState:
         self.pending_actions = pending_actions
         self.fail = False
         self._next_id = 6000
+        self.calls = []
 
     def apply_human_action(self, **kwargs):
+        self.calls.append(copy.deepcopy(kwargs))
         if self.fail:
             raise RuntimeError("transaction failed")
 
@@ -321,7 +323,7 @@ class PoValidationServiceTests(unittest.TestCase):
             "stage": "AWAITING_MANUAL_CMIR_ENTRY",
             "status": "waiting_manual_cmir_entry",
             "current_node": "human_manual_cmir_entry",
-            "pending_action_id": 5001,
+            "pending_action_id": "00000000-0000-0000-0000-000000005001",
             "updated_at": "2026-08-09T10:00:00+00:00",
         }
 
@@ -346,7 +348,7 @@ class PoValidationServiceTests(unittest.TestCase):
             "stage": "AWAITING_QTY_MISMATCH_DECISION",
             "status": "waiting_qty_mismatch_decision",
             "current_node": "human_qty_mismatch_decision",
-            "pending_action_id": 5001,
+            "pending_action_id": "00000000-0000-0000-0000-000000005001",
             "updated_at": "2026-08-09T10:00:00+00:00",
         }
 
@@ -383,11 +385,11 @@ class PoValidationServiceTests(unittest.TestCase):
             "stage": "AWAITING_QTY_MISMATCH_DECISION",
             "status": "waiting_qty_mismatch_decision",
             "current_node": "human_qty_mismatch_decision",
-            "pending_action_id": 5001,
+            "pending_action_id": "00000000-0000-0000-0000-000000005001",
             "updated_at": "2026-08-09T10:00:00+00:00",
         }
         self.pending_actions.open_action = {
-            "id": 5001,
+            "id": "00000000-0000-0000-0000-000000005001",
             "batch_id": "batch_x",
             "agent_run_id": "00000000-0000-0000-0000-000000009001",
             "thread_id": "thread_po_1",
@@ -435,7 +437,7 @@ class PoValidationServiceTests(unittest.TestCase):
             "stage": "AWAITING_MANUAL_CMIR_ENTRY",
             "status": "waiting_manual_cmir_entry",
             "current_node": "human_manual_cmir_entry",
-            "pending_action_id": 5001,
+            "pending_action_id": "00000000-0000-0000-0000-000000005001",
             "updated_at": "2026-08-09T10:00:00+00:00",
         }
 
@@ -481,11 +483,11 @@ class PoValidationServiceTests(unittest.TestCase):
             "stage": "AWAITING_MANUAL_CMIR_ENTRY",
             "status": "waiting_manual_cmir_entry",
             "current_node": "human_manual_cmir_entry",
-            "pending_action_id": 5001,
+            "pending_action_id": "00000000-0000-0000-0000-000000005001",
             "updated_at": "2026-08-09T10:00:00+00:00",
         }
         self.pending_actions.open_action = {
-            "id": 5001,
+            "id": "00000000-0000-0000-0000-000000005001",
             "batch_id": "batch_x",
             "agent_run_id": "00000000-0000-0000-0000-000000009001",
             "thread_id": "thread_po_1",
@@ -508,6 +510,60 @@ class PoValidationServiceTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "WORKFLOW_RESUME_FAILED")
         # The invariant: a failed resume must not close the open pending action.
         self.assertIsNotNone(self.pending_actions.open_action)
+
+    def test_submit_qty_mismatch_decision_persists_decision_on_hitl_action(self) -> None:
+        """The human's actual decision (proceed_anyway/mark_stale/use_substitute) must
+        reach hitl_actions.decision via apply_human_action's decision= kwarg -- it was
+        being silently dropped (resume_context["decision"] was built but never passed
+        through _handle_graph_state's apply_human_action calls)."""
+        service = self._build(graph=FakeGraph(result={}))
+        self.po_lines.rows["po_line_1"] = {
+            "id": "po_line_1",
+            "batch_id": "batch_x",
+            "plant": "1000",
+            "po_number": "PO-1",
+            "po_line_number": "10",
+            "customer_id": "CUST-1",
+            "customer_material_code": "MAT-REF",
+            "order_quantity": 100,
+            "uom": None,
+            "status": "AWAITING_DECISION",
+        }
+        self.po_lines.forced_final_status = "READY_FOR_SO_CREATION_PARTIAL"
+        self.workflow_threads.rows["thread_po_1"] = {
+            "batch_id": "batch_x",
+            "agent_run_id": "00000000-0000-0000-0000-000000009001",
+            "thread_id": "thread_po_1",
+            "email_id": None,
+            "po_line_id": "po_line_1",
+            "stage": "AWAITING_QTY_MISMATCH_DECISION",
+            "status": "waiting_qty_mismatch_decision",
+            "current_node": "human_qty_mismatch_decision",
+            "pending_action_id": "00000000-0000-0000-0000-000000005001",
+            "updated_at": "2026-08-09T10:00:00+00:00",
+        }
+        self.pending_actions.open_action = {
+            "id": "00000000-0000-0000-0000-000000005001",
+            "batch_id": "batch_x",
+            "agent_run_id": "00000000-0000-0000-0000-000000009001",
+            "thread_id": "thread_po_1",
+            "email_id": None,
+            "po_line_id": "po_line_1",
+            "interrupt_type": "qty_mismatch_decision",
+            "payload": {"candidate": {"suggested_substitute_material_code": None}},
+            "state_snapshot": {},
+            "created_at": "2026-08-09T10:00:00+00:00",
+        }
+
+        response = service.submit_qty_mismatch_decision(
+            "thread_po_1",
+            actor="csr@company.com",
+            decision="proceed_anyway",
+            expected_updated_at="2026-08-09T10:00:00+00:00",
+        )
+
+        self.assertEqual(response["stage"], "READY_FOR_SO_CREATION_PARTIAL")
+        self.assertEqual(self.hitl_state.calls[-1]["decision"], "proceed_anyway")
 
     def test_get_errors_rejects_unknown_po_line(self) -> None:
         service = self._build(graph=FakeGraph())
