@@ -13,9 +13,7 @@ class Agent(Base):
     """One LLM-backed feature/agent in this codebase, e.g. "fine_summary"."""
 
     __tablename__ = "dim_agent"
-    __table_args__ = (
-        {"schema": FINES_SCHEMA},
-    )
+    __table_args__ = ({"schema": FINES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     agent_name: Mapped[str] = mapped_column(String(50), unique=True, index=True)

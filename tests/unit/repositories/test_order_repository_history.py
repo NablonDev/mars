@@ -14,7 +14,7 @@ tests/test_known_limitations.py, since the fine-summary layer's caveat
 logic depends on seeing the honest, unfiltered data.
 """
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 
 def test_list_confirmations_returns_full_history_oldest_first(services):
@@ -36,13 +36,13 @@ def test_list_confirmations_returns_full_history_oldest_first(services):
         order_id="ORD-HIST",
         confirmation_id="CONF-ORD-HIST-02",
         confirmed_qty=950,
-        confirmation_date=datetime(2026, 8, 3),
+        confirmation_date=datetime(2026, 8, 3, tzinfo=UTC),
     )
     services.orders.add_confirmation(
         order_id="ORD-HIST",
         confirmation_id="CONF-ORD-HIST-01",
         confirmed_qty=1000,
-        confirmation_date=datetime(2026, 8, 2),
+        confirmation_date=datetime(2026, 8, 2, tzinfo=UTC),
     )
 
     history = services.orders.list_confirmations("ORD-HIST")
@@ -73,7 +73,7 @@ def test_list_shipments_returns_full_history_oldest_first(services):
         actual_ship_date=None,
         appointment_status="SCHEDULED",
         expected_transit_days=2,
-        recorded_at=datetime(2026, 8, 5),
+        recorded_at=datetime(2026, 8, 5, tzinfo=UTC),
     )
     services.orders.record_shipment_event(
         order_id="ORD-SHIP",
@@ -82,7 +82,7 @@ def test_list_shipments_returns_full_history_oldest_first(services):
         actual_ship_date=None,
         appointment_status="MISSED",
         expected_transit_days=2,
-        recorded_at=datetime(2026, 8, 8),
+        recorded_at=datetime(2026, 8, 8, tzinfo=UTC),
     )
 
     history = services.orders.list_shipments("ORD-SHIP")

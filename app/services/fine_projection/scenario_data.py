@@ -1,6 +1,7 @@
 """Shared scenario definitions for the four worked examples, so tests and seed data read from one source of truth."""
 
 from datetime import date
+from typing import TypedDict
 
 from app.services.fine_projection import (
     AppointmentStatus,
@@ -9,6 +10,19 @@ from app.services.fine_projection import (
     OrderSnapshot,
     ProductionStatus,
 )
+
+
+class _BaseSnapshotFields(TypedDict):
+    """The OrderSnapshot fields shared by every day in one worked scenario."""
+
+    order_id: str
+    order_qty: int
+    unit_price: float
+    requested_delivery_date: date
+    required_ship_date: date
+    carrier_reliability_score: float
+    expected_transit_days: int
+
 
 WMT_RULES = [
     FineRule(
@@ -28,7 +42,7 @@ AMZ_RULES = [
 # ---------------------------------------------------------------------
 _req_delivery = date(2026, 8, 11)
 _req_ship = date(2026, 8, 9)
-_base = {
+_base: _BaseSnapshotFields = {
     "order_id": "WMT-100234",
     "order_qty": 2000,
     "unit_price": 18.0,
@@ -141,7 +155,7 @@ wmt_days = [
 # ---------------------------------------------------------------------
 _req_delivery2 = date(2026, 8, 15)
 _req_ship2 = date(2026, 8, 13)
-_base2 = {
+_base2: _BaseSnapshotFields = {
     "order_id": "WMT-100511",
     "order_qty": 1500,
     "unit_price": 18.0,
@@ -247,7 +261,7 @@ wmt2_days = [
 # ---------------------------------------------------------------------
 _req_delivery3 = date(2026, 8, 14)
 _req_ship3 = date(2026, 8, 12)
-_base3 = {
+_base3: _BaseSnapshotFields = {
     "order_id": "AMZ-778501",
     "order_qty": 1200,
     "unit_price": 14.0,
@@ -367,7 +381,7 @@ amz1_days = [
 # ---------------------------------------------------------------------
 _req_delivery4 = date(2026, 8, 18)
 _req_ship4 = date(2026, 8, 16)
-_base4 = {
+_base4: _BaseSnapshotFields = {
     "order_id": "AMZ-780112",
     "order_qty": 900,
     "unit_price": 14.0,

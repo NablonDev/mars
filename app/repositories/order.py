@@ -162,7 +162,7 @@ class OrderRepository:
             stmt = stmt.where(Order.order_status == order_status)
 
         rows = self._session.scalars(stmt).all()
-        return [self.get_order(r.order_id) for r in rows]
+        return [_order_to_dict(r) for r in rows]
 
     def count_by_status(self) -> dict[str, int]:
         """Order counts keyed by `order_status`, for diagnostics."""

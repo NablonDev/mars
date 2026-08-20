@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, TypedDict
 
 from app.core.exceptions import OrderNotFoundError
 from app.repositories.fine_rule import FineRuleRepository
@@ -38,7 +38,15 @@ _LOCATIONS = [
     {"location_id": "LOC-COL", "location_name": "Mars Petcare Plant - Columbia MO", "location_type": "PLANT"},
     {"location_id": "LOC-ATL", "location_name": "Mars DC - Atlanta GA", "location_type": "DC"},
 ]
-_CARRIERS = [
+
+
+class _CarrierSeed(TypedDict):
+    carrier_id: str
+    carrier_name: str
+    historical_reliability_score: float
+
+
+_CARRIERS: list[_CarrierSeed] = [
     {"carrier_id": "CAR-SWIFT", "carrier_name": "Swift Transportation", "historical_reliability_score": 92.0},
     {"carrier_id": "CAR-JBHUNT", "carrier_name": "JB Hunt", "historical_reliability_score": 78.0},
 ]
@@ -81,7 +89,21 @@ def _day_before_first(days) -> date:
     return days[0][0].projection_date - timedelta(days=1)
 
 
-_ORDERS = [
+class _OrderSeed(TypedDict):
+    order_id: str
+    retailer_id: str
+    sku_id: str
+    ship_from_location_id: str
+    order_qty: int
+    unit_price: float
+    order_date: date
+    requested_delivery_date: date
+    required_ship_date: date
+    order_status: str
+    carrier_id: str
+
+
+_ORDERS: list[_OrderSeed] = [
     {
         "order_id": "WMT-100234",
         "retailer_id": "RET-WMT",

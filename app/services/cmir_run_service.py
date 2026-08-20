@@ -225,7 +225,7 @@ class CMIRRunService:
                     stage="FAILED",
                     error=str(exc),
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001
                 logger.warning("Failed before workflow thread row existed: %s", thread_id)
             if raise_on_error:
                 raise
@@ -577,7 +577,7 @@ class CMIRRunService:
         if conflict:
             stage, status = CONFLICT_STAGE
         else:
-            decision = state.get("decision")
+            decision = state.get("decision") or ""
             stage, status = FINAL_STAGE_BY_DECISION.get(
                 decision, ("COMPLETED_APPROVED", "completed_approved")
             )

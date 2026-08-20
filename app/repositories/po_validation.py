@@ -42,7 +42,7 @@ class PostgresPoLineRepository:
             )
             session.add(record)
             session.flush()
-            po_line_id = record.id
+            po_line_id = str(record.id)
         logger.info("Created po_line %s for batch %s", po_line_id, line.batch_id)
         return po_line_id
 
@@ -146,7 +146,7 @@ class PostgresPoLineErrorRepository:
             )
             session.add(record)
             session.flush()
-            error_id = record.id
+            error_id = str(record.id)
         logger.info(
             "Logged po_line_error %s for po_line %s (%s)", error_id, error.po_line_id, error.node_name
         )

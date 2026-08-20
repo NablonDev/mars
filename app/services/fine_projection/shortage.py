@@ -84,6 +84,8 @@ def shortfall_units_for_pricing(s: OrderSnapshot) -> float:
 
 
 def _price_tiered(rule: FineRule, measure: float, po_value: float) -> float:
+    if not rule.tiers:
+        return 0.0
     for tier in rule.tiers:
         if tier.band_min <= measure < tier.band_max:
             return tier.rate * po_value

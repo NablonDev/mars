@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from langchain_core.tools import BaseTool, tool
@@ -22,9 +23,9 @@ class GetTierBandsForRuleInput(BaseModel):
 
 def build_fine_summary_tools(
     *,
-    carrier_reliability: callable,
-    actual_fines: callable,
-    tier_bands: callable,
+    carrier_reliability: Callable[[str], dict[str, Any]],
+    actual_fines: Callable[[], list[dict[str, Any]]],
+    tier_bands: Callable[[str], dict[str, Any]],
     order_status: str,
 ) -> list[BaseTool]:
     """Build tools scoped to the current order."""

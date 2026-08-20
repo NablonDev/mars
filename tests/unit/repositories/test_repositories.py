@@ -1,6 +1,6 @@
 """Repository-layer tests, run against in-memory SQLite (see conftest.py)."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from sqlalchemy import select
@@ -120,14 +120,14 @@ def test_fact_writers_are_idempotent_on_their_natural_key(services, db_session):
             order_id="ORD-IDEM",
             confirmation_id="CONF-ORD-IDEM-01",
             confirmed_qty=90,
-            confirmation_date=datetime(2026, 8, 2),
+            confirmation_date=datetime(2026, 8, 2, tzinfo=UTC),
         )
         services.orders.add_production_status(
             production_id="PROD-IDEM-01",
             sku_id="SKU-IDEM",
             location_id="LOC-IDEM",
             status="AT_RISK",
-            status_date=datetime(2026, 8, 2),
+            status_date=datetime(2026, 8, 2, tzinfo=UTC),
         )
         services.orders.record_shipment_event(
             order_id="ORD-IDEM",
@@ -136,7 +136,7 @@ def test_fact_writers_are_idempotent_on_their_natural_key(services, db_session):
             actual_ship_date=None,
             appointment_status="SCHEDULED",
             expected_transit_days=2,
-            recorded_at=datetime(2026, 8, 2),
+            recorded_at=datetime(2026, 8, 2, tzinfo=UTC),
         )
         services.orders.add_demand_exception(
             exception_id="EXC-ORD-IDEM-01", order_id="ORD-IDEM", flagged_date=date(2026, 8, 2)
