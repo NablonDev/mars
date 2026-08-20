@@ -42,7 +42,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: development
-
     steps:
       - name: Azure login (OIDC)
         uses: azure/login@v3
@@ -80,25 +79,20 @@ jobs:
             STATUS=$(az containerapp job execution list \
               --resource-group "${{ env.RESOURCE_GROUP }}" \
               --name "${{ env.DB_MIGRATION_JOB_NAME }}" \
-              --query "[?name=='$EXECUTION_NAME'].properties.status" \
-              -o tsv)
+              --query "[?name=='$EXECUTION_NAME'].properties.status" -o tsv)
 
             echo "DB migration status: ${STATUS:-pending} ($i/60)"
-
             if [ "$STATUS" = "Succeeded" ]; then
               exit 0
             fi
-
             if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Stopped" ]; then
               echo "DB migration failed -- aborting deploy; application images NOT updated."
               exit 1
             fi
-
             if [ "$STATUS" = "Degraded" ] || [ "$STATUS" = "Unknown" ]; then
               echo "DB migration entered unexpected status: $STATUS"
               exit 1
             fi
-
             sleep 10
           done
 
