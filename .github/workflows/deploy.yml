@@ -1,10 +1,13 @@
-# Manual promotion: point the already-provisioned Container Apps at an image
-# already sitting in ACR (pushed by ci-build.yml). Deliberately decoupled
-# from every merge -- a human decides when production actually moves. Never
-# creates resources and never touches the migration job; a schema change
-# still needs a deliberate
-# `az containerapp job start -g $RG -n $MIGRATION_JOB_NAME` run first -- see
-# docs/DEPLOYMENT.md §6.5/§6.8.
+# Manual promotion: deploy an image already sitting in ACR (pushed by
+# build.yml). Migrations run first and must succeed before application
+# images are updated. This workflow never creates Azure resources.
+#
+# Deployment flow:
+#   1. Update and start the DB migration Job
+#   2. Wait for the migration to succeed
+#   3. Update the backend Container App
+#   4. Update the fines projection Job
+#   5. Update the CMIR consumer Container App
 
 name: CD - Deploy Development
 
@@ -12,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Image tag already pushed to ACR (e.g. a short git SHA like a1b2c3d, or the latest floating tag ci-build.yml pushes)"
+        description: "Image tag already pushed to ACR (e.g. a short git SHA like a1b2c3d or latest)"
         required: true
         type: string
         default: "latest"
@@ -23,93 +26,102 @@ permissions:
 
 # Resource/registry/app names are intentionally not hardcoded here -- configure
 # them as GitHub Actions Variables (repo or environment scope: Settings ->
-# Secrets and variables -> Actions -> Variables tab). Required: RESOURCE_GROUP,
-# ACR_NAME, IMAGE_NAME, API_APP_NAME, NIGHTLY_JOB_NAME, MIGRATION_JOB_NAME,
-# CMIR_CONSUMER_APP_NAME.
+# Secrets and variables -> Actions -> Variables tab). Required:
+# RESOURCE_GROUP, ACR_NAME, IMAGE_NAME, BACKEND_APP_NAME,
+# FINES_PROJECTION_JOB_NAME, DB_MIGRATION_JOB_NAME, CMIR_CONSUMER_APP_NAME.
 env:
   RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
   ACR_NAME: ${{ vars.ACR_NAME }}
   IMAGE_NAME: ${{ vars.IMAGE_NAME }}
-  API_APP_NAME: ${{ vars.API_APP_NAME }}
-  NIGHTLY_JOB_NAME: ${{ vars.NIGHTLY_JOB_NAME }}
-  MIGRATION_JOB_NAME: ${{ vars.MIGRATION_JOB_NAME }}
+  BACKEND_APP_NAME: ${{ vars.BACKEND_APP_NAME }}
+  FINES_PROJECTION_JOB_NAME: ${{ vars.FINES_PROJECTION_JOB_NAME }}
+  DB_MIGRATION_JOB_NAME: ${{ vars.DB_MIGRATION_JOB_NAME }}
   CMIR_CONSUMER_APP_NAME: ${{ vars.CMIR_CONSUMER_APP_NAME }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: development # optional gate -- add required reviewers on this GitHub Environment for a manual-approval step on top of "someone clicked Run workflow"
+    environment: development
+
     steps:
       - name: Azure login (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # Migrations run ONCE, here, before any app image is updated -- not
-      # from an entrypoint.sh on every container boot. Multiple API replicas
-      # booting concurrently would otherwise race `alembic upgrade head`
-      # against each other; this way it's one controlled run, and a failed
-      # migration stops the deploy instead of silently retrying (matching
-      # the migration Job's own --replica-retry-limit 0 in docs/DEPLOYMENT.md §6.5).
-      - name: Update migration Job image and start it
-        id: migrate_start
+      # Run the DB migration once before updating any application image.
+      # Multiple API replicas must not race to run Alembic migrations.
+      - name: Update DB migration Job image and start it
+        id: db_migration_start
         run: |
           az containerapp job update \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
-            --name "${{ env.MIGRATION_JOB_NAME }}" \
+            --name "${{ env.DB_MIGRATION_JOB_NAME }}" \
             --image "${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}"
 
           EXECUTION_NAME=$(az containerapp job start \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
-            --name "${{ env.MIGRATION_JOB_NAME }}" \
+            --name "${{ env.DB_MIGRATION_JOB_NAME }}" \
             --query name -o tsv)
-          echo "Started migration execution: $EXECUTION_NAME"
+
+          echo "Started DB migration execution: $EXECUTION_NAME"
           echo "execution_name=$EXECUTION_NAME" >> "$GITHUB_OUTPUT"
 
-      # NOTE: unverified against a real Azure subscription (none provisioned
-      # yet, per docs/DEPLOYMENT.md's own status note) -- the exact `az
-      # containerapp job execution` query shape should be sanity-checked the
-      # first time this actually runs, same posture as the rest of that doc.
-      - name: Wait for migration to finish (fails the deploy on migration failure)
+      # Wait for the migration execution to complete successfully.
+      # The exact execution query should be verified against the provisioned
+      # Azure subscription the first time this workflow runs.
+      - name: Wait for DB migration to finish
         run: |
-          EXECUTION_NAME="${{ steps.migrate_start.outputs.execution_name }}"
-          for i in $(seq 1 30); do
+          EXECUTION_NAME="${{ steps.db_migration_start.outputs.execution_name }}"
+
+          for i in $(seq 1 60); do
             STATUS=$(az containerapp job execution list \
               --resource-group "${{ env.RESOURCE_GROUP }}" \
-              --name "${{ env.MIGRATION_JOB_NAME }}" \
-              --query "[?name=='$EXECUTION_NAME'].properties.status" -o tsv)
-            echo "Migration status: ${STATUS:-pending} ($i/30)"
+              --name "${{ env.DB_MIGRATION_JOB_NAME }}" \
+              --query "[?name=='$EXECUTION_NAME'].properties.status" \
+              -o tsv)
+
+            echo "DB migration status: ${STATUS:-pending} ($i/60)"
+
             if [ "$STATUS" = "Succeeded" ]; then
               exit 0
             fi
+
             if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Stopped" ]; then
-              echo "Migration failed -- aborting deploy, app images NOT updated."
+              echo "DB migration failed -- aborting deploy; application images NOT updated."
               exit 1
             fi
+
+            if [ "$STATUS" = "Degraded" ] || [ "$STATUS" = "Unknown" ]; then
+              echo "DB migration entered unexpected status: $STATUS"
+              exit 1
+            fi
+
             sleep 10
           done
-          echo "Timed out after 5 minutes waiting for migration -- aborting deploy."
+
+          echo "Timed out after 10 minutes waiting for DB migration -- aborting deploy."
           exit 1
 
-      - name: Point the API Container App at the new image
+      - name: Update backend Container App image
         run: |
           az containerapp update \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
-            --name "${{ env.API_APP_NAME }}" \
+            --name "${{ env.BACKEND_APP_NAME }}" \
             --image "${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}"
 
-      # Jobs have no running replica to roll -- this only changes which
-      # image the *next* execution (scheduled or manually started) uses.
-      - name: Point the nightly batch Job at the new image
+      # Jobs have no continuously running replica to roll. This changes the
+      # image used by the next scheduled or manually started execution.
+      - name: Update fines projection Job image
         run: |
           az containerapp job update \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
-            --name "${{ env.NIGHTLY_JOB_NAME }}" \
+            --name "${{ env.FINES_PROJECTION_JOB_NAME }}" \
             --image "${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}"
 
-      - name: Point the CMIR consumer Container App at the new image
+      - name: Update CMIR consumer Container App image
         run: |
           az containerapp update \
             --resource-group "${{ env.RESOURCE_GROUP }}" \

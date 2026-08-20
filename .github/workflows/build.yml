@@ -1,8 +1,8 @@
 # Continuous build: on every push to development (and on PRs, test-only), run the
-# test suite; only a green build on development pushes a new image to ACR. This is
-# step 1 of the two-step deploy plan -- see docs/DEPLOYMENT.md §6.8. It never
-# touches any Container App or Job; promoting a built image is deploy.yml,
-# triggered by hand.
+# test suite; only a green build on development pushes a new image to ACR.
+# This is step 1 of the two-step deploy plan -- see docs/DEPLOYMENT.md §6.8.
+# It never touches any Container App or Job; promoting a built image is
+# deploy.yml, triggered manually.
 
 name: CI - Build Development
 
@@ -19,7 +19,7 @@ permissions:
   id-token: write # only needed by build-and-push's Azure login
   contents: read
 
-# Resource/registry/app names are intentionally not hardcoded here -- configure
+# Resource/registry names are intentionally not hardcoded here -- configure
 # them as GitHub Actions Variables (repo or environment scope: Settings ->
 # Secrets and variables -> Actions -> Variables tab). Required: ACR_NAME,
 # IMAGE_NAME.
