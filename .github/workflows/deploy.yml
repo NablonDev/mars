@@ -38,7 +38,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: production # optional gate -- add required reviewers on this GitHub Environment for a manual-approval step on top of "someone clicked Run workflow"
+    environment: development # optional gate -- add required reviewers on this GitHub Environment for a manual-approval step on top of "someone clicked Run workflow"
     steps:
       - name: Azure login (OIDC)
         uses: azure/login@v2
