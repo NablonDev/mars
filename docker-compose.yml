@@ -87,8 +87,6 @@ services:
         condition: service_healthy
 
   # Local stand-in for the standalone Service Bus consumer process.
-  # Run:
-  #   docker compose --profile tools run --rm cmir-consumer
   cmir-consumer:
     <<: *app-image
     container_name: mars-cmir-consumer
@@ -104,6 +102,7 @@ services:
       postgres:
         condition: service_healthy
 
+  # Local stand-in for the postgres alembic migration.
   # Run explicitly:
   #   docker compose --profile tools run --rm migrate
   migrate:
@@ -119,13 +118,13 @@ services:
 
   # Local stand-in for the Azure Container Apps Job.
   # Run:
-  #   docker compose --profile tools run --rm worker
-  fines-projection-worker:
+  #   docker compose --profile tools run --rm fines-projection-job
+  fines-projection-job:
     <<: *app-image
     command: python scripts/ops/run_daily_batch.py
     profiles:
       - tools
-    container_name: mars-fines-projection-worker
+    container_name: mars-fines-projection-job
     environment:
       <<: *app-database
       ENVIRONMENT: ${ENVIRONMENT:-development}
