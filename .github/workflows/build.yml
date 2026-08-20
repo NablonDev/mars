@@ -19,9 +19,13 @@ permissions:
   id-token: write # only needed by build-and-push's Azure login
   contents: read
 
+# Resource/registry/app names are intentionally not hardcoded here -- configure
+# them as GitHub Actions Variables (repo or environment scope: Settings ->
+# Secrets and variables -> Actions -> Variables tab). Required: ACR_NAME,
+# IMAGE_NAME.
 env:
-  ACR_NAME: marsplatformacr
-  IMAGE_NAME: mars-platform
+  ACR_NAME: ${{ vars.ACR_NAME }}
+  IMAGE_NAME: ${{ vars.IMAGE_NAME }}
 
 jobs:
   test:
@@ -62,12 +66,16 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Compute short SHA
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
       # Builds inside ACR, not on the runner -- avoids an amd64/arm64
       # mismatch and needs no local Docker daemon or registry credentials.
       - name: Build and push image via ACR
         run: |
           az acr build \
             --registry "${{ env.ACR_NAME }}" \
-            --image "${{ env.IMAGE_NAME }}:${{ github.sha }}" \
-            --image "${{ env.IMAGE_NAME }}:dev-latest" \
+            --image "${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.sha_short }}" \
+            --image "${{ env.IMAGE_NAME }}:latest" \
             .
