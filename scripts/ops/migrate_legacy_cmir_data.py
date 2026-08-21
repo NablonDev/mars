@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 One-off import of the legacy standalone `cmir_db` database (pre fines/cmir
 merge, `public` schema, int-keyed `agent_runs`) into this repo's `mars`

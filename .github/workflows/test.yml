@@ -1,0 +1,45 @@
+# Continuous test: on every pull request targeting development, run the
+# test suite. This workflow is test-only -- it never builds or pushes an
+# image and never touches any Azure resources.
+#
+# This is step 1 of the two-step deploy plan -- see docs/DEPLOYMENT.md §6.8.
+# After the PR is merged, build.yml runs the tests again against the actual
+# development branch before building and pushing the image to ACR.
+
+name: CI - Test Development
+
+on:
+  pull_request:
+    branches:
+      - development
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Advisory only: ruff is style/formatting, not correctness. Findings
+      # still show up as annotations on the run, they just don't block the
+      # job -- mypy (real type correctness) and pytest (does it work) are
+      # the two gates that actually block.
+      - name: Lint
+        continue-on-error: true
+        run: uv run ruff check --output-format=github app/ scripts/ tests/ alembic/
+
+      - name: Type-check
+        run: uv run mypy app/
+
+      - name: Test
+        run: uv run pytest tests/ -v

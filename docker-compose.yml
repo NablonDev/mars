@@ -93,8 +93,6 @@ services:
     <<: *app-image
     container_name: mars-cmir-consumer
     command: python -m app.workers.service_bus_consumer
-    profiles:
-      - tools
     environment:
       <<: *app-database
       SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE:-}
@@ -106,6 +104,7 @@ services:
       postgres:
         condition: service_healthy
 
+  # Local stand-in for the postgres alembic migration.
   # Run explicitly:
   #   docker compose --profile tools run --rm migrate
   migrate:
@@ -121,13 +120,13 @@ services:
 
   # Local stand-in for the Azure Container Apps Job.
   # Run:
-  #   docker compose --profile tools run --rm worker
-  fines-projection-worker:
+  #   docker compose --profile tools run --rm fines-projection-job
+  fines-projection-job:
     <<: *app-image
     command: python scripts/ops/run_daily_batch.py
     profiles:
       - tools
-    container_name: mars-fines-projection-worker
+    container_name: mars-fines-projection-job
     environment:
       <<: *app-database
       ENVIRONMENT: ${ENVIRONMENT:-development}

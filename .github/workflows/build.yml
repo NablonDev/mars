@@ -1,0 +1,87 @@
+# Continuous build: on every push to development, run the test suite and,
+# only after a green test suite, build and push a new image to ACR.
+#
+# This is step 1 of the two-step deploy plan -- see docs/DEPLOYMENT.md §6.8.
+# It never touches any Container App or Job; promoting a built image is
+# deploy.yml, triggered manually.
+#
+# Pull requests are handled separately by test.yml. This means this workflow
+# has no skipped build job on PRs: it only runs when code is actually pushed
+# to development.
+
+name: CI - Build Development
+
+on:
+  push:
+    branches:
+      - development
+
+permissions:
+  id-token: write # only needed by build-and-push's Azure login
+  contents: read
+
+# Resource/registry names are intentionally not hardcoded here -- configure
+# them as GitHub Actions Variables (repo or environment scope: Settings ->
+# Secrets and variables -> Actions -> Variables tab). Required: ACR_NAME,
+# IMAGE_NAME.
+env:
+  ACR_NAME: ${{ vars.ACR_NAME }}
+  IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Advisory only: ruff is style/formatting, not correctness. Findings
+      # still show up as annotations on the run, they just don't block the
+      # job -- mypy (real type correctness) and pytest (does it work) are
+      # the two gates that actually block.
+      - name: Lint
+        continue-on-error: true
+        run: uv run ruff check --output-format=github app/ scripts/ tests/ alembic/
+
+      - name: Type-check
+        run: uv run mypy app/
+
+      - name: Test
+        run: uv run pytest tests/ -v
+
+  build-and-push:
+    name: Build and Push Image
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/development'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Compute short SHA
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Builds inside ACR, not on the runner -- avoids an amd64/arm64
+      # mismatch and needs no local Docker daemon or registry credentials.
+      - name: Build and push image via ACR
+        run: |
+          az acr build \
+            --registry "${{ env.ACR_NAME }}" \
+            --image "${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.sha_short }}" \
+            --image "${{ env.IMAGE_NAME }}:latest" \
+            .
