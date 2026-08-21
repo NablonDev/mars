@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -68,7 +69,7 @@ class PostgresCMIRRepository:
         material_identity: str,
         target_customer_material_ref: str,
         description: str = "",
-    ) -> int:
+    ) -> UUID:
         """Insert a CMIR mapping from a human-submitted PO line entry.
 
         Reuses supersede_and_insert (with expected_current_id=None) instead of a bare
@@ -133,8 +134,8 @@ class PostgresCMIRRepository:
         customer_identity: str,
         target_customer_material_ref: str,
         merged: CMIR,
-        expected_current_id: int | None,
-    ) -> int:
+        expected_current_id: UUID | None,
+    ) -> UUID:
         customer_identity_key = normalize_identity_key(customer_identity)
         target_customer_material_ref_key = normalize_identity_key(target_customer_material_ref)
         with self._db.session() as session:

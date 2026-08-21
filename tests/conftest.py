@@ -18,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 
-from app.api.dependencies import get_database, get_job_queue, get_session
+from app.api.dependencies import get_database, get_job_queue, get_llm_client, get_session
 from app.core.config import Settings
 from app.db.session import Database
 from app.main import create_app
@@ -56,6 +56,32 @@ def job_queue(database: Database):
     return build_job_queue(Settings(), database)
 
 
+class _UnconfiguredFakeChatClient:
+    """Default `get_llm_client` override for every test that uses the `app`/
+    `client`/`seeded_client` fixtures.
+
+    Without this, FastAPI still resolves `Depends(get_llm_client)` for any
+    request into a route that declares it -- even one that 404s/422s before
+    the handler body ever needs the LLM -- which eagerly constructs a real
+    `AzureOpenAIChatClient` and raises `AzureOpenAIConfigError` when no
+    `.env` with real Azure OpenAI credentials is present (as in CI). Tests
+    that actually exercise the LLM-calling path override this with their
+    own richer fake via `client.app.dependency_overrides[get_llm_client] =
+    ...`, which simply replaces this default. If `invoke` ever runs here,
+    some test reaches an LLM-calling code path without setting its own
+    override.
+    """
+
+    model_name = "fake-model"
+
+    def invoke(self, messages, *, tools=None):
+        raise AssertionError(
+            "get_llm_client's default test override was invoked -- this "
+            "test reaches a code path that calls the LLM and must set its "
+            "own dependency_overrides[get_llm_client]"
+        )
+
+
 @pytest.fixture
 def app(database: Database, job_queue):
     application = create_app()
@@ -74,6 +100,7 @@ def app(database: Database, job_queue):
     application.dependency_overrides[get_session] = _get_test_db
     application.dependency_overrides[get_database] = lambda: database
     application.dependency_overrides[get_job_queue] = lambda: job_queue
+    application.dependency_overrides[get_llm_client] = lambda: _UnconfiguredFakeChatClient()
     return application
 
 

@@ -131,7 +131,8 @@ def run() -> None:
                         _process_message(receiver, message, http_client, process_email_url)
                         if shutdown_requested:
                             break
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- daemon loop must survive any Service
+                # Bus SDK / network / HTTP error and keep retrying; already logged below.
                 if shutdown_requested:
                     break
                 LOGGER.warning("Receiver loop error; retrying in 5 seconds: %s", exc)

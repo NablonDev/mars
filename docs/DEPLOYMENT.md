@@ -357,7 +357,7 @@ the Container Apps Job (§6).
 ```
                        ┌──────────────────────────────┐
                        │ Container Registry (ACR)     │
-                       │   mars-fines:<tag>           │  ← one image
+                       │   mars-platform:<tag>        │  ← one image
                        └──────────────┬───────────────┘
                                       │
               ┌───────────────────────┴───────────────────────┐
@@ -424,7 +424,7 @@ are on an Apple Silicon machine, which is the single most common "works
 locally, crash-loops in Azure" cause:
 
 ```bash
-az acr build -r $ACR -t mars-fines:$IMAGE_TAG -t mars-fines:latest .
+az acr build -r $ACR -t mars-platform:$IMAGE_TAG -t mars-platform:latest .
 ```
 
 The build context is the repo root. Before the first build, confirm the image
@@ -478,7 +478,7 @@ az containerapp env create -g $RG -n $ENVNAME -l $LOC
 az containerapp create \
   -g $RG -n mars-fines-api \
   --environment $ENVNAME \
-  --image $ACR.azurecr.io/mars-fines:$IMAGE_TAG \
+  --image $ACR.azurecr.io/mars-platform:$IMAGE_TAG \
   --registry-server $ACR.azurecr.io \
   --system-assigned \
   --target-port 8000 --ingress external \
@@ -530,7 +530,7 @@ az containerapp job create \
   --environment $ENVNAME \
   --trigger-type Manual \
   --replica-timeout 600 --replica-retry-limit 0 \
-  --image $ACR.azurecr.io/mars-fines:$IMAGE_TAG \
+  --image $ACR.azurecr.io/mars-platform:$IMAGE_TAG \
   --registry-server $ACR.azurecr.io \
   --system-assigned \
   --cpu 0.5 --memory 1.0Gi \
@@ -559,7 +559,7 @@ az containerapp job create \
   --replica-retry-limit 1 \
   --replica-completion-count 1 \
   --parallelism 1 \
-  --image $ACR.azurecr.io/mars-fines:$IMAGE_TAG \
+  --image $ACR.azurecr.io/mars-platform:$IMAGE_TAG \
   --registry-server $ACR.azurecr.io \
   --system-assigned \
   --cpu 2.0 --memory 4.0Gi \
@@ -641,6 +641,72 @@ The API's `POST /api/v1/batches/run` is *not* a substitute under the postgres
 backend: it enqueues but does not drain. Under `service_bus` it does wake a
 consumer. This asymmetry is exactly what the `execution_note` field in the
 response reports.
+
+---
+
+## 6.8 CI/CD: two separate, deliberately decoupled workflows
+
+Getting a new image into already-provisioned resources is split into two
+steps that happen at different times, for different reasons — a merge
+should never itself flip what's live in production:
+
+**Step 1 — automatic, on every push to `main`: `.github/workflows/ci-build.yml`.**
+Runs lint/typecheck/`pytest`; only on a green build does it push a new image
+to ACR, tagged with the commit SHA and `latest`. A red build pushes nothing
+— the `build-and-push` job has `needs: test`. Also runs on pull requests,
+test-only: the push-to-ACR job is gated to `push` on `main`, so PRs never
+touch the registry.
+
+**Step 2 — manual: `.github/workflows/deploy.yml`.** `workflow_dispatch`
+only, with an `image_tag` input (any tag step 1 already pushed — usually
+`latest`, or a specific commit SHA to roll back to). Points the API
+Container App and the nightly batch Job at that tag via
+`az containerapp update` / `az containerapp job update`. Never creates
+resources, never touches the migration job — a schema change still needs a
+deliberate `az containerapp job start -g $RG -n mars-fines-migrate` first
+(§6.5).
+
+Both authenticate via **OIDC federated credential** — no client secret
+stored in GitHub, ever. Inert until this one-time setup is done (needs
+`$RG`/`$ACR` to already exist):
+
+```bash
+APP_ID=$(az ad app create --display-name mars-fines-github-actions \
+           --query appId -o tsv)
+az ad sp create --id "$APP_ID"
+
+# Credential 1: lets ci-build.yml's push-to-main trigger authenticate.
+az ad app federated-credential create --id "$APP_ID" --parameters '{
+  "name": "github-main-branch",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:<org>/<repo>:ref:refs/heads/main",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
+
+# Credential 2: lets deploy.yml's manual dispatch authenticate. Scoped to
+# the "production" GitHub Environment (deploy.yml declares
+# `environment: production`) rather than a branch/ref -- add required
+# reviewers on that Environment in GitHub's settings for an approval gate
+# on top of "someone has to click Run workflow", if you want one.
+az ad app federated-credential create --id "$APP_ID" --parameters '{
+  "name": "github-deploy-environment",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:<org>/<repo>:environment:production",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
+
+RG_ID=$(az group show -n $RG --query id -o tsv)
+az role assignment create --assignee "$APP_ID" --role AcrPush \
+  --scope "$(az acr show -g $RG -n $ACR --query id -o tsv)"
+az role assignment create --assignee "$APP_ID" --role "Container Apps Contributor" \
+  --scope "$RG_ID"
+
+az account show --query '{tenant:tenantId, subscription:id}' -o table
+```
+
+Then set three repo secrets (Settings → Secrets and variables → Actions):
+`AZURE_CLIENT_ID` (the `$APP_ID` above), `AZURE_TENANT_ID`,
+`AZURE_SUBSCRIPTION_ID`. No `AZURE_CLIENT_SECRET` — OIDC doesn't use one.
 
 ---
 
@@ -744,7 +810,7 @@ az containerapp job create \
   --scale-rule-metadata queueName=fine-projection-jobs \
                         namespace=$SB messageCount=20 \
   --scale-rule-identity system \
-  --image $ACR.azurecr.io/mars-fines:$IMAGE_TAG \
+  --image $ACR.azurecr.io/mars-platform:$IMAGE_TAG \
   --command "python" --args "scripts/ops/run_daily_batch.py,--drain-only" \
   ...
 ```
@@ -851,3 +917,8 @@ Infrastructure, not code. Nothing in the repo blocks any of it:
 5. Decide the DST behaviour for the cron expression.
 6. Create the alerts in §9.
 7. Service Bus, only when a real connector needs it.
+8. Once §6.1–6.3 exist: run §6.8's one-time OIDC setup (two federated
+   credentials) and add the three repo secrets so `ci-build.yml`/
+   `deploy.yml` can authenticate. Until then, deploys are the manual
+   `az acr build` / `az containerapp update` commands in §6.1/§6.4/§6.6 —
+   the workflow files are written but have nothing to log into.

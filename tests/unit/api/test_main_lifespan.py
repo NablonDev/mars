@@ -27,13 +27,29 @@ class _FakeJobQueue:
         self.close_calls += 1
 
 
+class _FakeCMIRRunService:
+    """Stand-in passed to `create_app(service=...)` so lifespan's `if
+    app.state.service is None: build_service()` branch is skipped --
+    `build_service()` -> `Container.build()` opens a real Postgres-backed
+    LangGraph checkpointer (`PostgresSaver.from_conn_string(...).setup()`),
+    which is unrelated to what these tests verify (job-queue lifecycle) and
+    would otherwise crash with `psycopg.OperationalError` whenever no
+    Postgres is reachable.
+    """
+
+
+class _FakePoValidationService:
+    """Same purpose as `_FakeCMIRRunService`, for `app.state.po_service` /
+    `build_po_validation_service()`."""
+
+
 def test_lifespan_closes_the_job_queue_on_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_queue = _FakeJobQueue()
     monkeypatch.setattr(main_module, "build_job_queue", lambda settings, database: (fake_queue, fake_queue))
 
     from fastapi.testclient import TestClient
 
-    app = create_app()
+    app = create_app(_FakeCMIRRunService(), _FakePoValidationService())
 
     with TestClient(app) as client:
         assert app.state.job_queue == (fake_queue, fake_queue)
@@ -57,7 +73,7 @@ def test_lifespan_builds_the_queue_once_and_reuses_it(monkeypatch: pytest.Monkey
 
     from fastapi.testclient import TestClient
 
-    app = create_app()
+    app = create_app(_FakeCMIRRunService(), _FakePoValidationService())
 
     with TestClient(app) as client:
         client.get("/api/v1/health")

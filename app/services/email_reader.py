@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import email as email_lib
 import imaplib
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from bs4 import BeautifulSoup
 
@@ -31,7 +31,7 @@ class GmailImapReader:
         mail = self._connect()
         mail.select("INBOX")
 
-        since = (datetime.now() - timedelta(days=self._config.lookback_days)).strftime("%d-%b-%Y")
+        since = (datetime.now(UTC) - timedelta(days=self._config.lookback_days)).strftime("%d-%b-%Y")
         search_terms = ["SINCE", since, "SUBJECT", subject_contains or self._config.search_subject]
         if unread_only:
             search_terms.insert(0, "UNSEEN")
@@ -51,7 +51,10 @@ class GmailImapReader:
             if status != "OK":
                 continue
 
-            parsed = email_lib.message_from_bytes(msg[0][1])
+            fetch_item = msg[0]
+            if not isinstance(fetch_item, tuple):
+                continue
+            parsed = email_lib.message_from_bytes(fetch_item[1])
             body = self._extract_body(parsed)
 
             messages.append(
@@ -77,7 +80,7 @@ class GmailImapReader:
     def _extract_body(message: email_lib.message.Message) -> str:
         if not message.is_multipart():
             payload = message.get_payload(decode=True)
-            return payload.decode(errors="ignore") if payload else ""
+            return payload.decode(errors="ignore") if isinstance(payload, bytes) else ""
 
         for part in message.walk():
             content_type = part.get_content_type()
@@ -85,7 +88,7 @@ class GmailImapReader:
                 continue
 
             payload = part.get_payload(decode=True)
-            if payload is None:
+            if not isinstance(payload, bytes):
                 continue
 
             body = payload.decode(errors="ignore")
