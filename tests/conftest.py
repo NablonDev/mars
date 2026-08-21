@@ -26,6 +26,7 @@ from app.queue.factory import build_job_queue
 from app.repositories.agent_registry import PromptRegistryRepository
 from app.repositories.fine_rule import FineRuleRepository
 from app.repositories.master_data import MasterDataRepository
+from app.repositories.mitigation import MitigationRepository
 from app.repositories.order import OrderRepository
 from app.repositories.projection import ProjectionRepository
 from app.services.projection import ProjectionService
@@ -99,6 +100,7 @@ def services(db_session):
     orders = OrderRepository(db_session)
     projections = ProjectionRepository(db_session)
     prompt_registry = PromptRegistryRepository(db_session)
+    mitigation = MitigationRepository(db_session)
     projection_service = ProjectionService(
         orders=orders,
         rules=rules,
@@ -110,6 +112,7 @@ def services(db_session):
         rules=rules,
         orders=orders,
         projection_service=projection_service,
+        mitigation=mitigation,
     )
     return SimpleNamespace(
         master_data=master_data,
@@ -117,6 +120,7 @@ def services(db_session):
         orders=orders,
         projections=projections,
         prompt_registry=prompt_registry,
+        mitigation=mitigation,
         projection_service=projection_service,
         seeding_service=seeding_service,
     )

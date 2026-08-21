@@ -23,6 +23,7 @@ from app.repositories.fine_rule import FineRuleRepository
 from app.repositories.fine_summary import FineSummaryRepository
 from app.repositories.job_queue import JobQueueRepository
 from app.repositories.master_data import MasterDataRepository
+from app.repositories.mitigation import MitigationRepository
 from app.repositories.order import OrderRepository
 from app.repositories.projection import ProjectionRepository
 from app.services.cmir_run_service import CMIRRunService
@@ -76,6 +77,12 @@ def get_order_repository(
     session: Session = Depends(get_session),
 ) -> OrderRepository:
     return OrderRepository(session)
+
+
+def get_mitigation_repository(
+    session: Session = Depends(get_session),
+) -> MitigationRepository:
+    return MitigationRepository(session)
 
 
 def get_projection_repository(
@@ -191,12 +198,14 @@ def get_seeding_service(
     rules: FineRuleRepository = Depends(get_fine_rule_repository),
     orders: OrderRepository = Depends(get_order_repository),
     projection_service: ProjectionService = Depends(get_projection_service),
+    mitigation: MitigationRepository = Depends(get_mitigation_repository),
 ) -> SeedingService:
     return SeedingService(
         master_data=master_data,
         rules=rules,
         orders=orders,
         projection_service=projection_service,
+        mitigation=mitigation,
     )
 
 

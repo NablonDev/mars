@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Seeds master/reference data and the four worked-example orders via the
 running API -- not by writing to the database directly. This is the

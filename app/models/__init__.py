@@ -15,6 +15,7 @@ from app.models.fulfillment_facts import (
 )
 from app.models.job_queue import JobItem, JobRun
 from app.models.master_data import Carrier, Location, Retailer, Sku
+from app.models.mitigation import MitigationInput
 from app.models.observability import (
     AgentRunORM,
     AgentTraceORM,
@@ -48,6 +49,7 @@ __all__ = [
     "JobTaskType",
     "Location",
     "MaterialMasterORM",
+    "MitigationInput",
     "Order",
     "OrderConfirmation",
     "PendingHumanActionORM",

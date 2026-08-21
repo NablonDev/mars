@@ -12,6 +12,7 @@ class SeedMasterDataResponse(BaseModel):
     carriers: int
     rules: int
     orders: int
+    mitigation_inputs: int
 
 
 class ScenarioDayResult(BaseModel):

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Nightly batch runner: the concurrent, queue-backed replacement for
 `scripts/ops/run_projection_cli.py --all-open --with-summary` on the

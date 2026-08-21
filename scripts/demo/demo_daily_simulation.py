@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Replays all four worked-example scenarios day by day through the running
 API and prints the same trace `simulate_daily_run.py` used to print

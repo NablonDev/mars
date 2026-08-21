@@ -9,7 +9,9 @@ from typing import Any
 from app.core.exceptions import OrderNotFoundError
 from app.repositories.fine_rule import FineRuleRepository
 from app.repositories.master_data import MasterDataRepository
+from app.repositories.mitigation import MitigationRepository
 from app.repositories.order import OrderRepository
+from app.services.fine_mitigation.scenario_data import SEEDED_MITIGATION_INPUTS
 from app.services.fine_projection import DELAY_VIOLATION_TYPES, SHORTAGE_VIOLATION_TYPES, FineRule
 from app.services.fine_projection.scenario_data import (
     AMZ_RULES,
@@ -72,6 +74,29 @@ def _rule_to_seed_dict(rule: FineRule, retailer_id: str) -> dict[str, Any]:
 _RULES = [_rule_to_seed_dict(r, "RET-WMT") for r in WMT_RULES] + [
     _rule_to_seed_dict(r, "RET-AMZ") for r in AMZ_RULES
 ]
+
+
+def _mitigation_to_seed_dict(inputs: Any) -> dict[str, Any]:
+    """Converts a MitigationInputs (from
+    app.services.fine_mitigation.scenario_data.SEEDED_MITIGATION_INPUTS)
+    into MitigationRepository.upsert_inputs kwargs."""
+    return {
+        "order_id": inputs.order_id,
+        "shortage_cause": inputs.shortage_cause.value,
+        "shortage_cause_confirmed": inputs.shortage_cause_confirmed,
+        "capacity_boost_cost_per_unit": inputs.capacity_boost_cost_per_unit,
+        "capacity_boost_max_units_per_day": inputs.capacity_boost_max_units_per_day,
+        "capacity_boost_data_confirmed": inputs.capacity_boost_data_confirmed,
+        "express_carrier_cost": inputs.express_carrier_cost,
+        "express_carrier_transit_days": inputs.express_carrier_transit_days,
+        "express_carrier_data_confirmed": inputs.express_carrier_data_confirmed,
+        "split_shipment_handling_cost": inputs.split_shipment_handling_cost,
+    }
+
+
+# AMZ-778501 has no entry in SEEDED_MITIGATION_INPUTS -- deliberate, the
+# "not present" tier (MitigationRepository.get_inputs then returns all-defaults).
+_MITIGATION_INPUTS = [_mitigation_to_seed_dict(inputs) for inputs in SEEDED_MITIGATION_INPUTS.values()]
 
 
 def _day_before_first(days) -> date:
@@ -149,11 +174,20 @@ class SeedingService:
     rules: FineRuleRepository
     orders: OrderRepository
     projection_service: ProjectionService
+    mitigation: MitigationRepository
 
     def seed_master_data(self) -> dict:
         """Idempotent: safe to call repeatedly. Skips anything that
         already exists rather than erroring on a duplicate key."""
-        counts = {"retailers": 0, "skus": 0, "locations": 0, "carriers": 0, "rules": 0, "orders": 0}
+        counts = {
+            "retailers": 0,
+            "skus": 0,
+            "locations": 0,
+            "carriers": 0,
+            "rules": 0,
+            "orders": 0,
+            "mitigation_inputs": 0,
+        }
 
         existing_retailers = {r["retailer_id"] for r in self.master_data.list_retailers()}
         for r in _RETAILERS:
@@ -193,6 +227,12 @@ class SeedingService:
             if self.orders.get_order(o["order_id"]) is None:
                 self.orders.create_order(**o)
                 counts["orders"] += 1
+
+        existing_mitigation_inputs = set(self.mitigation.list_order_ids())
+        for m in _MITIGATION_INPUTS:
+            if m["order_id"] not in existing_mitigation_inputs:
+                self.mitigation.upsert_inputs(**m)
+                counts["mitigation_inputs"] += 1
 
         return counts
 

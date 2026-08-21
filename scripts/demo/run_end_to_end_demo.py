@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 One-command tour of the whole system: seeds master data, replays all four
 worked-example scenarios day by day, then asks the LLM-powered

@@ -18,6 +18,7 @@ def test_seed_master_data_is_idempotent(client):
         "carriers": 2,
         "rules": 4,
         "orders": 4,
+        "mitigation_inputs": 3,
     }
 
     second = client.post("/api/v1/admin/seed-master-data")
@@ -29,6 +30,7 @@ def test_seed_master_data_is_idempotent(client):
         "carriers": 0,
         "rules": 0,
         "orders": 0,
+        "mitigation_inputs": 0,
     }
 
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Calls the LLM-powered fine-summary endpoint
 (`POST /orders/{order_id}/summary`) for one or every order and prints

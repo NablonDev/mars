@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 No-server CLI: runs the projection service directly against the
 configured database (DATABASE_URL / .env), without needing `uvicorn`
