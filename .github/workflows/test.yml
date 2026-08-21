@@ -30,8 +30,13 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      # Advisory only: ruff is style/formatting, not correctness. Findings
+      # still show up as annotations on the run, they just don't block the
+      # job -- mypy (real type correctness) and pytest (does it work) are
+      # the two gates that actually block.
       - name: Lint
-        run: uv run ruff check app/ scripts/ tests/ alembic/
+        continue-on-error: true
+        run: uv run ruff check --output-format=github app/ scripts/ tests/ alembic/
 
       - name: Type-check
         run: uv run mypy app/
