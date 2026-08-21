@@ -24,24 +24,24 @@ permissions:
   id-token: write
   contents: read
 
-# Resource/registry/app names are intentionally not hardcoded here -- configure
-# them as GitHub Actions Variables (repo or environment scope: Settings ->
-# Secrets and variables -> Actions -> Variables tab). Required:
-# RESOURCE_GROUP, ACR_NAME, IMAGE_NAME, BACKEND_APP_NAME,
-# FINES_PROJECTION_JOB_NAME, DB_MIGRATION_JOB_NAME, CMIR_CONSUMER_APP_NAME.
-env:
-  RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
-  ACR_NAME: ${{ vars.ACR_NAME }}
-  IMAGE_NAME: ${{ vars.IMAGE_NAME }}
-  BACKEND_APP_NAME: ${{ vars.BACKEND_APP_NAME }}
-  FINES_PROJECTION_JOB_NAME: ${{ vars.FINES_PROJECTION_JOB_NAME }}
-  DB_MIGRATION_JOB_NAME: ${{ vars.DB_MIGRATION_JOB_NAME }}
-  CMIR_CONSUMER_APP_NAME: ${{ vars.CMIR_CONSUMER_APP_NAME }}
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: development
+    # Resource/registry/app names are intentionally not hardcoded --
+    # configure them as GitHub Actions Variables (repo or environment
+    # scope: Settings -> Secrets and variables -> Actions -> Variables
+    # tab). Required: RESOURCE_GROUP, ACR_NAME, IMAGE_NAME,
+    # BACKEND_APP_NAME, FINES_PROJECTION_JOB_NAME, DB_MIGRATION_JOB_NAME,
+    # CMIR_CONSUMER_APP_NAME.
+    env:
+      RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
+      ACR_NAME: ${{ vars.ACR_NAME }}
+      IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+      BACKEND_APP_NAME: ${{ vars.BACKEND_APP_NAME }}
+      FINES_PROJECTION_JOB_NAME: ${{ vars.FINES_PROJECTION_JOB_NAME }}
+      DB_MIGRATION_JOB_NAME: ${{ vars.DB_MIGRATION_JOB_NAME }}
+      CMIR_CONSUMER_APP_NAME: ${{ vars.CMIR_CONSUMER_APP_NAME }}
     steps:
       - name: Azure login (OIDC)
         uses: azure/login@v3

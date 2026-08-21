@@ -20,14 +20,6 @@ permissions:
   id-token: write # only needed by build-and-push's Azure login
   contents: read
 
-# Resource/registry names are intentionally not hardcoded here -- configure
-# them as GitHub Actions Variables (repo or environment scope: Settings ->
-# Secrets and variables -> Actions -> Variables tab). Required: ACR_NAME,
-# IMAGE_NAME.
-env:
-  ACR_NAME: ${{ vars.ACR_NAME }}
-  IMAGE_NAME: ${{ vars.IMAGE_NAME }}
-
 jobs:
   test:
     name: Test
@@ -59,8 +51,15 @@ jobs:
   build-and-push:
     name: Build and Push Image
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/development'
     runs-on: ubuntu-latest
+    environment: development
+    # Resource/registry names are intentionally not hardcoded here -- configure
+    # them as GitHub Actions Variables (repo or environment scope: Settings ->
+    # Secrets and variables -> Actions -> Variables tab). Required: ACR_NAME,
+    # IMAGE_NAME.
+    env:
+      ACR_NAME: ${{ vars.ACR_NAME }}
+      IMAGE_NAME: ${{ vars.IMAGE_NAME }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
