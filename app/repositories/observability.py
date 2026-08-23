@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import CursorResult, and_, func, select, update
 
 from app.db.session import Database
 from app.models.observability import (
@@ -181,7 +181,7 @@ class PostgresAgentRunRepository:
         with self._db.session() as session:
             rows = session.scalars(stmt).all()
 
-        items = [
+        items: list[dict[str, Any]] = [
             {
                 "batch_id": row.batch_id,
                 "agent_run_id": row.id,
@@ -284,15 +284,18 @@ class PostgresWorkflowThreadRepository:
             completed=completed,
         )
         with self._db.session() as session:
-            result = session.execute(
-                update(WorkflowThreadORM)
-                .where(
-                    and_(
-                        WorkflowThreadORM.thread_id == thread_id,
-                        WorkflowThreadORM.updated_at == expected_updated_at,
+            result = cast(
+                CursorResult,
+                session.execute(
+                    update(WorkflowThreadORM)
+                    .where(
+                        and_(
+                            WorkflowThreadORM.thread_id == thread_id,
+                            WorkflowThreadORM.updated_at == expected_updated_at,
+                        )
                     )
-                )
-                .values(**values)
+                    .values(**values)
+                ),
             )
             updated = result.rowcount == 1
         logger.info("Optimistic update for workflow thread %s success=%s", thread_id, updated)
@@ -378,7 +381,7 @@ class PostgresWorkflowThreadRepository:
         with self._db.session() as session:
             rows = session.scalars(stmt).all()
 
-        items = [
+        items: list[dict[str, Any]] = [
             {
                 "batch_id": row.batch_id,
                 "agent_run_id": row.agent_run_id,
@@ -703,16 +706,19 @@ class PostgresHITLStateRepository:
         po_line_id: UUID | None = None,
     ) -> UUID | None:
         with self._db.session() as session:
-            result = session.execute(
-                update(PendingHumanActionORM)
-                .where(
-                    and_(
-                        PendingHumanActionORM.id == pending_action_id,
-                        PendingHumanActionORM.thread_id == thread_id,
-                        PendingHumanActionORM.status == "open",
+            result = cast(
+                CursorResult,
+                session.execute(
+                    update(PendingHumanActionORM)
+                    .where(
+                        and_(
+                            PendingHumanActionORM.id == pending_action_id,
+                            PendingHumanActionORM.thread_id == thread_id,
+                            PendingHumanActionORM.status == "open",
+                        )
                     )
-                )
-                .values(status="completed", answer=answer, actor=actor, completed_at=func.now())
+                    .values(status="completed", answer=answer, actor=actor, completed_at=func.now())
+                ),
             )
             if result.rowcount != 1:
                 raise ValueError(f"Open pending human action {pending_action_id} not found for {thread_id}")

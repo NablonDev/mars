@@ -1,10 +1,10 @@
-"""Repository for fine rules, including TIERED bands (dim_fine_rule_tier)."""
+"""Repository for fine rules, including TIERED bands (fine_rule_tier)."""
 
 from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import InvalidFineRuleDataError
@@ -101,7 +101,7 @@ class FineRuleRepository:
             if calc_type is None:
                 raise InvalidFineRuleDataError(
                     f"Rule {r.rule_id!r} has calc_type={r.calc_type!r}, which is not one of "
-                    f"{sorted(_CALC_TYPE_MAP)}. Fix the row in dim_fine_rule."
+                    f"{sorted(_CALC_TYPE_MAP)}. Fix the row in fine_rule."
                 )
 
             tiers = None
@@ -130,7 +130,7 @@ class FineRuleRepository:
 
     def get_rules_for_retailer(self, retailer_id: str) -> list[FineRule]:
         """Deprecated alias for list_rules_for_retailer -- kept only because
-        app/services/fine_summary.py is off-limits to edit in this pass."""
+        app/services/fine_projection/summary.py is off-limits to edit in this pass."""
         return self.list_rules_for_retailer(retailer_id)
 
     def list_rules(self, retailer_id: str | None = None) -> list[dict]:
@@ -140,3 +140,13 @@ class FineRuleRepository:
 
         rows = self._session.scalars(stmt).all()
         return [_rule_to_dict(r) for r in rows]
+
+    def truncate_all(self) -> None:
+        """Deletes every fine_rule row and its fine_rule_tier children, for
+        a force-reseed. Caller must first clear projected_fine (it FKs to
+        fine_rule) -- see OrderRepository.truncate_all(), which owns that
+        table, and FineSeedingService._truncate_seeded_tables for why it
+        must run before this method."""
+        self._session.execute(delete(FineRuleTier))
+        self._session.execute(delete(FineRuleModel))
+        self._session.flush()

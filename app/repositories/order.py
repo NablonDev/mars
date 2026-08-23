@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import OrderAlreadyExistsError, OrderNotFoundError
@@ -16,6 +16,8 @@ from app.models import (
     Order,
     OrderConfirmation,
     ProductionSchedule,
+    ProjectedFine,
+    ProjectionSummary,
     Shipment,
 )
 from app.services.fine_projection import AppointmentStatus, OrderSnapshot, ProductionStatus
@@ -162,7 +164,7 @@ class OrderRepository:
             stmt = stmt.where(Order.order_status == order_status)
 
         rows = self._session.scalars(stmt).all()
-        return [self.get_order(r.order_id) for r in rows]
+        return [_order_to_dict(r) for r in rows]
 
     def count_by_status(self) -> dict[str, int]:
         """Order counts keyed by `order_status`, for diagnostics."""
@@ -293,7 +295,7 @@ class OrderRepository:
         ).first()
 
         # Historized: latest shipment fact recorded on or before projection_date,
-        # not "whatever the current row says today." See docs/FINE_ENGINE.md.
+        # not "whatever the current row says today."
         shipment = self._session.scalars(
             select(Shipment)
             .where(
@@ -393,8 +395,7 @@ class OrderRepository:
         return [_demand_exception_to_dict(r) for r in rows]
 
     def list_production_status_history(self, order_id: str) -> list[dict]:
-        """Not order_id-scoped: a production line can serve multiple orders
-        (see docs/FINE_ENGINE.md's shared-plant caveat)."""
+        """Not order_id-scoped: a production line can serve multiple orders."""
         order = self._get_order_row(order_id)
         if order is None:
             raise OrderNotFoundError(order_id)
@@ -430,3 +431,22 @@ class OrderRepository:
             )
         ).all()
         return list(rows)
+
+    def truncate_all(self) -> None:
+        """Deletes every sales_order row and every other table that
+        FK-references it (directly, or via sku/location for
+        production_schedule), in FK-safe child-before-parent order.
+
+        Caller must clear mitigation_input and mitigation_option first --
+        both also FK to sales_order. See MitigationRepository.truncate_all
+        and FineSeedingService._truncate_seeded_tables for the full order.
+        """
+        self._session.execute(delete(OrderConfirmation))
+        self._session.execute(delete(ProductionSchedule))
+        self._session.execute(delete(Shipment))
+        self._session.execute(delete(DemandException))
+        self._session.execute(delete(ActualFine))
+        self._session.execute(delete(ProjectedFine))
+        self._session.execute(delete(ProjectionSummary))
+        self._session.execute(delete(Order))
+        self._session.flush()

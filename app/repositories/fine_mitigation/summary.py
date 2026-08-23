@@ -1,4 +1,9 @@
-"""Repository for persisted fine-summary generation jobs."""
+"""Repository for persisted fine-mitigation-summary generation jobs.
+
+Full mirror of app/repositories/fine_projection/summary.py -- method for
+method, same PENDING/READY/FAILED lifecycle and reuse-lineage semantics.
+See that module for line-level rationale.
+"""
 
 from __future__ import annotations
 
@@ -9,11 +14,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import FineSummary
+from app.models import MitigationSummary
 from app.models.enums import SummaryStatus
 
 
-def _to_dict(row: FineSummary) -> dict:
+def _to_dict(row: MitigationSummary) -> dict:
     return {
         "id": row.id,
         "order_id": row.order_id,
@@ -31,7 +36,7 @@ def _to_dict(row: FineSummary) -> dict:
     }
 
 
-class FineSummaryRepository:
+class FineMitigationSummaryRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
@@ -43,12 +48,12 @@ class FineSummaryRepository:
         order_id: str,
         as_of_date: date,
         prompt_version: str,
-    ) -> FineSummary | None:
+    ) -> MitigationSummary | None:
         return self._session.scalars(
-            select(FineSummary).where(
-                FineSummary.order_id == order_id,
-                FineSummary.as_of_date == as_of_date,
-                FineSummary.prompt_version == prompt_version,
+            select(MitigationSummary).where(
+                MitigationSummary.order_id == order_id,
+                MitigationSummary.as_of_date == as_of_date,
+                MitigationSummary.prompt_version == prompt_version,
             )
         ).first()
 
@@ -59,11 +64,11 @@ class FineSummaryRepository:
         prompt_version: str,
     ) -> dict | None:
         row = self._session.scalars(
-            select(FineSummary).where(
-                FineSummary.order_id == order_id,
-                FineSummary.as_of_date == as_of_date,
-                FineSummary.prompt_version == prompt_version,
-                FineSummary.status == SummaryStatus.READY,
+            select(MitigationSummary).where(
+                MitigationSummary.order_id == order_id,
+                MitigationSummary.as_of_date == as_of_date,
+                MitigationSummary.prompt_version == prompt_version,
+                MitigationSummary.status == SummaryStatus.READY,
             )
         ).first()
 
@@ -88,14 +93,14 @@ class FineSummaryRepository:
         nearest-prior-date reasoning as find_reusable, for read callers
         that fall back when no row is dated exactly as_of_date."""
         row = self._session.scalars(
-            select(FineSummary)
+            select(MitigationSummary)
             .where(
-                FineSummary.order_id == order_id,
-                FineSummary.prompt_version == prompt_version,
-                FineSummary.status == SummaryStatus.READY,
-                FineSummary.as_of_date <= as_of_date,
+                MitigationSummary.order_id == order_id,
+                MitigationSummary.prompt_version == prompt_version,
+                MitigationSummary.status == SummaryStatus.READY,
+                MitigationSummary.as_of_date <= as_of_date,
             )
-            .order_by(FineSummary.as_of_date.desc())
+            .order_by(MitigationSummary.as_of_date.desc())
         ).first()
 
         return _to_dict(row) if row is not None else None
@@ -114,7 +119,7 @@ class FineSummaryRepository:
         if existing is not None:
             return self._reset_to_pending(existing, context_hash, content_fingerprint)
 
-        row = FineSummary(
+        row = MitigationSummary(
             order_id=order_id,
             as_of_date=as_of_date,
             agent_id=agent_id,
@@ -142,7 +147,7 @@ class FineSummaryRepository:
 
     def _reset_to_pending(
         self,
-        row: FineSummary,
+        row: MitigationSummary,
         context_hash: str,
         content_fingerprint: str | None = None,
     ) -> dict:
@@ -170,7 +175,7 @@ class FineSummaryRepository:
         row = self._find(order_id, as_of_date, prompt_version)
 
         if row is None:
-            row = FineSummary(
+            row = MitigationSummary(
                 order_id=order_id,
                 as_of_date=as_of_date,
                 agent_id=agent_id,
@@ -205,20 +210,22 @@ class FineSummaryRepository:
         `as_of_date` for a freshly generated row. `not_after` prevents
         reusing a narrative generated after the requested date.
         """
-        effective_source_date = func.coalesce(FineSummary.source_as_of_date, FineSummary.as_of_date)
+        effective_source_date = func.coalesce(
+            MitigationSummary.source_as_of_date, MitigationSummary.as_of_date
+        )
 
         conditions = [
-            FineSummary.order_id == order_id,
-            FineSummary.prompt_version == prompt_version,
-            FineSummary.content_fingerprint == content_fingerprint,
-            FineSummary.status == SummaryStatus.READY,
+            MitigationSummary.order_id == order_id,
+            MitigationSummary.prompt_version == prompt_version,
+            MitigationSummary.content_fingerprint == content_fingerprint,
+            MitigationSummary.status == SummaryStatus.READY,
             effective_source_date >= earliest_source_date,
         ]
         if not_after is not None:
             conditions.append(effective_source_date <= not_after)
 
         row = self._session.scalars(
-            select(FineSummary).where(*conditions).order_by(effective_source_date.desc())
+            select(MitigationSummary).where(*conditions).order_by(effective_source_date.desc())
         ).first()
 
         return _to_dict(row) if row is not None else None
@@ -252,7 +259,7 @@ class FineSummaryRepository:
                 source_as_of_date=source_as_of_date,
             )
 
-        row = FineSummary(
+        row = MitigationSummary(
             order_id=order_id,
             as_of_date=as_of_date,
             agent_id=agent_id,
@@ -286,7 +293,7 @@ class FineSummaryRepository:
 
     def _apply_reused_fields(
         self,
-        row: FineSummary,
+        row: MitigationSummary,
         *,
         context_hash: str,
         content_fingerprint: str,
@@ -315,7 +322,7 @@ class FineSummaryRepository:
         row = self._find(order_id, as_of_date, prompt_version)
 
         if row is None:
-            row = FineSummary(
+            row = MitigationSummary(
                 order_id=order_id,
                 as_of_date=as_of_date,
                 agent_id=agent_id,

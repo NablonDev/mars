@@ -71,7 +71,7 @@ class ProjectionRepository:
 
     def get_history(self, order_id: str) -> list[dict]:
         """Deprecated alias for list_history -- kept only because
-        app/services/fine_summary.py is off-limits to edit in this pass."""
+        app/services/fine_projection/summary.py is off-limits to edit in this pass."""
         return self.list_history(order_id)
 
     def get_latest(self, order_id: str) -> dict | None:

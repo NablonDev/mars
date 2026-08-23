@@ -13,7 +13,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import FineSummary, JobItem, JobRun
+from app.models import JobItem, JobRun, MitigationSummary, ProjectionSummary
 from app.models.enums import JobItemStatus, SummaryStatus
 
 # A job is never left in FAILED: retryable failures return to PENDING.
@@ -401,7 +401,7 @@ class JobQueueRepository:
     # Recovery sweep
     # ------------------------------------------------------------------
 
-    def find_stranded_pending_summaries(
+    def find_stranded_pending_projection_summaries(
         self,
         earliest_as_of_date: date,
         latest_as_of_date: date,
@@ -409,20 +409,46 @@ class JobQueueRepository:
         """Find pending summaries with no job_item for the same order/date.
 
         Any task type counts as coverage, including terminal jobs. This
-        avoids creating a redundant SUMMARY_REGEN for an ORDER_RUN.
+        avoids creating a redundant PROJECTION_SUMMARY_REGEN for an ORDER_RUN.
         """
         stmt = (
-            select(FineSummary.order_id, FineSummary.as_of_date)
+            select(ProjectionSummary.order_id, ProjectionSummary.as_of_date)
             .distinct()
             .outerjoin(
                 JobItem,
-                (JobItem.order_id == FineSummary.order_id)
-                & (JobItem.projection_date == FineSummary.as_of_date),
+                (JobItem.order_id == ProjectionSummary.order_id)
+                & (JobItem.projection_date == ProjectionSummary.as_of_date),
             )
             .where(
-                FineSummary.status == SummaryStatus.PENDING,
-                FineSummary.as_of_date >= earliest_as_of_date,
-                FineSummary.as_of_date <= latest_as_of_date,
+                ProjectionSummary.status == SummaryStatus.PENDING,
+                ProjectionSummary.as_of_date >= earliest_as_of_date,
+                ProjectionSummary.as_of_date <= latest_as_of_date,
+                JobItem.id.is_(None),
+            )
+        )
+        rows = self._session.execute(stmt).all()
+        return [{"order_id": row.order_id, "as_of_date": row.as_of_date} for row in rows]
+
+    def find_stranded_pending_mitigation_summaries(
+        self,
+        earliest_as_of_date: date,
+        latest_as_of_date: date,
+    ) -> list[dict]:
+        """Mirror of find_stranded_pending_projection_summaries for
+        mitigation_summary rows -- any task type counts as
+        coverage, including terminal jobs."""
+        stmt = (
+            select(MitigationSummary.order_id, MitigationSummary.as_of_date)
+            .distinct()
+            .outerjoin(
+                JobItem,
+                (JobItem.order_id == MitigationSummary.order_id)
+                & (JobItem.projection_date == MitigationSummary.as_of_date),
+            )
+            .where(
+                MitigationSummary.status == SummaryStatus.PENDING,
+                MitigationSummary.as_of_date >= earliest_as_of_date,
+                MitigationSummary.as_of_date <= latest_as_of_date,
                 JobItem.id.is_(None),
             )
         )

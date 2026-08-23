@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models import Carrier, Location, Retailer, Sku
@@ -98,3 +98,14 @@ class MasterDataRepository:
     def list_carriers(self) -> list[dict]:
         rows = self._session.scalars(select(Carrier)).all()
         return [_carrier_to_dict(r) for r in rows]
+
+    def truncate_all(self) -> None:
+        """Deletes every retailer/sku/location/carrier row, for a
+        force-reseed. Caller must first clear anything that FK-references
+        these (fine_rule, sales_order, and sales_order's own dependents) --
+        see FineSeedingService._truncate_seeded_tables for the full order."""
+        self._session.execute(delete(Carrier))
+        self._session.execute(delete(Location))
+        self._session.execute(delete(Sku))
+        self._session.execute(delete(Retailer))
+        self._session.flush()
