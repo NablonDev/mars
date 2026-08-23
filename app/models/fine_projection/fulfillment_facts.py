@@ -14,11 +14,11 @@ class OrderConfirmation(Base):
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    confirmation_id: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    confirmation_id: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     order_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.sales_order.order_id"))
     confirmed_qty: Mapped[int] = mapped_column(Integer)
     confirmation_date: Mapped[datetime] = mapped_column(DateTime)
-    cut_reason_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    cut_reason_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -29,10 +29,10 @@ class ProductionSchedule(Base):
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    production_id: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    production_id: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     sku_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.sku.sku_id"))
     location_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.location.location_id"))
-    status: Mapped[str] = mapped_column(String(20))  # ON_TRACK / AT_RISK / BEHIND
+    status: Mapped[str] = mapped_column(String(30))  # ON_TRACK / AT_RISK / BEHIND
     status_date: Mapped[datetime] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -46,14 +46,14 @@ class Shipment(Base):
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    shipment_id: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    shipment_id: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     order_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.sales_order.order_id"))
     carrier_id: Mapped[str | None] = mapped_column(
         ForeignKey(f"{FINES_SCHEMA}.carrier.carrier_id"), nullable=True
     )
     expected_ship_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     actual_ship_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    appointment_status: Mapped[str] = mapped_column(String(20), default="SCHEDULED")
+    appointment_status: Mapped[str] = mapped_column(String(30), default="SCHEDULED")
     expected_transit_days: Mapped[int] = mapped_column(Integer, default=2)
     recorded_at: Mapped[datetime] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -66,7 +66,7 @@ class DemandException(Base):
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    exception_id: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    exception_id: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     order_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.sales_order.order_id"))
     flagged_date: Mapped[date] = mapped_column(Date)
     resolved: Mapped[bool] = mapped_column(Boolean, default=False)

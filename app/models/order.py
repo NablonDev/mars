@@ -14,7 +14,7 @@ class Order(Base):
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    order_id: Mapped[str] = mapped_column(String(30), unique=True, index=True)
+    order_id: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     retailer_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.retailer.retailer_id"))
     sku_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.sku.sku_id"))
     ship_from_location_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.location.location_id"))
@@ -23,7 +23,7 @@ class Order(Base):
     order_date: Mapped[date] = mapped_column(Date)
     requested_delivery_date: Mapped[date] = mapped_column(Date)
     required_ship_date: Mapped[date] = mapped_column(Date)
-    order_status: Mapped[str] = mapped_column(String(20), default="OPEN")  # OPEN / DELIVERED / CANCELLED
+    order_status: Mapped[str] = mapped_column(String(30), default="OPEN")  # OPEN / DELIVERED / CANCELLED
     carrier_id: Mapped[str | None] = mapped_column(
         ForeignKey(f"{FINES_SCHEMA}.carrier.carrier_id"), nullable=True
     )

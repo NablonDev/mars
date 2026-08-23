@@ -23,7 +23,7 @@ class MitigationInput(Base):
     order_id: Mapped[str] = mapped_column(
         ForeignKey(f"{FINES_SCHEMA}.sales_order.order_id"), unique=True, index=True
     )
-    shortage_cause: Mapped[str] = mapped_column(String(20), default="UNKNOWN")
+    shortage_cause: Mapped[str] = mapped_column(String(30), default="UNKNOWN")
     shortage_cause_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     capacity_boost_cost_per_unit: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
     capacity_boost_max_units_per_day: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
