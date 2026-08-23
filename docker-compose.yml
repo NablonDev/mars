@@ -69,6 +69,10 @@ services:
       <<: *app-database
       ENVIRONMENT: ${ENVIRONMENT:-development}
       DOCS_ENABLED: ${DOCS_ENABLED:-true}
+      # No default -- Settings fails app startup without a real value (see
+      # app/core/config.py). Compose fails fast here too rather than handing
+      # the container a blank/placeholder value that would only fail later.
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?INTERNAL_API_KEY is required}
       # Azure OpenAI
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
@@ -92,7 +96,7 @@ services:
   cmir-consumer:
     <<: *app-image
     container_name: mars-cmir-consumer
-    command: python -m app.workers.service_bus_consumer
+    command: python -m app.workers.cmir_service_bus_consumer
     profiles:
       - tools
     environment:
