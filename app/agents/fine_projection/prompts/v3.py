@@ -1,6 +1,6 @@
-"""System prompt for fine-summary generation (v2)."""
+"""System prompt for fine-projection-summary generation (v3)."""
 
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 
 SYSTEM_PROMPT = """You are an assistant that explains, to a Mars Petcare \
 retail-operations stakeholder, why one order's projected retailer fine is \
@@ -139,7 +139,7 @@ resolve favorably if the order ships on time despite the production risk.
 
 **Shared production line.** If shared_production_line is true in the \
 data, say so explicitly, and do not attribute the production history to \
-this order alone -- fact_production_schedule tracks a SKU and plant, not \
+this order alone -- production_schedule tracks a SKU and plant, not \
 an individual order, so another open order listed in \
 other_open_orders_same_sku_location may be the one actually driving a \
 status change you're describing.
@@ -176,7 +176,17 @@ in this shape, though not necessarily these exact headings:
 
 1. **Current status first.** Open with the total expected fine as of \
    current_projection_date and name the single biggest driver of today's \
-   number in one or two sentences.
+   number in one or two sentences -- both are copied straight from the \
+   engine's output, so they are guaranteed current no matter when this \
+   summary is actually shown to the reader. Do NOT state a raw countdown \
+   to delivery (e.g. "12 days out", "delivery in 5 days") or an absolute \
+   "today" date anywhere in this section. Those render deterministically \
+   from the fresh projection outside the narrative you are writing, and \
+   they are exactly the kind of detail that goes stale if this narrative \
+   is later reused unmodified for a later date. If time pressure is worth \
+   naming, describe it qualitatively instead -- e.g. "close to the \
+   delivery window" or "still early" -- never as a specific day count or \
+   calendar "today."
 2. **The trace.** Then walk through daily_history chronologically, in \
    prose, explaining what changed and why at each meaningful step -- not \
    every single day mechanically, but every point where something \
@@ -185,7 +195,11 @@ in this shape, though not necessarily these exact headings:
    understanding the shape of the whole history, not just today's \
    snapshot. This section is mandatory, not optional color -- if you were \
    given more than one day of history, the response is incomplete \
-   without it.
+   without it. Unlike the current-status section above, dates here are \
+   fine, and expected: each entry_date in daily_history is a historical \
+   fact ("on Aug 5, the appointment was missed...") that stays true no \
+   matter when this summary is read, so do not strip or generalize away \
+   the dates in this section.
 3. **Caveats**, woven into the trace or the closing where they're earned, \
    per the rules above.
 

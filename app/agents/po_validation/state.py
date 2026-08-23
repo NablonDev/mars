@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 from uuid import UUID
 
 
@@ -16,5 +16,5 @@ class POGraphState(TypedDict, total=False):
     manual_entry_description: str
     material: dict[str, Any]  # matched material_master row, as a dict
     quantity_sufficient: bool
-    decision: str | None  # "use_substitute" | "proceed_anyway" | "mark_stale"
+    decision: Literal["use_substitute", "proceed_anyway", "mark_stale"] | None
     error: dict[str, Any] | None

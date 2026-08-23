@@ -1,4 +1,4 @@
-"""Schema for the output of the fine summary generation."""
+"""Schema for the output of the fine projection summary generation."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from datetime import date
 from pydantic import BaseModel
 
 
-class FineSummaryOutput(BaseModel):
+class FineProjectionSummaryOutput(BaseModel):
     order_id: str
     as_of_date: date
     prompt_version: str

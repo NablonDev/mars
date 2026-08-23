@@ -1,4 +1,4 @@
-"""System prompt for fine-summary generation (v1)."""
+"""System prompt for fine-projection-summary generation (v1)."""
 
 PROMPT_VERSION = "v1"
 
@@ -122,7 +122,7 @@ double-counting one underlying cause.
 Flag a shared-plant caveat when production_status_history contains more
 than one row for the same status_date with different status values, or
 otherwise looks like more than one independently authored history for
-the same production line. `fact_production_schedule` is keyed by
+the same production line. `production_schedule` is keyed by
 (sku_id, location_id), not by order -- a real production line can serve
 more than one open order at the same plant, so this history is not
 filtered to this order's own facts. If you see this signal, say so

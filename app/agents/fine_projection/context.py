@@ -1,4 +1,4 @@
-"""Typed contract for the data handed to the fine-summary LLM call."""
+"""Typed contract for the data handed to the fine-projection-summary LLM call."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ class ActualOutcome(BaseModel):
     invoice_or_deduction_date: date
 
 
-class FineSummaryContext(BaseModel):
+class FineProjectionSummaryContext(BaseModel):
     order: OrderContext
     current_projection_date: date  # which daily_history entry is "today"
     stacking_mode: str

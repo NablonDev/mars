@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 from uuid import UUID
 
 
@@ -15,5 +15,5 @@ class GraphState(TypedDict, total=False):
     decision_reason: str
     existing_cmir: dict[str, Any] | None  # current cmir_records row for this entity, or None
     cmir_diff: dict[str, Any]  # field-level diff from merge_with_active
-    cmir_version_token: int | None  # existing_cmir["id"] at diff time, for supersede_and_insert
-    cmir_write_result: str  # "committed" | "conflict", set by persist_cmir
+    cmir_version_token: UUID | None  # existing_cmir["id"] at diff time, for supersede_and_insert
+    cmir_write_result: Literal["committed", "conflict"]  # set by persist_cmir
