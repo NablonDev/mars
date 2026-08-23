@@ -30,7 +30,13 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 
-from app.api.dependencies import get_database, get_job_queue, get_session, require_internal_api_key
+from app.api.dependencies import (
+    get_database,
+    get_job_queue,
+    get_llm_client,
+    get_session,
+    require_internal_api_key,
+)
 from app.core.config import Settings
 from app.db.session import Database
 from app.main import create_app
@@ -69,6 +75,22 @@ def job_queue(database: Database):
     return build_job_queue(Settings(), database)
 
 
+class _UnconfiguredFakeChatClient:
+    """Default fake LLM client for tests.
+
+    Any test that actually reaches an LLM-calling code path must provide
+    its own richer fake through dependency_overrides[get_llm_client].
+    """
+    model_name = "fake-model"
+
+    def invoke(self, messages, *, tools=None):
+        raise AssertionError(
+            "The default test LLM client was invoked. "
+            "This test reaches an LLM-calling path and must provide "
+            "its own dependency_overrides[get_llm_client]."
+        )
+
+
 @pytest.fixture
 def app(database: Database, job_queue):
     application = create_app()
@@ -84,13 +106,18 @@ def app(database: Database, job_queue):
         finally:
             session.close()
 
+    def _get_test_llm_client():
+        return _UnconfiguredFakeChatClient()
+
     application.dependency_overrides[get_session] = _get_test_db
     application.dependency_overrides[get_database] = lambda: database
     application.dependency_overrides[get_job_queue] = lambda: job_queue
+    application.dependency_overrides[get_llm_client] = _get_test_llm_client
     # Intentional, visible override: the rest of the suite exercises business
     # logic, not the auth gate itself -- that gets its own dedicated tests in
     # tests/unit/api/test_internal_api_key.py, which remove this override.
     application.dependency_overrides[require_internal_api_key] = lambda: None
+
     return application
 
 
