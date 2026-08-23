@@ -10,10 +10,8 @@ from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
 
 
 class Retailer(Base):
-    __tablename__ = "dim_retailer"
-    __table_args__ = (
-        {"schema": FINES_SCHEMA},
-    )
+    __tablename__ = "retailer"
+    __table_args__ = ({"schema": FINES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     retailer_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
@@ -27,10 +25,8 @@ class Retailer(Base):
 
 
 class Sku(Base):
-    __tablename__ = "dim_sku"
-    __table_args__ = (
-        {"schema": FINES_SCHEMA},
-    )
+    __tablename__ = "sku"
+    __table_args__ = ({"schema": FINES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     sku_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
@@ -42,10 +38,8 @@ class Sku(Base):
 
 
 class Location(Base):
-    __tablename__ = "dim_location"
-    __table_args__ = (
-        {"schema": FINES_SCHEMA},
-    )
+    __tablename__ = "location"
+    __table_args__ = ({"schema": FINES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     location_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
@@ -57,10 +51,8 @@ class Location(Base):
 
 
 class Carrier(Base):
-    __tablename__ = "dim_carrier"
-    __table_args__ = (
-        {"schema": FINES_SCHEMA},
-    )
+    __tablename__ = "carrier"
+    __table_args__ = ({"schema": FINES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     carrier_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)

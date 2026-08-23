@@ -5,17 +5,20 @@ from app.models.agent_registry import Agent, PromptVersion
 from app.models.cmir import CMIRRecordORM
 from app.models.email import EmailActionLogORM, EmailEventORM
 from app.models.enums import JobItemStatus, JobRunType, JobTaskType, SummaryStatus
-from app.models.fine_rule import FineRule, FineRuleTier
-from app.models.fine_summaries import FineSummary
-from app.models.fulfillment_facts import (
+from app.models.fine_master_data import Carrier, Location, Retailer, Sku
+from app.models.fine_mitigation.mitigation import MitigationInput
+from app.models.fine_mitigation.result import MitigationResult
+from app.models.fine_mitigation.summary import MitigationSummary
+from app.models.fine_projection.fulfillment_facts import (
     DemandException,
     OrderConfirmation,
     ProductionSchedule,
     Shipment,
 )
+from app.models.fine_projection.outcomes import ActualFine, ProjectedFine
+from app.models.fine_projection.summary import ProjectionSummary
+from app.models.fine_rule import FineRule, FineRuleTier
 from app.models.job_queue import JobItem, JobRun
-from app.models.master_data import Carrier, Location, Retailer, Sku
-from app.models.mitigation import MitigationInput
 from app.models.observability import (
     AgentRunORM,
     AgentTraceORM,
@@ -24,7 +27,6 @@ from app.models.observability import (
     WorkflowThreadORM,
 )
 from app.models.order import Order
-from app.models.outcomes import ActualFine, ProjectedFine
 from app.models.po_validation import MaterialMasterORM, PoLineErrorORM, PoLineORM
 
 __all__ = [
@@ -40,7 +42,6 @@ __all__ = [
     "EmailEventORM",
     "FineRule",
     "FineRuleTier",
-    "FineSummary",
     "HITLActionORM",
     "JobItem",
     "JobItemStatus",
@@ -50,6 +51,8 @@ __all__ = [
     "Location",
     "MaterialMasterORM",
     "MitigationInput",
+    "MitigationResult",
+    "MitigationSummary",
     "Order",
     "OrderConfirmation",
     "PendingHumanActionORM",
@@ -57,6 +60,7 @@ __all__ = [
     "PoLineORM",
     "ProductionSchedule",
     "ProjectedFine",
+    "ProjectionSummary",
     "PromptVersion",
     "Retailer",
     "Shipment",

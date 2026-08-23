@@ -13,15 +13,15 @@ class MitigationInput(Base):
     """One row per order: the current best-guess cause/cost assumptions
     used to rank mitigation options. Mutable -- represents a current
     assumption, not a historized event, deliberately unlike
-    fact_order_confirmation/fact_production_schedule/fact_shipment (which
+    order_confirmation/production_schedule/shipment (which
     ARE append-only)."""
 
-    __tablename__ = "fact_mitigation_input"
+    __tablename__ = "mitigation_input"
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     order_id: Mapped[str] = mapped_column(
-        ForeignKey(f"{FINES_SCHEMA}.fact_order.order_id"), unique=True, index=True
+        ForeignKey(f"{FINES_SCHEMA}.sales_order.order_id"), unique=True, index=True
     )
     shortage_cause: Mapped[str] = mapped_column(String(20), default="UNKNOWN")
     shortage_cause_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)

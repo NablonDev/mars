@@ -10,12 +10,12 @@ from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
 
 
 class FineRule(Base):
-    __tablename__ = "dim_fine_rule"
+    __tablename__ = "fine_rule"
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     rule_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
-    retailer_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.dim_retailer.retailer_id"))
+    retailer_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.retailer.retailer_id"))
     violation_type: Mapped[str] = mapped_column(String(30))
     threshold_pct: Mapped[float] = mapped_column(Numeric(6, 4), default=0.0)
     calc_type: Mapped[str] = mapped_column(String(20))  # PER_UNIT / PERCENT_OF_PO / FLAT_FEE / TIERED
@@ -34,12 +34,12 @@ class FineRule(Base):
 class FineRuleTier(Base):
     """One tier band belonging to a tiered fine rule."""
 
-    __tablename__ = "dim_fine_rule_tier"
+    __tablename__ = "fine_rule_tier"
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     tier_id: Mapped[str] = mapped_column(String(40), unique=True, index=True)
-    rule_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.dim_fine_rule.rule_id"))
+    rule_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.fine_rule.rule_id"))
     band_min: Mapped[float] = mapped_column(Numeric(6, 4))
     band_max: Mapped[float] = mapped_column(Numeric(6, 4))
     rate: Mapped[float] = mapped_column(Numeric(10, 4))

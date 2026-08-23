@@ -2,7 +2,8 @@
 
 JobItemStatus and SummaryStatus intentionally remain separate types even
 where their values overlap. They represent different persistence domains:
-job_item execution state and fine-summary state, respectively.
+job_item execution state, and the summary-record state shared by both
+fine projection and fine mitigation summaries, respectively.
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ class JobItemStatus(StrEnum):
 
 class JobTaskType(StrEnum):
     ORDER_RUN = "ORDER_RUN"
-    SUMMARY_REGEN = "SUMMARY_REGEN"
+    PROJECTION_SUMMARY_REGEN = "PROJECTION_SUMMARY_REGEN"
+    MITIGATION_SUMMARY_REGEN = "MITIGATION_SUMMARY_REGEN"
 
 
 class JobRunType(StrEnum):
@@ -31,7 +33,8 @@ class JobRunType(StrEnum):
 
 
 class SummaryStatus(StrEnum):
-    """Persistence state for a fine-summary record."""
+    """Persistence state shared by both the fine projection summary and
+    fine mitigation summary records."""
 
     PENDING = "PENDING"
     READY = "READY"

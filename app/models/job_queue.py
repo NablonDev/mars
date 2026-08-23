@@ -82,7 +82,7 @@ class JobItem(Base):
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     job_run_id: Mapped[UUID] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.job_run.id"))
-    order_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.fact_order.order_id"))
+    order_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.sales_order.order_id"))
     projection_date: Mapped[date] = mapped_column(Date)
     task_type: Mapped[str] = mapped_column(String(20))
     stacking_mode_override: Mapped[str | None] = mapped_column(String(10), nullable=True)

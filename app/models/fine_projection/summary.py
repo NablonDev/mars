@@ -1,4 +1,4 @@
-"""Database model for persisted fine-summary jobs."""
+"""Database model for persisted fine-projection-summary jobs."""
 
 from datetime import date, datetime
 from uuid import UUID
@@ -10,24 +10,27 @@ from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
 from app.models.enums import SummaryStatus
 
 
-class FineSummary(Base):
-    __tablename__ = "fact_fine_summary"
+class ProjectionSummary(Base):
+    __tablename__ = "projection_summary"
     __table_args__ = (
         UniqueConstraint(
-            "order_id", "as_of_date", "prompt_version", name="uq_fine_summary_order_date_prompt"
+            "order_id",
+            "as_of_date",
+            "prompt_version",
+            name="uq_fine_projection_summary_order_date_prompt",
         ),
         ForeignKeyConstraint(
             ["agent_id", "prompt_version"],
             [
-                f"{FINES_SCHEMA}.dim_prompt_version.agent_id",
-                f"{FINES_SCHEMA}.dim_prompt_version.prompt_version",
+                f"{FINES_SCHEMA}.prompt_version.agent_id",
+                f"{FINES_SCHEMA}.prompt_version.prompt_version",
             ],
-            name="fk_fine_summary_agent_prompt_version",
+            name="fk_fine_projection_summary_agent_prompt_version",
         ),
         {"schema": FINES_SCHEMA},
     )
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    order_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.fact_order.order_id"))
+    order_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.sales_order.order_id"))
     as_of_date: Mapped[date] = mapped_column(Date)
     agent_id: Mapped[UUID] = mapped_column(UUID_PK)
     prompt_version: Mapped[str] = mapped_column(String(20))
