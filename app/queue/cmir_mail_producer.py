@@ -20,16 +20,18 @@ class ServiceBusMailQueue:
     def send_many(self, messages: Iterable[tuple[dict[str, Any], str]]) -> None:
         from azure.servicebus import ServiceBusMessage
 
-        with self._create_client() as client:
-            with client.get_queue_sender(self._config.queue_name) as sender:
-                for payload, message_id in messages:
-                    message = ServiceBusMessage(
-                        json.dumps(payload),
-                        message_id=message_id,
-                        content_type="application/json",
-                    )
-                    message.session_id = self._config.session_id
-                    sender.send_messages(message)
+        with (
+            self._create_client() as client,
+            client.get_queue_sender(self._config.queue_name) as sender,
+        ):
+            for payload, message_id in messages:
+                message = ServiceBusMessage(
+                    json.dumps(payload),
+                    message_id=message_id,
+                    content_type="application/json",
+                )
+                message.session_id = self._config.session_id
+                sender.send_messages(message)
 
     def verify_connection(self) -> None:
         with self._create_client() as client, client.get_queue_sender(self._config.queue_name):
