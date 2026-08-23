@@ -82,23 +82,57 @@ class InvalidAsOfDateError(ValidationError):
 
 
 class NoSummaryJobExistsError(NotFoundError):
-    """Raised when no fine-summary job exists for the requested parameters."""
+    """Raised when no fine-projection/mitigation-summary job exists for the requested
+    parameters. One class for both domains -- same shape, same lifecycle, only the
+    domain-specific code/message/endpoint hint differ (see ``domain``)."""
 
-    code: ClassVar[str] = "NO_SUMMARY_JOB_EXISTS"
+    _CODES: ClassVar[dict[str, str]] = {
+        "projection": "NO_PROJECTION_SUMMARY_JOB_EXISTS",
+        "mitigation": "NO_MITIGATION_SUMMARY_JOB_EXISTS",
+    }
+    _ENDPOINTS: ClassVar[dict[str, str]] = {
+        "projection": "projection-summary",
+        "mitigation": "mitigation-summary",
+    }
 
-    def __init__(self, order_id: str, as_of_date: date) -> None:
+    def __init__(self, order_id: str, as_of_date: date, *, domain: str) -> None:
+        endpoint = self._ENDPOINTS[domain]
         super().__init__(
-            f"No fine-summary job found for order_id={order_id!r}, "
-            f"as_of_date={as_of_date.isoformat()!r} -- POST /orders/{{order_id}}/summary first."
+            f"No fine-{domain}-summary job found for order_id={order_id!r}, "
+            f"as_of_date={as_of_date.isoformat()!r} -- POST /orders/{{order_id}}/{endpoint} first."
         )
         self.order_id = order_id
         self.as_of_date = as_of_date
+        self.domain = domain
+
+    @property
+    def code(self) -> str:  # type: ignore[override]
+        return self._CODES[self.domain]
 
 
 class ToolLoopExhaustedError(ExternalServiceError):
-    """Raised when the fine-summary upstream tool loop cannot produce a usable result."""
+    """Raised when a summary upstream tool loop cannot produce a usable result. One
+    class for both the projection and mitigation summary features -- same shape,
+    only the domain-specific code differs (see ``domain``)."""
 
-    code: ClassVar[str] = "FINE_SUMMARY_UPSTREAM_FAILED"
+    _CODES: ClassVar[dict[str, str]] = {
+        "projection": "FINE_PROJECTION_SUMMARY_UPSTREAM_FAILED",
+        "mitigation": "FINE_MITIGATION_SUMMARY_UPSTREAM_FAILED",
+    }
+
+    def __init__(self, message: str, *, domain: str, detail: str | None = None) -> None:
+        super().__init__(message, detail=detail)
+        self.domain = domain
+
+    @property
+    def code(self) -> str:  # type: ignore[override]
+        return self._CODES[self.domain]
+
+
+class NoMitigationOptionsExistError(ValidationError):
+    """Raised when an order has no persisted mitigation-options results."""
+
+    code: ClassVar[str] = "NO_MITIGATION_OPTIONS_EXIST"
 
 
 class ConflictError(AppError):
