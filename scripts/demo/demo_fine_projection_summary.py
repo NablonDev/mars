@@ -1,20 +1,20 @@
 """
-Calls the LLM-powered fine-summary endpoint
-(`POST /orders/{order_id}/summary`) for one or every order and prints
+Calls the LLM-powered fine-projection-summary endpoint
+(`POST /orders/{order_id}/projection-summary`) for one or every order and prints
 the free-text result -- the "why is this order's number what it is"
 companion to `demo_daily_simulation.py`'s "what is the number."
 
 Generation is a background job: a cache miss (or --force-regenerate) gets
 a `202` immediately, not a `200` with the summary already in it -- this
-script polls `GET .../summary` until the job leaves `PENDING`, per
-`docs/API.md` "Fine Summaries."
+script polls `GET .../projection-summary` until the job leaves `PENDING`, per
+`docs/API.md` "Fine Projection Summaries."
 
 Requires real Azure OpenAI credentials in `.env`
 (AZURE_OPENAI_API_KEY/ENDPOINT/DEPLOYMENT_NAME) -- without them the
-background job lands on a FAILED status with a clear "Fine summary
-generation failed upstream" message (see app/services/fine_summary.py),
-which this script prints per-order and moves on rather than treating as
-a script bug.
+background job lands on a FAILED status with a clear "Fine projection
+summary generation failed upstream" message (see
+app/services/fine_projection/summary.py), which this script prints
+per-order and moves on rather than treating as a script bug.
 
 For each order this explicitly looks up its latest existing projection
 date via `GET /orders/{id}/projections` and passes that as `as_of_date`
@@ -30,9 +30,9 @@ Usage:
     python scripts/demo/seed_master_data.py
     python scripts/demo/demo_daily_simulation.py
 
-    python scripts/demo/demo_fine_summary.py                              # every order on file
-    python scripts/demo/demo_fine_summary.py --order-id WMT-100234         # one order
-    python scripts/demo/demo_fine_summary.py --order-id WMT-100234 --force-regenerate
+    python scripts/demo/demo_fine_projection_summary.py                              # every order on file
+    python scripts/demo/demo_fine_projection_summary.py --order-id WMT-100234         # one order
+    python scripts/demo/demo_fine_projection_summary.py --order-id WMT-100234 --force-regenerate
 """
 
 import argparse
@@ -45,7 +45,7 @@ from _helpers import POLL_TIMEOUT_SECONDS, _error_message, _poll_until_ready
 
 def _latest_projection_date(base_url: str, order_id: str) -> str | None:
     """The most recent projection date that isn't in the future -- not
-    just the most recent one that exists. `FineSummaryService.get_or_schedule` rejects any
+    just the most recent one that exists. `FineProjectionSummaryService.get_or_schedule` rejects any
     `as_of_date` after today (see InvalidAsOfDateError), and the mock
     scenarios' hardcoded dates (Aug 2026) only sometimes fall entirely
     before "today" depending on when this actually runs -- three of the
@@ -76,7 +76,7 @@ def _summarize_one(base_url: str, order_id: str, force_regenerate: bool) -> None
         return
 
     resp = httpx.post(
-        f"{base_url}/orders/{order_id}/summary",
+        f"{base_url}/orders/{order_id}/projection-summary",
         json={"as_of_date": as_of_date, "force_regenerate": force_regenerate},
         timeout=30,
     )
