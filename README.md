@@ -18,7 +18,7 @@ Two agentic backends in one FastAPI app, separated by Postgres schema:
 Python 3.12+, FastAPI, PostgreSQL (SQLAlchemy 2.0 + Alembic), LangGraph
 (CMIR/PO-validation workflows, PostgreSQL checkpointer), Azure Service Bus
 (CMIR mail-processing queue), Azure OpenAI (CMIR extraction and the
-fine-summary feature).
+fine-projection-summary feature).
 
 ## Setup
 
@@ -108,15 +108,12 @@ Start here:
   workflow with the queue, every config variable, and the Azure build sheet
 - [`docs/JOB-QUEUE-WALKTHROUGH.md`](docs/JOB-QUEUE-WALKTHROUGH.md) — code tour of the
   queue, for someone seeing it for the first time
-- [`docs/ASYNC-EXECUTION.md`](docs/ASYNC-EXECUTION.md) — *why* the queue is designed
-  the way it is, and when to change it
 
 Reference:
 
 - [`docs/API.md`](docs/API.md) — every endpoint, request/response shapes, error codes
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — setup, seeding, troubleshooting, in depth
 - [`docs/DATABASE.md`](docs/DATABASE.md) — schema, migrations, conventions
-- [`docs/FINE_ENGINE.md`](docs/FINE_ENGINE.md) — the projection calculation itself
 - [`docs/DOCKER.md`](docs/DOCKER.md) — image internals
 
 ## Layout
@@ -126,9 +123,9 @@ app/
   main.py                 -- FastAPI app factory
   api/v1/                   -- routers (cmir + po_validation + fines + batches)
   core/                       -- config, exceptions, container (CMIR composition root), rate_limit
-  services/                     -- business logic (cmir_run_service, po_validation_service, projection, seeding, fine summary, ...)
+  services/                     -- business logic (cmir_run_service, po_validation_service, fine_projection_service, fine_seeding, fine_projection_summary, ...)
     fine_projection/                -- pure calculation, no SQLAlchemy/FastAPI
-  agents/                            -- LLM/LangGraph layer: providers, prompts, tools, cmir/ and po_validation/ graphs
+  agents/                            -- LLM/LangGraph layer: providers/ (shared), cmir/, po_validation/, and fine_projection_summary/ (domain-first, one folder per agent)
   queue/                               -- fines job-queue dispatch backends behind one Protocol, plus the CMIR Service Bus producer
   workers/                              -- the fines claim/execute/settle loop, plus the CMIR Service Bus consumer
   models/                                 -- SQLAlchemy ORM + enums (cmir schema + fines schema)

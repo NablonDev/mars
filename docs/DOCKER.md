@@ -106,7 +106,7 @@ docker compose --profile tools run --rm worker
   scripts/ops/run_daily_batch.py --drain-only`.
 - `AZURE_OPENAI_*` vars are passed through from the host shell
   (`${AZURE_OPENAI_API_KEY:-}` etc.), never hardcoded. Leave them unset on
-  the host to run everything except the fine-summary endpoint, same as
+  the host to run everything except the fine-projection-summary endpoint, same as
   bare-metal (`docs/RUNBOOK.md` step 8).
 
 ## Verification performed

@@ -1,14 +1,15 @@
 # Runbook
 
 Every way to set up, run, seed, exercise, and troubleshoot this service.
-For *what* the system does and *why*, see `docs/FINE_ENGINE.md`; for
-exactly how one database row turns into one dollar figure, with every
-intermediate number shown, see `docs/HOW_IT_WORKS.md`; for *how the code
-is laid out*, see `docs/legacy/root-CLAUDE.md` (the detailed architecture
-map; `./CLAUDE.local.md` is the current working instructions file); for
-endpoint-by-endpoint reference, see `docs/API.md`; for a presentation-ready
-walkthrough, open `docs/architecture-walkthrough.html` directly in a
-browser. This file is about running it.
+For *how the code is laid out*, see `docs/legacy/root-CLAUDE.md` (the
+detailed architecture map; `./CLAUDE.local.md` is the current working
+instructions file); for endpoint-by-endpoint reference, see `docs/API.md`.
+This file is about running it.
+
+**Every curl example below needs `-H "X-Internal-Api-Key: $INTERNAL_API_KEY"`
+except `/health`.** It's omitted from most of the commands in this file for
+readability -- see `docs/API.md` "Authentication" for the full contract
+(missing/wrong key -> `401`, generic body, nothing echoed back).
 
 **Sections 2 onward cover the API and the single-order paths.** For the
 batch job queue -- every OPEN order, scheduled and run as a group -- see
@@ -45,8 +46,8 @@ schema):
    `email_events` rows and enqueues them to Azure Service Bus. Does **not** run any
    workflow logic itself; trigger definitions live in `azure_functions/` as Blueprints
    registered onto the root `FunctionApp()`.
-3. **Service Bus consumer** (`app/workers/service_bus_consumer.py`, run via `python -m
-   app.workers.service_bus_consumer`) -- a standalone long-running listener. Deserializes
+3. **Service Bus consumer** (`app/workers/cmir_service_bus_consumer.py`, run via `python -m
+   app.workers.cmir_service_bus_consumer`) -- a standalone long-running listener. Deserializes
    each queue message and forwards it over HTTP to the FastAPI process; never touches
    the graph or Postgres directly.
 
@@ -55,7 +56,7 @@ FastAPI process, keeping checkpoint state centralized.
 
 Run the Service Bus consumer separately when testing the async queue path:
 ```bash
-python -m app.workers.service_bus_consumer
+python -m app.workers.cmir_service_bus_consumer
 ```
 
 ### Required configuration
@@ -108,7 +109,7 @@ for the underlying exception message -- usually a Postgres connectivity issue or
 constraint violation on `email_events`/`cmir_records`.
 
 #### Service Bus consumer keeps abandoning messages
-`app/workers/service_bus_consumer.py::_process_message` abandons (rather than
+`app/workers/cmir_service_bus_consumer.py::_process_message` abandons (rather than
 completes) any message where the HTTP forward to `/internal/process-email` raises --
 check the FastAPI process's logs for the actual failure, not the consumer's. The
 consumer retries its receive loop with a 5s backoff on connection-level errors.
@@ -273,17 +274,20 @@ python scripts/demo/seed_master_data.py --base-url http://localhost:9000/api/v1 
 python scripts/demo/demo_daily_simulation.py               # replays all 4 scenarios, prints the day-by-day trend
 ```
 
-Or hit the endpoints directly:
+Or hit the endpoints directly (shown here with the required header; every
+other example in this file omits it for readability -- see the note above):
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/admin/seed-master-data
-curl -X POST http://127.0.0.1:8000/api/v1/admin/simulate-daily-run
+curl -X POST http://127.0.0.1:8000/api/v1/admin/seed-master-data \
+  -H "X-Internal-Api-Key: $INTERNAL_API_KEY"
+curl -X POST http://127.0.0.1:8000/api/v1/admin/simulate-daily-run \
+  -H "X-Internal-Api-Key: $INTERNAL_API_KEY"
 ```
 
 `seed-master-data` creates 2 retailers, 3 SKUs, 2 locations, 2 carriers,
 4 fine rules, and 4 order headers (all `OPEN`). `simulate-daily-run`
 walks all four orders through their entire scripted history
-(`app/services/fine_projection/scenario_data.py`), writing each day's facts and running a
+(`app/services/seeding/scenario_data_projection.py`), writing each day's facts and running a
 projection, then marks every order `DELIVERED`. Running it twice in a
 row will re-simulate from scratch and re-mark everything `DELIVERED` --
 that's expected, not an error.
@@ -309,7 +313,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/projections \
 curl http://127.0.0.1:8000/api/v1/orders/WMT-100234/projections   # full dated history
 curl http://127.0.0.1:8000/api/v1/orders/WMT-100234/exposure      # latest total only
 
-# Projection, then (only if it succeeds) the fine summary for the same
+# Projection, then (only if it succeeds) the fine projection summary for the same
 # day, in one call -- see docs/API.md "Run projection + summary together":
 curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/run \
   -H "Content-Type: application/json" -d '{}'
@@ -324,7 +328,7 @@ python scripts/ops/run_projection_cli.py --all-open
 python scripts/ops/run_projection_cli.py --all-open --date 2026-08-05 --stacking-mode MAX
 
 # Same projection-then-summary sequencing as POST /orders/{id}/run above,
-# for the no-HTTP-server path -- runs the fine summary inline (no
+# for the no-HTTP-server path -- runs the fine projection summary inline (no
 # BackgroundTasks needed in a one-shot process) right after each order's
 # projection succeeds. Needs AZURE_OPENAI_* configured (step 9):
 python scripts/ops/run_projection_cli.py --all-open --with-summary
@@ -373,14 +377,14 @@ schema calls for it (`docs/DATABASE.md` "Historization"), so posting the
 same kind of fact again doesn't overwrite the last one, it adds to the
 timeline `build_snapshot` reads "as of" a given date from.
 
-## 9. Azure OpenAI configuration (for the fine-summary feature)
+## 9. Azure OpenAI configuration (for the fine-projection-summary feature)
 
-`POST /orders/{order_id}/summary` (see `docs/API.md` "Fine Summaries")
+`POST /orders/{order_id}/projection-summary` (see `docs/API.md` "Fine Projection Summaries")
 is the only thing in this codebase that calls out to an LLM. Everything
 else works with no Azure credentials set at all. Generation runs as a
 background job -- the `POST` itself never calls Azure OpenAI inline, so
 missing/bad credentials surface as a `FAILED` status on
-`GET /orders/{order_id}/summary`, not as a failure of the `POST`
+`GET /orders/{order_id}/projection-summary`, not as a failure of the `POST`
 itself.
 
 ```bash
@@ -413,11 +417,11 @@ AZURE_OPENAI_MAX_ATTEMPTS=3
 Generation runs inside `FastAPI.BackgroundTasks`, not inline with the
 `POST`, so a failure -- upstream timeout, rate limit, bad credentials,
 anything `ChatOpenAI.invoke()` can raise -- is caught by
-`FineSummaryService.run_generation` and persisted as a `FAILED` row
+`FineProjectionSummaryService.run_generation` and persisted as a `FAILED` row
 rather than propagating into an HTTP response at all. The real
 exception is logged server-side
-(`app.services.fine_summary`, `logger.exception(...)`); only the
-generic, client-safe `"Fine summary generation failed upstream"`
+(`app.services.fine_projection.summary`, `logger.exception(...)`); only the
+generic, client-safe `"Fine projection summary generation failed upstream"`
 message reaches the row a client can poll, per this app's
 message/detail split (`app/core/exceptions.py`).
 
@@ -425,14 +429,14 @@ With those set:
 
 ```bash
 # Fast, no LLM call inline -- 200 (cache hit) or 202 (job scheduled):
-curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/summary \
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/projection-summary \
   -H "Content-Type: application/json" -d '{}'
 
 # Poll until status leaves PENDING:
-curl http://127.0.0.1:8000/api/v1/orders/WMT-100234/summary
+curl http://127.0.0.1:8000/api/v1/orders/WMT-100234/projection-summary
 
 # Force a fresh LLM call even if today's summary is already cached:
-curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/summary \
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/projection-summary \
   -H "Content-Type: application/json" -d '{"force_regenerate": true}'
 ```
 
@@ -441,9 +445,9 @@ projection date first rather than relying on today happening to fall
 inside the mock scenarios' Aug 2026 date range:
 
 ```bash
-python scripts/demo/demo_fine_summary.py                          # every order on file
-python scripts/demo/demo_fine_summary.py --order-id WMT-100234     # one order
-python scripts/demo/demo_fine_summary.py --order-id WMT-100234 --force-regenerate
+python scripts/demo/demo_fine_projection_summary.py                          # every order on file
+python scripts/demo/demo_fine_projection_summary.py --order-id WMT-100234     # one order
+python scripts/demo/demo_fine_projection_summary.py --order-id WMT-100234 --force-regenerate
 ```
 
 **The full tour, in one command** -- seed, replay all four scenarios,
@@ -452,18 +456,18 @@ then explain each order's final number, chained together
 
 ```bash
 python scripts/demo/run_end_to_end_demo.py                   # needs Azure OpenAI creds for the last stage
-python scripts/demo/run_end_to_end_demo.py --skip-fine-summary  # engine-only, no LLM cost, no creds needed
+python scripts/demo/run_end_to_end_demo.py --skip-fine-projection-summary  # engine-only, no LLM cost, no creds needed
 ```
 
 Leave the `AZURE_OPENAI_*` vars unset/blank to run every other part of
 the app normally -- `Settings` defaults them all to `""`, and the
-fine-summary endpoint only fails (`AzureOpenAIConfigError`, surfaced as a
+fine-projection-summary endpoint only fails (`AzureOpenAIConfigError`, surfaced as a
 clean error, not a stack trace) the first time it's actually called, not
 at app startup.
 
 ### Known limitation: no request-level rate limiting
 
-`POST /orders/{order_id}/summary` validates `as_of_date` against the
+`POST /orders/{order_id}/projection-summary` validates `as_of_date` against the
 order's real projection history (rejects anything before the earliest
 projection date or after today, 422) specifically so a caller can't mint
 unbounded cache keys -- and therefore unbounded real Azure OpenAI calls
@@ -522,27 +526,26 @@ Both must be clean before a change is done -- see
 | Run one order for a backfilled date | `python scripts/ops/run_projection_cli.py --order-id WMT-100234 --date 2026-08-05` |
 | Run projection + summary together, one call | `curl -X POST .../orders/WMT-100234/run -d '{}'` (or `run_projection_cli.py --with-summary`) |
 | See the whole system, end to end, in one command | `python scripts/demo/run_end_to_end_demo.py` |
-| Get an LLM summary of why an order's fine is what it is | `python scripts/demo/demo_fine_summary.py --order-id WMT-100234` |
-| Add a new violation type | Update `SHORTAGE_VIOLATION_TYPES`/`DELAY_VIOLATION_TYPES` in `app/services/fine_projection/models.py`, `docs/FINE_ENGINE.md`, and the client-facing `.docx` together (`docs/legacy/root-CLAUDE.md` "Conventions") |
-| Add a DB column | `app/models/*.py` + `alembic revision --autogenerate` + `docs/mars_fines_projection_schema.sql` + confirm `tests/unit/db/test_migration_parity.py` still passes |
+| Get an LLM summary of why an order's fine is what it is | `python scripts/demo/demo_fine_projection_summary.py --order-id WMT-100234` |
+| Add a new violation type | Update `SHORTAGE_VIOLATION_TYPES`/`DELAY_VIOLATION_TYPES` in `app/services/fine_projection/models.py` (`docs/legacy/root-CLAUDE.md` "Conventions") |
+| Add a DB column | `app/models/*.py` + `alembic revision --autogenerate` + update `docs/DATABASE.md` + confirm `tests/unit/db/test_migration_parity.py` still passes |
 | Run the full nightly batch locally | `python scripts/ops/run_daily_batch.py` (see `docs/DEPLOYMENT.md` §3.5) |
 | See why the queue looks stuck | `docs/DEPLOYMENT.md` §3.7 — the SQL to run and what each status means |
 | Deploy to Azure | `docs/DEPLOYMENT.md` §6 |
 
 ## 13. Troubleshooting
 
-- **`sqlalchemy.exc.OperationalError` / `relation "fact_order" does not
+- **`sqlalchemy.exc.OperationalError` / `relation "sales_order" does not
   exist`**: migrations haven't been applied against the `DATABASE_URL`
   the app/script is actually using. Run `alembic upgrade head` with that
   exact `DATABASE_URL` exported first. Easy to hit if a shell without
   `.env` loaded runs a script separately from the one that started
   `uvicorn` -- each process reads its own environment independently.
-- **`alembic upgrade head` fails with `relation "dim_retailer" already
+- **`alembic upgrade head` fails with `relation "retailer" already
   exists` on a database that is clearly already migrated**: it's still on
-  the old, pre-squash fines migration chain (revision `0002`-`0011`) or
-  the old standalone cmir chain (`0001`-`0005`) -- see `docs/DATABASE.md`'s
+  an old, pre-squash migration chain -- see `docs/DATABASE.md`'s
   "Migration history" section; there is no forward path onto the new
-  consolidated chain (starting at `5589e602eefa`). Drop and recreate
+  consolidated chain (starting at `e803d9470f31`). Drop and recreate
   the database instead.
 - **`422` from `POST /orders/{order_id}/projections` (or `POST
   /projections/run` with `all_open: true`)**: the order's retailer has
@@ -555,11 +558,10 @@ Both must be clean before a change is done -- see
 - **`POST /admin/simulate-daily-run` returns `500` / `IntegrityError` /
   `duplicate key`**: fixed -- if you still see this, you're on an older
   build. Update; the fact-writing methods are idempotent on their
-  natural key now (see `docs/FINE_ENGINE.md` changelog).
+  natural key now.
 - **Calling `simulate-daily-run` more than once gives a different
   AMZ-778501 number for Aug 11 the second time onward** (WMT-100234,
   WMT-100511, and AMZ-780112 are unaffected): expected, not a bug -- see
-  `docs/FINE_ENGINE.md` "Open items" and
   `tests/test_known_limitations.py`. AMZ-778501 and AMZ-780112 share a
   production line with contradictory scripted statuses on their
   overlapping dates; only the *first* `simulate-daily-run` call is
@@ -579,9 +581,9 @@ Both must be clean before a change is done -- see
   `AZURE_OPENAI_DEPLOYMENT_NAME` isn't set -- see step 9. Double-check
   the deployment var has the `_NAME` suffix; `AZURE_OPENAI_DEPLOYMENT`
   (no suffix) is silently ignored. Since generation is now a background
-  job, this surfaces as a `FAILED` status on `GET .../summary`, not
+  job, this surfaces as a `FAILED` status on `GET .../projection-summary`, not
   as an immediate error from the `POST`.
-- **`GET /orders/{id}/summary` reports `status: "FAILED"`**: the
+- **`GET /orders/{id}/projection-summary` reports `status: "FAILED"`**: the
   model didn't return valid structured output within the bounded
   tool-calling loop (`ToolLoopExhaustedError`) -- an Azure OpenAI-side
   issue (bad deployment, model overloaded, etc.), not a client input
