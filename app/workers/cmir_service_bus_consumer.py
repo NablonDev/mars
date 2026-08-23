@@ -131,7 +131,7 @@ def run() -> None:
                         _process_message(receiver, message, http_client, process_email_url)
                         if shutdown_requested:
                             break
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 if shutdown_requested:
                     break
                 LOGGER.warning("Receiver loop error; retrying in 5 seconds: %s", exc)

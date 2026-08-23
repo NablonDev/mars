@@ -11,11 +11,8 @@ import uuid
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from datetime import date, datetime
 from enum import Enum
 from typing import Literal
-from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import DBAPIError, OperationalError
 
@@ -31,12 +28,9 @@ from app.core.exceptions import (
 )
 from app.core.rate_limit import RateLimitGate, looks_like_rate_limit
 from app.db.session import Database
-from app.models.enums import JobRunType, JobTaskType
-from app.queue.interfaces import JobDispatcher, JobSource
+from app.queue.interfaces import JobSource
 from app.queue.types import ClaimedJob
-from app.repositories.job_queue import JobQueueRepository
-from app.repositories.order import OrderRepository, describe_no_open_orders
-from app.workers import handlers
+from app.workers import dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -380,7 +374,7 @@ def process_jobs(
     execute_job_fn: Callable[
         [ClaimedJob, Database, Settings, AzureOpenAIChatClient, Callable[[], None] | None],
         None,
-    ] = handlers.execute_job,
+    ] = dispatch.execute_job,
     startup_jitter_max_seconds: float = _DEFAULT_STARTUP_JITTER_SECONDS,
     shutdown_grace_seconds: float = _DEFAULT_SHUTDOWN_GRACE_SECONDS,
     shutdown_event: threading.Event | None = None,
@@ -489,90 +483,3 @@ def process_jobs(
 
     summary.rate_limit_hits = rate_limit_gate.rate_limit_hits
     return summary
-
-
-@dataclass
-class EnqueueResult:
-    job_run_id: UUID
-    order_count: int
-    enqueued_count: int
-    no_open_orders_note: str | None = None
-
-
-def enqueue_daily_run(
-    job_dispatcher: JobDispatcher,
-    database: Database,
-    settings: Settings,
-    *,
-    projection_date: date | None = None,
-    stacking_mode_override: str | None = None,
-    triggered_by: str = "nightly-batch",
-) -> EnqueueResult:
-    """Create the daily run and enqueue one ORDER_RUN per OPEN order."""
-    tz = ZoneInfo(settings.penalty_business_timezone)
-    resolved_date = projection_date or datetime.now(tz).date()
-
-    with database.session() as session:
-        repo = JobQueueRepository(session)
-        orders = OrderRepository(session)
-        order_ids = [o["order_id"] for o in orders.list_orders(order_status="OPEN")]
-
-        no_open_orders_note: str | None = None
-        if not order_ids:
-            no_open_orders_note = describe_no_open_orders(orders.count_by_status())
-            if no_open_orders_note:
-                logger.warning(no_open_orders_note)
-
-        run = repo.create_run(
-            run_type=JobRunType.SCHEDULED_DAILY,
-            projection_date=resolved_date,
-            stacking_mode_override=stacking_mode_override,
-            triggered_by=triggered_by,
-            requested_item_count=len(order_ids),
-        )
-        job_run_id = run["id"]
-
-        enqueued_count = repo.enqueue_many(
-            job_run_id,
-            [
-                {
-                    "order_id": order_id,
-                    "projection_date": resolved_date,
-                    "task_type": JobTaskType.ORDER_RUN,
-                    "stacking_mode_override": stacking_mode_override,
-                }
-                for order_id in order_ids
-            ],
-            max_attempts=settings.job_queue_max_attempts,
-        )
-
-        # enqueue_many skips in-flight orders, so reconcile the run count.
-        if enqueued_count != len(order_ids):
-            logger.info(
-                "Enqueued %d of %d OPEN orders; %d already in flight",
-                enqueued_count,
-                len(order_ids),
-                len(order_ids) - enqueued_count,
-            )
-            repo.set_requested_item_count(
-                job_run_id,
-                enqueued_count,
-            )
-
-        item_ids = [
-            item["id"]
-            for item in repo.list_run_items(
-                job_run_id,
-                limit=max(len(order_ids), 1),
-            )
-        ]
-
-    for item_id in item_ids:
-        job_dispatcher.dispatch(item_id)
-
-    return EnqueueResult(
-        job_run_id=job_run_id,
-        order_count=len(order_ids),
-        enqueued_count=enqueued_count,
-        no_open_orders_note=no_open_orders_note,
-    )
