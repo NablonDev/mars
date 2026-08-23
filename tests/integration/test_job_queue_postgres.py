@@ -25,7 +25,7 @@ from app.core.config import get_settings
 from app.db.session import Database
 from app.repositories.job_queue import JobQueueRepository
 
-# One of the four seeded example orders (see docs/FINE_ENGINE.md / SeedingService)
+# One of the four seeded example orders (see FineSeedingService)
 # -- used only to satisfy the FK on job_item.order_id, which Postgres (unlike
 # the SQLite test DB) actually enforces. Never mutated by this suite.
 _SEED_ORDER_ID = "WMT-100234"
@@ -87,7 +87,7 @@ def test_claim_batch_concurrent_workers_never_claim_overlapping_rows(pg_database
             job_run["id"],
             _SEED_ORDER_ID,
             date(2020, 1, 1) + timedelta(days=i),
-            "SUMMARY_REGEN",
+            "PROJECTION_SUMMARY_REGEN",
             max_attempts=5,
         )
         assert result is not None

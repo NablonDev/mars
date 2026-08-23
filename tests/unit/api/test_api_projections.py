@@ -1,10 +1,10 @@
 """
 Runs a projection through the full HTTP -> router -> service ->
 repository -> DB stack and checks it against the same baseline number
-independently verified by tests/test_fine_engine.py and
-docs/FINE_ENGINE.md (Aug 3 baseline row for WMT-100234: 5% shortage / $0,
-5% delay / $54, total $54). If the API layer ever disagrees with the
-pure-engine numbers, something broke in the plumbing, not the model.
+independently verified by tests/test_fine_engine.py (Aug 3 baseline row
+for WMT-100234: 5% shortage / $0, 5% delay / $54, total $54). If the API
+layer ever disagrees with the pure-engine numbers, something broke in
+the plumbing, not the model.
 """
 
 from datetime import date
@@ -125,7 +125,7 @@ def test_run_projection_for_retailer_with_no_rules_is_422(client):
 
 
 def test_run_projection_with_corrupt_calc_type_is_500(client, db_session):
-    """InvalidFineRuleDataError (a data-integrity failure in dim_fine_rule,
+    """InvalidFineRuleDataError (a data-integrity failure in fine_rule,
     not a client input error) must surface as a 500 through the real HTTP
     stack -- proven at the repository level in tests/test_repositories.py,
     this proves the router/service layers pass it through unmodified too."""
@@ -184,8 +184,8 @@ def test_run_all_open_projects_every_open_order(seeded_client):
 
 
 def test_run_endpoint_runs_projection_then_schedules_summary(seeded_client):
-    """POST /orders/{order_id}/run composes ProjectionService and
-    FineSummaryService in the right order -- a summary is never scheduled
+    """POST /orders/{order_id}/run composes FineProjectionService and
+    FineProjectionSummaryService in the right order -- a summary is never scheduled
     for a day that wasn't actually just projected."""
     seeded_client.app.dependency_overrides[get_llm_client] = lambda: _FakeChatClient()
 
@@ -203,7 +203,7 @@ def test_run_endpoint_runs_projection_then_schedules_summary(seeded_client):
     # TestClient runs BackgroundTasks synchronously before returning, so
     # the summary is already resolved by the time this polls it.
     status = seeded_client.get(
-        "/api/v1/orders/WMT-100234/summary",
+        "/api/v1/orders/WMT-100234/projection-summary",
         params={"as_of_date": "2026-08-02"},
     )
     assert status.json()["status"] == "READY"

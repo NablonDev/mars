@@ -1,12 +1,12 @@
 """Tests for the on-demand (FastAPI BackgroundTasks) concurrency governor
-added to `app.api.dependencies.get_fine_summary_job_runner`.
+added to `app.api.dependencies.get_fine_projection_summary_job_runner`.
 
-Every test here calls the callable `get_fine_summary_job_runner` returns
-directly -- the same pattern `tests/test_api_fine_summary_job_queue.py`
+Every test here calls the callable `get_fine_projection_summary_job_runner` returns
+directly -- the same pattern `tests/test_api_fine_projection_summary_job_queue.py`
 already uses for `test_lost_claim_does_not_execute_generation` -- rather
 than going through `TestClient`/`BackgroundTasks`, since `TestClient` runs
 background tasks synchronously (see that file's own module docstring) and
-so cannot exercise real concurrent execution. `FineSummaryService` itself
+so cannot exercise real concurrent execution. `FineProjectionSummaryService` itself
 is monkeypatched out entirely (a small fake standing in for it) so these
 tests exercise the semaphore/rate-limit-gate wiring in isolation, not the
 LLM tool loop -- no live API calls anywhere in this file.
@@ -30,7 +30,7 @@ from uuid import UUID
 import pytest
 
 from app.api import dependencies
-from app.api.dependencies import get_fine_summary_job_runner
+from app.api.dependencies import get_fine_projection_summary_job_runner
 from app.core.config import Settings
 from app.core.rate_limit import RateLimitGate
 from app.db.session import Database
@@ -59,7 +59,7 @@ def _ensure_dependencies_logger_enabled():
 
 
 class _NoopService:
-    """Stands in for `FineSummaryService` when a test only cares about
+    """Stands in for `FineProjectionSummaryService` when a test only cares about
     the semaphore/gate wiring around it, not generation itself."""
 
     def __init__(self, **kwargs: Any) -> None:
@@ -79,10 +79,10 @@ class _FailingService:
 
 def _make_runner(database: Database, *, settings: Settings | None = None):
     # `llm=object()` is never invoked in any test in this file --
-    # `FineSummaryService` itself is always monkeypatched out before the
+    # `FineProjectionSummaryService` itself is always monkeypatched out before the
     # runner is called, so nothing here ever calls a method on `llm`.
     llm = object()
-    return get_fine_summary_job_runner(
+    return get_fine_projection_summary_job_runner(
         database=database,
         llm=llm,  # type: ignore[arg-type]
         settings=settings or Settings(),
@@ -93,7 +93,7 @@ def _claim_a_row(database: Database, order_id: str, *, other_worker: bool = Fals
     with database.session() as session:
         repo = JobQueueRepository(session)
         run = repo.create_run(run_type="ON_DEMAND", projection_date=date(2026, 8, 9))
-        item = repo.enqueue(run["id"], order_id, date(2026, 8, 9), "SUMMARY_REGEN", max_attempts=5)
+        item = repo.enqueue(run["id"], order_id, date(2026, 8, 9), "PROJECTION_SUMMARY_REGEN", max_attempts=5)
         assert item is not None
         job_item_id: UUID = item["id"]
         if other_worker:
@@ -126,7 +126,7 @@ def test_on_demand_concurrency_is_capped(database: Database, monkeypatch) -> Non
             with lock:
                 state["active"] -= 1
 
-    monkeypatch.setattr(dependencies, "FineSummaryService", _BlockingService)
+    monkeypatch.setattr(dependencies, "FineProjectionSummaryService", _BlockingService)
 
     run_job = _make_runner(database, settings=Settings(on_demand_summary_acquire_timeout_seconds=5))
 
@@ -163,12 +163,14 @@ def test_acquire_timeout_leaves_the_row_pending_without_consuming_an_attempt(
     semaphore = threading.BoundedSemaphore(1)
     semaphore.acquire()
     monkeypatch.setattr(dependencies, "_ON_DEMAND_SUMMARY_SEMAPHORE", semaphore)
-    monkeypatch.setattr(dependencies, "FineSummaryService", _NoopService)
+    monkeypatch.setattr(dependencies, "FineProjectionSummaryService", _NoopService)
 
     with database.session() as session:
         repo = JobQueueRepository(session)
         run = repo.create_run(run_type="ON_DEMAND", projection_date=date(2026, 8, 9))
-        item = repo.enqueue(run["id"], "ORD-TIMEOUT", date(2026, 8, 9), "SUMMARY_REGEN", max_attempts=5)
+        item = repo.enqueue(
+            run["id"], "ORD-TIMEOUT", date(2026, 8, 9), "PROJECTION_SUMMARY_REGEN", max_attempts=5
+        )
         assert item is not None
         job_item_id = item["id"]
 
@@ -207,18 +209,18 @@ def test_semaphore_released_on_success_failure_and_lost_claim_with_no_leak(
     settings = Settings(on_demand_summary_acquire_timeout_seconds=2)
 
     # 1. Success path.
-    monkeypatch.setattr(dependencies, "FineSummaryService", _NoopService)
+    monkeypatch.setattr(dependencies, "FineProjectionSummaryService", _NoopService)
     run_job = _make_runner(database, settings=settings)
     run_job("ORD-A", date(2026, 8, 9), PROMPT_VERSION, None)
 
     # 2. Failure path -- run_generation raises, caught internally, but the
     # semaphore must still be released.
-    monkeypatch.setattr(dependencies, "FineSummaryService", _FailingService)
+    monkeypatch.setattr(dependencies, "FineProjectionSummaryService", _FailingService)
     run_job("ORD-B", date(2026, 8, 9), PROMPT_VERSION, None)
 
     # 3. Lost-claim path -- claimed by "another worker" before this call.
     job_item_id = _claim_a_row(database, "ORD-C", other_worker=True)
-    monkeypatch.setattr(dependencies, "FineSummaryService", _NoopService)
+    monkeypatch.setattr(dependencies, "FineProjectionSummaryService", _NoopService)
     run_job("ORD-C", date(2026, 8, 9), PROMPT_VERSION, job_item_id)
 
     # 4. N+1th sequential call: if any prior call had leaked the permit
@@ -251,7 +253,7 @@ def test_rate_limit_gate_pauses_on_demand_work(database: Database, monkeypatch) 
         def run_generation(self, order_id: str, as_of_date: date, prompt_version: str) -> None:
             started_at.append(time.monotonic())
 
-    monkeypatch.setattr(dependencies, "FineSummaryService", _RecordingService)
+    monkeypatch.setattr(dependencies, "FineProjectionSummaryService", _RecordingService)
 
     run_job = _make_runner(database, settings=Settings(on_demand_summary_acquire_timeout_seconds=5))
 
@@ -274,7 +276,7 @@ def test_rate_limited_failure_updates_the_shared_gate(database: Database, monkey
         def run_generation(self, order_id: str, as_of_date: date, prompt_version: str) -> None:
             raise RuntimeError("429 Too Many Requests")
 
-    monkeypatch.setattr(dependencies, "FineSummaryService", _RateLimitedService)
+    monkeypatch.setattr(dependencies, "FineProjectionSummaryService", _RateLimitedService)
 
     run_job = _make_runner(
         database,

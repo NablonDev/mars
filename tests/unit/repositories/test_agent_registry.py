@@ -1,4 +1,4 @@
-"""Tests for PromptRegistryRepository -- the source of dim_agent/dim_prompt_version rows."""
+"""Tests for PromptRegistryRepository -- the source of agent/prompt_version rows."""
 
 from sqlalchemy import func, select
 
@@ -10,17 +10,17 @@ def test_ensure_registered_creates_agent_and_prompt_version(db_session):
     repo = PromptRegistryRepository(db_session)
 
     agent_id = repo.ensure_registered(
-        agent_name="fine_summary",
+        agent_name="fine_projection_summary",
         prompt_version="v2",
-        module_path="app.agents.prompts.fine_summary.v2",
+        module_path="app.agents.fine_projection_summary.prompts.v2",
         provider="azure_openai",
-        source="fines",
+        source="fine_projection",
     )
 
-    agent = db_session.scalars(select(Agent).where(Agent.agent_name == "fine_summary")).first()
+    agent = db_session.scalars(select(Agent).where(Agent.agent_name == "fine_projection_summary")).first()
     assert agent is not None
     assert agent.id == agent_id
-    assert agent.source == "fines"
+    assert agent.source == "fine_projection"
 
     version = db_session.scalars(
         select(PromptVersion).where(
@@ -29,21 +29,21 @@ def test_ensure_registered_creates_agent_and_prompt_version(db_session):
         )
     ).first()
     assert version is not None
-    assert version.module_path == "app.agents.prompts.fine_summary.v2"
+    assert version.module_path == "app.agents.fine_projection_summary.prompts.v2"
     assert version.provider == "azure_openai"
 
 
-def test_ensure_registered_defaults_source_to_fines(db_session):
+def test_ensure_registered_defaults_source_to_none(db_session):
     repo = PromptRegistryRepository(db_session)
 
     repo.ensure_registered(
-        agent_name="fine_summary",
+        agent_name="fine_projection_summary",
         prompt_version="v2",
-        module_path="app.agents.prompts.fine_summary.v2",
+        module_path="app.agents.fine_projection_summary.prompts.v2",
     )
 
-    agent = db_session.scalars(select(Agent).where(Agent.agent_name == "fine_summary")).first()
-    assert agent.source == "fines"
+    agent = db_session.scalars(select(Agent).where(Agent.agent_name == "fine_projection_summary")).first()
+    assert agent.source is None
 
 
 def test_ensure_registered_is_idempotent(db_session):
@@ -53,9 +53,9 @@ def test_ensure_registered_is_idempotent(db_session):
 
     agent_ids = [
         repo.ensure_registered(
-            agent_name="fine_summary",
+            agent_name="fine_projection_summary",
             prompt_version="v2",
-            module_path="app.agents.prompts.fine_summary.v2",
+            module_path="app.agents.fine_projection_summary.prompts.v2",
         )
         for _ in range(3)
     ]
@@ -70,14 +70,14 @@ def test_ensure_registered_is_idempotent(db_session):
 def test_ensure_registered_adds_a_new_version_under_an_existing_agent(db_session):
     repo = PromptRegistryRepository(db_session)
     first_agent_id = repo.ensure_registered(
-        agent_name="fine_summary",
+        agent_name="fine_projection_summary",
         prompt_version="v1",
-        module_path="app.agents.prompts.fine_summary.v1",
+        module_path="app.agents.fine_projection_summary.prompts.v1",
     )
     second_agent_id = repo.ensure_registered(
-        agent_name="fine_summary",
+        agent_name="fine_projection_summary",
         prompt_version="v2",
-        module_path="app.agents.prompts.fine_summary.v2",
+        module_path="app.agents.fine_projection_summary.prompts.v2",
     )
 
     assert first_agent_id == second_agent_id

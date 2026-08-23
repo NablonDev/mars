@@ -1,5 +1,5 @@
 """Unit tests for app/services/fine_mitigation/ (pure engine) and
-app/repositories/mitigation.py (DB round-trip), run against in-memory
+app/repositories/fine_mitigation/mitigation.py (DB round-trip), run against in-memory
 SQLite (see tests/conftest.py)."""
 
 from datetime import date
@@ -7,9 +7,17 @@ from datetime import date
 from sqlalchemy import select
 
 from app.models import MitigationInput
-from app.repositories.mitigation import MitigationRepository
-from app.services.fine_mitigation import MitigationInputs, ShortageCause, evaluate_mitigation_options
-from app.services.fine_mitigation.scenario_data import (
+from app.repositories.fine_mitigation.mitigation import MitigationRepository
+from app.services.fine_mitigation import MitigationEngine, MitigationInputs, ShortageCause
+from app.services.fine_projection import (
+    SHORTAGE_VIOLATION_TYPES,
+    CalcType,
+    FineRule,
+    OrderSnapshot,
+    ProductionStatus,
+    ProjectionEngine,
+)
+from app.services.seeding.scenario_data_mitigation import (
     EXPENSIVE_CARRIER_INPUTS,
     EXPENSIVE_CARRIER_RULES,
     EXPENSIVE_CARRIER_SNAPSHOT,
@@ -18,15 +26,7 @@ from app.services.fine_mitigation.scenario_data import (
     MIXED_SHORTAGE_DELAY_SNAPSHOT,
     SEEDED_MITIGATION_INPUTS,
 )
-from app.services.fine_projection import (
-    SHORTAGE_VIOLATION_TYPES,
-    CalcType,
-    FineRule,
-    OrderSnapshot,
-    ProductionStatus,
-    project_order,
-)
-from app.services.fine_projection.scenario_data import AMZ_RULES, WMT_RULES
+from app.services.seeding.scenario_data_projection import AMZ_RULES, WMT_RULES
 
 
 def _options_by_action(options):
@@ -50,10 +50,10 @@ def test_not_present_tier_only_accept_is_eligible():
         confirmed_qty=1200,
         production_status=ProductionStatus.AT_RISK,
     )
-    projection = project_order(snapshot, AMZ_RULES)
+    projection = ProjectionEngine().project(snapshot, AMZ_RULES)
     inputs = MitigationInputs(order_id="AMZ-778501")  # the "not present" default
 
-    options = evaluate_mitigation_options(snapshot, AMZ_RULES, projection, inputs)
+    options = MitigationEngine().evaluate(snapshot, AMZ_RULES, projection, inputs)
 
     assert {o.action for o in options} == {"ACCEPT"}
     assert options[0].net_saving == 0.0
@@ -72,10 +72,10 @@ def test_partial_estimated_tier_gives_estimated_medium_risk_options():
         confirmed_qty=1440,  # confirmed 60-unit shortfall
         production_status=ProductionStatus.AT_RISK,
     )
-    projection = project_order(snapshot, WMT_RULES)
+    projection = ProjectionEngine().project(snapshot, WMT_RULES)
     inputs = SEEDED_MITIGATION_INPUTS["WMT-100511"]
 
-    options = evaluate_mitigation_options(snapshot, WMT_RULES, projection, inputs)
+    options = MitigationEngine().evaluate(snapshot, WMT_RULES, projection, inputs)
     by_action = _options_by_action(options)
 
     assert by_action["SPEED_UP_PRODUCTION"].confidence == "ESTIMATED"
@@ -98,10 +98,10 @@ def test_full_confirmed_tier_gives_confirmed_low_risk_options():
         confirmed_qty=1900,  # confirmed 100-unit shortfall, 5 days available
         production_status=ProductionStatus.AT_RISK,
     )
-    projection = project_order(snapshot, WMT_RULES)
+    projection = ProjectionEngine().project(snapshot, WMT_RULES)
     inputs = SEEDED_MITIGATION_INPUTS["WMT-100234"]
 
-    options = evaluate_mitigation_options(snapshot, WMT_RULES, projection, inputs)
+    options = MitigationEngine().evaluate(snapshot, WMT_RULES, projection, inputs)
     by_action = _options_by_action(options)
 
     speed_up = by_action["SPEED_UP_PRODUCTION"]
@@ -130,12 +130,12 @@ def test_hard_exclude_tier_excludes_speed_up_production_on_cause_alone():
         confirmed_qty=820,  # confirmed 80-unit shortfall
         production_status=ProductionStatus.AT_RISK,
     )
-    projection = project_order(snapshot, AMZ_RULES)
+    projection = ProjectionEngine().project(snapshot, AMZ_RULES)
     inputs = SEEDED_MITIGATION_INPUTS["AMZ-780112"]
     assert inputs.shortage_cause == ShortageCause.RAW_MATERIAL
     assert inputs.capacity_boost_cost_per_unit is not None  # data present anyway
 
-    options = evaluate_mitigation_options(snapshot, AMZ_RULES, projection, inputs)
+    options = MitigationEngine().evaluate(snapshot, AMZ_RULES, projection, inputs)
 
     assert "SPEED_UP_PRODUCTION" not in {o.action for o in options}
     assert "FASTER_CARRIER" in {o.action for o in options}  # unaffected by the shortage cause
@@ -155,14 +155,14 @@ def test_accept_always_present_and_never_dropped():
             MIXED_SHORTAGE_DELAY_INPUTS,
         ),
     ]:
-        projection = project_order(snapshot, rules)
-        options = evaluate_mitigation_options(snapshot, rules, projection, inputs)
+        projection = ProjectionEngine().project(snapshot, rules)
+        options = MitigationEngine().evaluate(snapshot, rules, projection, inputs)
         assert any(o.action == "ACCEPT" for o in options)
 
 
 def test_options_sorted_by_net_saving_descending():
-    projection = project_order(MIXED_SHORTAGE_DELAY_SNAPSHOT, MIXED_SHORTAGE_DELAY_RULES)
-    options = evaluate_mitigation_options(
+    projection = ProjectionEngine().project(MIXED_SHORTAGE_DELAY_SNAPSHOT, MIXED_SHORTAGE_DELAY_RULES)
+    options = MitigationEngine().evaluate(
         MIXED_SHORTAGE_DELAY_SNAPSHOT, MIXED_SHORTAGE_DELAY_RULES, projection, MIXED_SHORTAGE_DELAY_INPUTS
     )
 
@@ -175,8 +175,8 @@ def test_paid_option_that_costs_more_than_it_saves_still_loses_to_accept():
     its $999 cost dwarfs the $200 flat fee it would avoid -- ACCEPT must
     still rank first, and FASTER_CARRIER must still be present (a bad
     deal, not an ineligible one)."""
-    projection = project_order(EXPENSIVE_CARRIER_SNAPSHOT, EXPENSIVE_CARRIER_RULES)
-    options = evaluate_mitigation_options(
+    projection = ProjectionEngine().project(EXPENSIVE_CARRIER_SNAPSHOT, EXPENSIVE_CARRIER_RULES)
+    options = MitigationEngine().evaluate(
         EXPENSIVE_CARRIER_SNAPSHOT, EXPENSIVE_CARRIER_RULES, projection, EXPENSIVE_CARRIER_INPUTS
     )
     by_action = _options_by_action(options)
@@ -191,8 +191,8 @@ def test_split_shipment_zeroes_only_the_delay_component():
     """Mixed shortage+delay order: SPLIT_SHIPMENT's projected_fine_after
     must equal only the shortage-side violation, proving the delay
     component (OTIF_LATE) was zeroed and the shortage component wasn't."""
-    projection = project_order(MIXED_SHORTAGE_DELAY_SNAPSHOT, MIXED_SHORTAGE_DELAY_RULES)
-    options = evaluate_mitigation_options(
+    projection = ProjectionEngine().project(MIXED_SHORTAGE_DELAY_SNAPSHOT, MIXED_SHORTAGE_DELAY_RULES)
+    options = MitigationEngine().evaluate(
         MIXED_SHORTAGE_DELAY_SNAPSHOT, MIXED_SHORTAGE_DELAY_RULES, projection, MIXED_SHORTAGE_DELAY_INPUTS
     )
     split = _options_by_action(options)["SPLIT_SHIPMENT"]
@@ -223,9 +223,9 @@ def test_faster_carrier_hard_excluded_when_no_delay_type_rule_applies():
         express_carrier_transit_days=1,
         express_carrier_data_confirmed=True,
     )
-    projection = project_order(snapshot, rules)
+    projection = ProjectionEngine().project(snapshot, rules)
 
-    options = evaluate_mitigation_options(snapshot, rules, projection, inputs)
+    options = MitigationEngine().evaluate(snapshot, rules, projection, inputs)
 
     assert "FASTER_CARRIER" not in {o.action for o in options}
 

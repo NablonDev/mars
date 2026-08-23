@@ -28,11 +28,11 @@ from app.services.fine_projection import (
     FineTier,
     OrderSnapshot,
     ProductionStatus,
+    ProjectionEngine,
     compute_delay_probability,
     compute_shortage_probability,
     price_delay_fine,
     price_shortage_fine,
-    project_order,
     resolve_expected_ship_date,
 )
 from app.services.fine_projection.shortage import (
@@ -207,14 +207,14 @@ class TestShortageLockedInAppliesRegardlessOfCalcType:
             actual_ship_date=TODAY,  # physically shipped, locked in
             production_status=ProductionStatus.BEHIND,
         )
-        result = project_order(snap, [rule])
+        result = ProjectionEngine().project(snap, [rule])
         assert result.shortage_probability == SHORTAGE_LOCKED_IN_PROBABILITY
         # 100 units short, 2% threshold (20 units) -> 80 penalized x $2 = $160
         assert result.violations[0].fine_if_realized == 160.0
 
     def test_no_lock_in_without_actual_ship_date(self):
         # No rule needed here -- compute_shortage_probability doesn't take
-        # one; only project_order (tested above) does.
+        # one; only ProjectionEngine.project (tested above) does.
         snap = make_snapshot(
             confirmed_qty=900, actual_ship_date=None, production_status=ProductionStatus.BEHIND
         )
@@ -241,20 +241,20 @@ class TestStackingModes:
 
     def test_sum_adds_all_violations(self):
         snap = make_snapshot(confirmed_qty=900)  # guarantees a nonzero shortage fine
-        result = project_order(snap, self._two_rules(), stacking_mode="SUM")
+        result = ProjectionEngine().project(snap, self._two_rules(), stacking_mode="SUM")
         expected_total = sum(v.expected_fine for v in result.violations)
         assert result.total_expected_fine == expected_total
         assert len(result.violations) == 2
 
     def test_max_takes_only_the_larger_violation(self):
         snap = make_snapshot(confirmed_qty=900)
-        result = project_order(snap, self._two_rules(), stacking_mode="MAX")
+        result = ProjectionEngine().project(snap, self._two_rules(), stacking_mode="MAX")
         assert result.total_expected_fine == max(v.expected_fine for v in result.violations)
 
     def test_invalid_stacking_mode_raises(self):
         snap = make_snapshot()
         with pytest.raises(ValueError):
-            project_order(snap, self._two_rules(), stacking_mode="AVERAGE")
+            ProjectionEngine().project(snap, self._two_rules(), stacking_mode="AVERAGE")
 
 
 # ---------------------------------------------------------------------------
@@ -358,19 +358,19 @@ class TestProductionStatusDelayCoupling:
 
 class TestFourScenarioRegression:
     def test_wmt_100234_appointment_missed_day(self):
-        from app.services.fine_projection.scenario_data import WMT_RULES, wmt_days
+        from app.services.seeding.scenario_data_projection import WMT_RULES, wmt_days
 
         snap, _ = wmt_days[7]  # Aug 9: appointment MISSED
-        result = project_order(snap, WMT_RULES)
+        result = ProjectionEngine().project(snap, WMT_RULES)
         delay = next(v for v in result.violations if v.violation_type == "OTIF_LATE")
         assert delay.probability == 0.50
         assert delay.expected_fine == 540.00
 
     def test_amz_778501_locks_in_on_ship_day(self):
-        from app.services.fine_projection.scenario_data import AMZ_RULES, amz1_days
+        from app.services.seeding.scenario_data_projection import AMZ_RULES, amz1_days
 
         snap, _ = amz1_days[9]  # Aug 12: ships short, on schedule
-        result = project_order(snap, AMZ_RULES)
+        result = ProjectionEngine().project(snap, AMZ_RULES)
         shortage = next(v for v in result.violations if v.violation_type == "FILL_RATE")
         delay = next(v for v in result.violations if v.violation_type == "OTIF_LATE")
         assert shortage.probability == SHORTAGE_LOCKED_IN_PROBABILITY
@@ -455,6 +455,6 @@ class TestAsnLateMapping:
     def test_asn_late_routes_through_delay_model_without_crashing(self):
         rule = FineRule("R-ASN", "ASN_LATE", CalcType.FLAT_FEE, rate=250.0)
         snap = make_snapshot(appointment_status=AppointmentStatus.MISSED)
-        result = project_order(snap, [rule])
+        result = ProjectionEngine().project(snap, [rule])
         assert result.violations[0].violation_type == "ASN_LATE"
         assert result.violations[0].probability == compute_delay_probability(snap)

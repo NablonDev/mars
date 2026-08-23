@@ -1,8 +1,8 @@
 """
 Orders + fact-recording endpoints, including a direct test of the
-shipment-historization fix (docs/FINE_ENGINE.md "found, not yet fixed" --
-now fixed): backfilling a projection to an earlier date must reflect
-that day's shipment facts, not whatever the most recent row says.
+shipment-historization fix (found, not yet fixed -- now fixed):
+backfilling a projection to an earlier date must reflect that day's
+shipment facts, not whatever the most recent row says.
 """
 
 

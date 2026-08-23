@@ -1,6 +1,6 @@
 """
-Proves the hand-authored Alembic migrations (alembic/versions/5589e602eefa_*.py
-for the fines schema, alembic/versions/3c6d4f03fe8e_*.py for the cmir schema)
+Proves the hand-authored Alembic migrations (alembic/versions/e803d9470f31_*.py
+for the fines schema, alembic/versions/43d8ced96170_*.py for the cmir schema)
 actually match app/models/, rather than just asserting it in a
 docstring. Builds one SQLite DB via `alembic upgrade head` (walks the whole
 chain) and another via `Base.metadata.create_all()`, then diffs table and

@@ -1,10 +1,14 @@
 """Tests for app/workers/loop.py.
 
-Mocks the `JobSource`/`JobDispatcher` Protocols entirely (`FakeJobSource`/
-`FakeJobDispatcher` below) -- no SQL, no Azure, no live LLM call anywhere
-in this file. `execute_job_fn` is always a small in-test fake standing in
-for `app.workers.handlers.execute_job`, per the injectable seam
-`process_jobs`/`_process_job` expose specifically for this purpose.
+Mocks the `JobSource` Protocol entirely (`FakeJobSource` below) -- no SQL,
+no Azure, no live LLM call anywhere in this file. `execute_job_fn` is
+always a small in-test fake standing in for `app.workers.dispatch.execute_job`,
+per the injectable seam `process_jobs`/`_process_job` expose specifically
+for this purpose.
+
+`enqueue_daily_run` moved to `app/workers/fine_projection.py` (it's
+fine_projection-specific, not domain-agnostic loop machinery) -- its tests
+moved with it, to `tests/unit/workers/test_worker_fine_projection.py`.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import date
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from sqlalchemy.exc import DBAPIError, OperationalError
@@ -37,7 +41,6 @@ from app.workers.loop import (
     _process_job,
     classify_failure,
     compute_backoff_seconds,
-    enqueue_daily_run,
     process_jobs,
 )
 
@@ -157,18 +160,6 @@ class FakeJobSource:
         return [c for c in self.calls if c.method == method]
 
 
-class FakeJobDispatcher:
-    def __init__(self) -> None:
-        self.dispatched: list[tuple[UUID, int]] = []
-        self.closed = False
-
-    def dispatch(self, job_item_id: UUID, *, delay_seconds: int = 0) -> None:
-        self.dispatched.append((job_item_id, delay_seconds))
-
-    def close(self) -> None:
-        self.closed = True
-
-
 def _make_job(
     order_id: str = "ORD-1",
     projection_date: date = date(2026, 8, 13),
@@ -222,7 +213,7 @@ def _fast_settings(**overrides):
         (InvalidAsOfDateError("bad date"), Classification.DEAD_LETTER),
         (ValueError("bad rule data"), Classification.DEAD_LETTER),
         (ExternalServiceError("upstream down"), Classification.NACK),
-        (ToolLoopExhaustedError("exhausted"), Classification.NACK),
+        (ToolLoopExhaustedError("exhausted", domain="projection"), Classification.NACK),
         (OperationalError("SELECT 1", {}, Exception("connection reset")), Classification.NACK),
         (DBAPIError("SELECT 1", {}, Exception("db gone away")), Classification.NACK),
         (RuntimeError("totally unexpected bug"), Classification.NACK),
@@ -268,7 +259,7 @@ def test_looks_like_rate_limit_walks_the_cause_chain():
         try:
             raise RuntimeError("429 Too Many Requests")
         except RuntimeError as inner:
-            raise ToolLoopExhaustedError("upstream failed") from inner
+            raise ToolLoopExhaustedError("upstream failed", domain="projection") from inner
     except ToolLoopExhaustedError as outer:
         assert looks_like_rate_limit(outer) is True
 
@@ -413,11 +404,11 @@ def test_process_job_dispatches_task_type_to_execute_job_fn_and_acks_on_success(
     def _execute(job, database, settings, llm, heartbeat):
         seen_task_types.append(job.task_type)
 
-    job = _make_job(task_type="SUMMARY_REGEN")
+    job = _make_job(task_type="PROJECTION_SUMMARY_REGEN")
     outcome = _process(job, job_source, _execute)
 
     assert outcome == "succeeded"
-    assert seen_task_types == ["SUMMARY_REGEN"]
+    assert seen_task_types == ["PROJECTION_SUMMARY_REGEN"]
     ack_calls = job_source.calls_for("ack")
     assert len(ack_calls) == 1
     assert ack_calls[0].job is job
@@ -718,73 +709,3 @@ def test_process_jobs_reclaims_stale_before_claiming_new_work():
     )
 
     assert len(job_source.calls_for("reclaim_stale")) == 1
-
-
-# ---------------------------------------------------------------------
-# enqueue_daily_run
-# ---------------------------------------------------------------------
-
-
-def _seed_open_and_closed_orders(database, open_ids: list[str], closed_ids: list[str]) -> None:
-    from app.repositories.master_data import MasterDataRepository
-    from app.repositories.order import OrderRepository
-
-    with database.session() as session:
-        master_data = MasterDataRepository(session)
-        orders = OrderRepository(session)
-        master_data.add_retailer("RET-ENQ", "Retailer Enqueue", None, "SUM")
-        master_data.add_sku("SKU-ENQ", "MAT-ENQ", None)
-        master_data.add_location("LOC-ENQ", None, None)
-
-        for order_id in open_ids + closed_ids:
-            orders.create_order(
-                order_id=order_id,
-                retailer_id="RET-ENQ",
-                sku_id="SKU-ENQ",
-                ship_from_location_id="LOC-ENQ",
-                order_qty=10,
-                unit_price=1.0,
-                order_date=date(2026, 8, 1),
-                requested_delivery_date=date(2026, 8, 10),
-                required_ship_date=date(2026, 8, 8),
-            )
-        for order_id in closed_ids:
-            orders.set_order_status(order_id, "DELIVERED")
-
-
-def test_enqueue_daily_run_enqueues_one_order_run_per_open_order_and_dispatches_each(database):
-    _seed_open_and_closed_orders(database, open_ids=["ORD-OPEN-1", "ORD-OPEN-2"], closed_ids=["ORD-CLOSED"])
-    dispatcher = FakeJobDispatcher()
-    settings = Settings(penalty_business_timezone="UTC")
-
-    result = enqueue_daily_run(dispatcher, database, settings, projection_date=date(2026, 8, 13))
-
-    assert result.order_count == 2
-    assert result.enqueued_count == 2
-    assert len(dispatcher.dispatched) == 2
-
-    from app.repositories.job_queue import JobQueueRepository
-
-    with database.session() as session:
-        items = JobQueueRepository(session).list_run_items(result.job_run_id)
-
-    assert {i["order_id"] for i in items} == {"ORD-OPEN-1", "ORD-OPEN-2"}
-    assert all(i["task_type"] == "ORDER_RUN" for i in items)
-    assert all(i["projection_date"] == date(2026, 8, 13) for i in items)
-
-
-def test_enqueue_daily_run_defaults_to_today_in_business_timezone(database):
-    _seed_open_and_closed_orders(database, open_ids=["ORD-TODAY"], closed_ids=[])
-    dispatcher = FakeJobDispatcher()
-    settings = Settings(penalty_business_timezone="UTC")
-
-    from datetime import UTC, datetime
-
-    result = enqueue_daily_run(dispatcher, database, settings)
-
-    from app.repositories.job_queue import JobQueueRepository
-
-    with database.session() as session:
-        items = JobQueueRepository(session).list_run_items(result.job_run_id)
-
-    assert items[0]["projection_date"] == datetime.now(UTC).date()

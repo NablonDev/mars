@@ -138,7 +138,7 @@ class HandleVersionConflictTests(unittest.TestCase):
 
         self.assertEqual(result, {})
         self.assertEqual(len(action_log.logged), 1)
-        email_id, action, actor, details = action_log.logged[0]
+        email_id, action, _actor, details = action_log.logged[0]
         self.assertEqual(email_id, "email-1")
         self.assertEqual(action, "CMIR Version Conflict")
         self.assertEqual(details["customer_identity"], "Acme Manufacturing Ltd")

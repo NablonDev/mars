@@ -1,11 +1,11 @@
-"""Tests for app/workers/handlers.py -- the single per-item execution
+"""Tests for app/workers/dispatch.py -- the single per-item execution
 entry point.
 
 Runs against the real (SQLite, in-memory) `database` fixture with real
-ProjectionService/FineSummaryService, since `execute_job` constructs both
+FineProjectionService/FineProjectionSummaryService, since `execute_job` constructs both
 directly from a fresh session -- only the LLM call is faked
 (`FakeChatClient`, the same duck-typed shape `tests/services/
-test_fine_summary.py`'s fake uses). No live API call anywhere here.
+test_fine_projection_summary.py`'s fake uses). No live API call anywhere here.
 
 Seeds via `database.session()` directly (auto-committing, like
 `scripts/run_projection_cli.py`'s own test in
@@ -25,17 +25,26 @@ from uuid import uuid4
 
 import pytest
 
-from app.agents.prompts.fine_summary.v3 import PROMPT_VERSION
+from app.agents.fine_mitigation.prompts.v1 import PROMPT_VERSION as MITIGATION_PROMPT_VERSION
+from app.agents.fine_projection.prompts.v3 import PROMPT_VERSION
 from app.core.config import Settings
-from app.core.exceptions import NoActiveRulesError, NoProjectionExistsError, OrderNotFoundError
+from app.core.exceptions import (
+    NoActiveRulesError,
+    NoMitigationOptionsExistError,
+    NoProjectionExistsError,
+    OrderNotFoundError,
+)
 from app.db.session import Database
 from app.queue.types import ClaimedJob
+from app.repositories.fine_master_data import MasterDataRepository
+from app.repositories.fine_mitigation.mitigation import MitigationResultRepository
+from app.repositories.fine_mitigation.summary import FineMitigationSummaryRepository
+from app.repositories.fine_projection.projection import ProjectionRepository
+from app.repositories.fine_projection.summary import FineProjectionSummaryRepository
 from app.repositories.fine_rule import FineRuleRepository
-from app.repositories.fine_summary import FineSummaryRepository
-from app.repositories.master_data import MasterDataRepository
 from app.repositories.order import OrderRepository
-from app.repositories.projection import ProjectionRepository
-from app.workers.handlers import execute_job
+from app.services.fine_mitigation.types import MitigationOption
+from app.workers.dispatch import execute_job
 
 
 class _FakeAIMessage:
@@ -47,7 +56,7 @@ class _FakeAIMessage:
 class FakeChatClient:
     """Always answers immediately with no tool calls. `model_name`/
     `invoke(messages, *, tools=None)` is the only shape
-    `FineSummaryService` needs -- no live Azure OpenAI call."""
+    `FineProjectionSummaryService` needs -- no live Azure OpenAI call."""
 
     model_name = "fake-model"
 
@@ -126,7 +135,9 @@ def test_order_run_runs_projection_then_schedules_and_generates_summary(database
 
     with database.session() as session:
         history = ProjectionRepository(session).get_history("ORD-A")
-        summary_row = FineSummaryRepository(session).get_by_key("ORD-A", date(2026, 8, 5), PROMPT_VERSION)
+        summary_row = FineProjectionSummaryRepository(session).get_by_key(
+            "ORD-A", date(2026, 8, 5), PROMPT_VERSION
+        )
 
     assert history, "projection should have been persisted"
     assert summary_row is not None
@@ -139,20 +150,24 @@ def test_summary_regen_only_generates_summary_no_new_projection(database):
     _seed_order(database, "ORD-B")
     llm = FakeChatClient()
 
-    # ORDER_RUN first so a projection exists (SUMMARY_REGEN's precondition).
+    # ORDER_RUN first so a projection exists (PROJECTION_SUMMARY_REGEN's precondition).
     execute_job(_make_job("ORD-B", date(2026, 8, 5), "ORDER_RUN"), database, Settings(), llm, heartbeat=None)
 
     with database.session() as session:
         history_before = ProjectionRepository(session).get_history("ORD-B")
 
-    # Force regeneration on the same date; SUMMARY_REGEN must not touch
+    # Force regeneration on the same date; PROJECTION_SUMMARY_REGEN must not touch
     # the projection history.
-    regen_job = _make_job("ORD-B", date(2026, 8, 5), "SUMMARY_REGEN", force_regenerate_summary=True)
+    regen_job = _make_job(
+        "ORD-B", date(2026, 8, 5), "PROJECTION_SUMMARY_REGEN", force_regenerate_summary=True
+    )
     execute_job(regen_job, database, Settings(), llm, heartbeat=None)
 
     with database.session() as session:
         history_after = ProjectionRepository(session).get_history("ORD-B")
-        summary_row = FineSummaryRepository(session).get_by_key("ORD-B", date(2026, 8, 5), PROMPT_VERSION)
+        summary_row = FineProjectionSummaryRepository(session).get_by_key(
+            "ORD-B", date(2026, 8, 5), PROMPT_VERSION
+        )
 
     assert history_after == history_before
     assert summary_row is not None
@@ -165,7 +180,7 @@ def test_summary_regen_only_generates_summary_no_new_projection(database):
 def test_summary_regen_without_a_projection_raises_no_projection_exists(database):
     _seed_order(database, "ORD-NOPROJ")
     llm = FakeChatClient()
-    job = _make_job("ORD-NOPROJ", date(2026, 8, 5), "SUMMARY_REGEN")
+    job = _make_job("ORD-NOPROJ", date(2026, 8, 5), "PROJECTION_SUMMARY_REGEN")
 
     with pytest.raises(NoProjectionExistsError):
         execute_job(job, database, Settings(), llm, heartbeat=None)
@@ -242,3 +257,50 @@ def test_session_is_not_held_across_the_llm_call(database):
     # summary phase -- never the same session object reused across both.
     assert len(seen_sessions) == 2
     assert seen_sessions[0] is not seen_sessions[1]
+
+
+def _seed_mitigation_options(database: Database, order_id: str, projection_date: date) -> None:
+    with database.session() as session:
+        MitigationResultRepository(session).save_results(
+            order_id,
+            projection_date,
+            [
+                MitigationOption(
+                    action="ACCEPT",
+                    projected_fine_after=100.0,
+                    action_cost=0.0,
+                    net_saving=0.0,
+                    risk_level="HIGH",
+                    confidence="CONFIRMED",
+                    rationale="Pay the projected fine as-is.",
+                )
+            ],
+        )
+        session.commit()
+
+
+def test_mitigation_summary_regen_generates_summary(database):
+    _seed_order(database, "ORD-MIT-WORKER")
+    _seed_mitigation_options(database, "ORD-MIT-WORKER", date(2026, 8, 5))
+    llm = FakeChatClient()
+    job = _make_job("ORD-MIT-WORKER", date(2026, 8, 5), "MITIGATION_SUMMARY_REGEN")
+
+    execute_job(job, database, Settings(), llm, heartbeat=None)
+
+    with database.session() as session:
+        summary_row = FineMitigationSummaryRepository(session).get_by_key(
+            "ORD-MIT-WORKER", date(2026, 8, 5), MITIGATION_PROMPT_VERSION
+        )
+
+    assert summary_row is not None
+    assert summary_row["status"] == "READY"
+    assert summary_row["summary"] == "All clear."
+
+
+def test_mitigation_summary_regen_without_options_raises_no_mitigation_options_exist(database):
+    _seed_order(database, "ORD-MIT-NOOPT")
+    llm = FakeChatClient()
+    job = _make_job("ORD-MIT-NOOPT", date(2026, 8, 5), "MITIGATION_SUMMARY_REGEN")
+
+    with pytest.raises(NoMitigationOptionsExistError):
+        execute_job(job, database, Settings(), llm, heartbeat=None)

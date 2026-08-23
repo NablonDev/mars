@@ -1,11 +1,15 @@
 """
 Exercises the two admin endpoints -- "seed via API" and the full
 day-by-day replay -- and checks the results against the numbers already
-published and cross-verified in data/samples/mars_fines_mock_seed_data.sql and
-docs/FINE_ENGINE.md. If these ever drift, it means either the engine
-changed (expected -- update the docs too) or the API/service wiring
-broke something the engine itself gets right (a real regression).
+published and cross-verified in data/samples/mars_fines_mock_seed_data.sql.
+If these ever drift, it means either the engine changed (expected --
+update the docs too) or the API/service wiring broke something the
+engine itself gets right (a real regression).
 """
+
+from sqlalchemy import select
+
+from app.models import Retailer
 
 
 def test_seed_master_data_is_idempotent(client):
@@ -47,7 +51,7 @@ def test_simulate_daily_run_reproduces_published_numbers(seeded_client):
     scenarios = {s["order_id"]: s["days"] for s in resp.json()["scenarios"]}
 
     # WMT-100234, Aug 9: carrier misses the dock appointment -- matches
-    # docs/FINE_ENGINE.md section 5 and tests/test_fine_engine.py's
+    # tests/test_fine_engine.py's
     # TestFourScenarioRegression::test_wmt_100234_appointment_missed_day.
     wmt_aug9 = next(d for d in scenarios["WMT-100234"] if d["projection_date"] == "2026-08-09")
     assert wmt_aug9["total_expected_fine"] == 540.00
@@ -123,7 +127,7 @@ def test_repeat_calls_are_stable_except_for_the_known_shared_plant_limitation(se
     stable, just different from the very first run. This is the same
     documented mock-data limitation as before, showing up a second way;
     it is not a new bug and not something this fix could or should paper
-    over -- see docs/FINE_ENGINE.md "Open items"."""
+    over."""
     first = seeded_client.post("/api/v1/admin/simulate-daily-run").json()["scenarios"]
     second = seeded_client.post("/api/v1/admin/simulate-daily-run").json()["scenarios"]
     third = seeded_client.post("/api/v1/admin/simulate-daily-run").json()["scenarios"]
@@ -141,7 +145,7 @@ def test_repeat_calls_are_stable_except_for_the_known_shared_plant_limitation(se
     amz_aug11 = [
         next(d for d in by_order[i]["AMZ-778501"] if d["projection_date"] == "2026-08-11") for i in range(3)
     ]
-    # First call: matches the published, canonical number (docs/FINE_ENGINE.md).
+    # First call: matches the published, canonical number.
     assert amz_aug11[0]["shortage_probability"] == 0.75
     assert amz_aug11[0]["total_expected_fine"] == 672.0
     # Every call after that: stable at a different, lower number, because
@@ -149,3 +153,78 @@ def test_repeat_calls_are_stable_except_for_the_known_shared_plant_limitation(se
     assert amz_aug11[1] == amz_aug11[2]
     assert amz_aug11[1]["shortage_probability"] == 0.35
     assert amz_aug11[1] != amz_aug11[0]
+
+
+def test_seed_master_data_force_false_is_still_idempotent(seeded_client):
+    """force=False (explicit, not just the default) must behave exactly
+    like today's idempotent seed: skip everything already present."""
+    resp = seeded_client.post("/api/v1/admin/seed-master-data", params={"force": False})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "retailers": 0,
+        "skus": 0,
+        "locations": 0,
+        "carriers": 0,
+        "rules": 0,
+        "orders": 0,
+        "mitigation_inputs": 0,
+    }
+
+
+def test_seed_master_data_force_true_truncates_and_reseeds_from_scratch(client, db_session):
+    """force=True must fully reset a corrupted row rather than skip past
+    it -- the defining difference from the default idempotent-insert
+    behavior, which would leave the corruption in place forever."""
+    first = client.post("/api/v1/admin/seed-master-data")
+    assert first.status_code == 200
+
+    retailer = db_session.scalars(select(Retailer).where(Retailer.retailer_id == "RET-WMT")).one()
+    retailer.retailer_name = "CORRUPTED BY TEST"
+    db_session.commit()
+
+    forced = client.post("/api/v1/admin/seed-master-data", params={"force": True})
+    assert forced.status_code == 200
+    # A genuine reseed from scratch -- every count matches the very first
+    # (non-idempotent-skip) call, not the all-zero idempotent-skip shape.
+    assert forced.json() == {
+        "retailers": 2,
+        "skus": 3,
+        "locations": 2,
+        "carriers": 2,
+        "rules": 4,
+        "orders": 4,
+        "mitigation_inputs": 3,
+    }
+
+    db_session.expire_all()
+    restored = db_session.scalars(select(Retailer).where(Retailer.retailer_id == "RET-WMT")).one()
+    assert restored.retailer_name == "Walmart"
+
+
+def test_seed_master_data_force_true_survives_a_prior_simulate_daily_run(seeded_client, db_session):
+    """force=True must clear order-dependent fact rows (order_confirmation,
+    production_schedule, shipment, demand_exception, actual_fine, and
+    mitigation_input) before truncating sales_order itself -- otherwise the
+    FK from those tables into sales_order.order_id raises an
+    IntegrityError instead of letting the reseed proceed."""
+    run_resp = seeded_client.post("/api/v1/admin/simulate-daily-run")
+    assert run_resp.status_code == 200
+
+    forced = seeded_client.post("/api/v1/admin/seed-master-data", params={"force": True})
+    assert forced.status_code == 200
+    assert forced.json() == {
+        "retailers": 2,
+        "skus": 3,
+        "locations": 2,
+        "carriers": 2,
+        "rules": 4,
+        "orders": 4,
+        "mitigation_inputs": 3,
+    }
+
+    orders_resp = seeded_client.get("/api/v1/orders")
+    assert orders_resp.status_code == 200
+    statuses = {o["order_id"]: o["order_status"] for o in orders_resp.json()}
+    # Freshly reseeded orders are OPEN again, not left DELIVERED from the
+    # simulate-daily-run call that happened before the force-reseed.
+    assert all(status == "OPEN" for status in statuses.values())

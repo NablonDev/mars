@@ -200,17 +200,31 @@ def test_access_log_duration_excludes_background_task_time(app, caplog):
     long that background task took to run, because Starlette runs
     background tasks *inside* the same ASGI call this middleware
     originally wrapped in one `finally` block around the whole thing.
-    Confirmed live against the real fine-summary background job before
+    Confirmed live against the real fine-projection-summary background job before
     this fix -- a `202` a client received in under a second was logged as
     if the request had taken 90+ seconds. `duration_ms` must reflect what
     a client actually experienced (up to the response being sent), not
-    the background job's own runtime."""
+    the background job's own runtime.
+
+    The assertion is relative rather than a fixed absolute cap: under
+    full-suite load, `duration_ms` for the request itself can legitimately
+    balloon to a few hundred ms from scheduler contention alone, with
+    nothing to do with the background task. A fixed `< 100` threshold
+    flaked under that load. What actually distinguishes "fixed" from
+    "regressed" is that the logged duration stays a small fraction of the
+    background task's own sleep -- if the bug came back, duration_ms would
+    be at least the full sleep, not a fraction of it. Sleeping seconds
+    (rather than the previous 200ms) keeps that fraction comfortably above
+    any load-induced jitter in the request path itself.
+    """
     import time as time_module
 
     from fastapi import BackgroundTasks
 
+    background_task_sleep_s = 2.0
+
     def _slow_background_task() -> None:
-        time_module.sleep(0.2)
+        time_module.sleep(background_task_sleep_s)
 
     @app.get("/api/v1/_test/with-background-task")
     def _with_background_task(background_tasks: BackgroundTasks) -> dict:
@@ -223,9 +237,14 @@ def test_access_log_duration_excludes_background_task_time(app, caplog):
     client.get("/api/v1/_test/with-background-task")
 
     record = next(r for r in caplog.records if r.name == "app.access")
-    # The background task slept 200ms -- the logged duration must not
-    # include that.
-    assert record.duration_ms < 100
+    # The background task slept `background_task_sleep_s` -- the logged
+    # duration must stay a small fraction of that regardless of ambient
+    # system load. If the old bug reappeared, duration_ms would be at
+    # least the full sleep (2000ms here), so a quarter of it (500ms) is
+    # still a wide margin below a real regression while comfortably
+    # clearing load-induced jitter in the request path.
+    background_task_sleep_ms = background_task_sleep_s * 1000
+    assert record.duration_ms < background_task_sleep_ms / 4
 
 
 def test_fastapi_request_validation_still_returns_its_own_422_contract(client):

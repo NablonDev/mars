@@ -8,7 +8,7 @@ tests/integration/test_job_queue_postgres.py.
 from datetime import date, timedelta
 from uuid import uuid4
 
-from app.repositories.fine_summary import FineSummaryRepository
+from app.repositories.fine_projection.summary import FineProjectionSummaryRepository
 from app.repositories.job_queue import JobQueueRepository, _utcnow
 
 
@@ -243,7 +243,7 @@ def test_get_run_summary_counts_correctly(db_session):
 
 
 # ---------------------------------------------------------------------
-# find_stranded_pending_summaries (recovery sweep, see app.workers.sweep)
+# find_stranded_pending_projection_summaries (recovery sweep, see app.workers.fine_projection)
 # ---------------------------------------------------------------------
 
 _AGENT_ID = uuid4()
@@ -251,7 +251,7 @@ _PROMPT_VERSION = "v-test"
 
 
 def _make_pending_summary(db_session, order_id: str, as_of_date: date) -> None:
-    FineSummaryRepository(db_session).create_pending(
+    FineProjectionSummaryRepository(db_session).create_pending(
         order_id=order_id,
         as_of_date=as_of_date,
         agent_id=_AGENT_ID,
@@ -261,55 +261,57 @@ def _make_pending_summary(db_session, order_id: str, as_of_date: date) -> None:
     db_session.commit()
 
 
-def test_find_stranded_pending_summaries_finds_a_row_with_no_job_item(db_session):
+def test_find_stranded_pending_projection_summaries_finds_a_row_with_no_job_item(db_session):
     _make_pending_summary(db_session, "ORD-STRANDED", date(2026, 8, 13))
 
     repo = JobQueueRepository(db_session)
-    stranded = repo.find_stranded_pending_summaries(date(2026, 8, 10), date(2026, 8, 14))
+    stranded = repo.find_stranded_pending_projection_summaries(date(2026, 8, 10), date(2026, 8, 14))
 
     assert stranded == [{"order_id": "ORD-STRANDED", "as_of_date": date(2026, 8, 13)}]
 
 
-def test_find_stranded_pending_summaries_excludes_a_row_with_a_job_item(db_session):
+def test_find_stranded_pending_projection_summaries_excludes_a_row_with_a_job_item(db_session):
     _make_pending_summary(db_session, "ORD-COVERED", date(2026, 8, 13))
 
     repo = JobQueueRepository(db_session)
     run = repo.create_run(run_type="ON_DEMAND", projection_date=date(2026, 8, 13))
-    repo.enqueue(run["id"], "ORD-COVERED", date(2026, 8, 13), "SUMMARY_REGEN", max_attempts=5)
+    repo.enqueue(run["id"], "ORD-COVERED", date(2026, 8, 13), "PROJECTION_SUMMARY_REGEN", max_attempts=5)
     db_session.commit()
 
-    stranded = repo.find_stranded_pending_summaries(date(2026, 8, 10), date(2026, 8, 14))
+    stranded = repo.find_stranded_pending_projection_summaries(date(2026, 8, 10), date(2026, 8, 14))
 
     assert stranded == []
 
 
-def test_find_stranded_pending_summaries_excludes_a_row_whose_job_item_is_terminal(db_session):
+def test_find_stranded_pending_projection_summaries_excludes_a_row_whose_job_item_is_terminal(db_session):
     _make_pending_summary(db_session, "ORD-DEAD-COVERED", date(2026, 8, 13))
 
     repo = JobQueueRepository(db_session)
     run = repo.create_run(run_type="ON_DEMAND", projection_date=date(2026, 8, 13))
-    item = repo.enqueue(run["id"], "ORD-DEAD-COVERED", date(2026, 8, 13), "SUMMARY_REGEN", max_attempts=5)
+    item = repo.enqueue(
+        run["id"], "ORD-DEAD-COVERED", date(2026, 8, 13), "PROJECTION_SUMMARY_REGEN", max_attempts=5
+    )
     repo.claim_batch("worker-1", limit=1, job_item_ids=[item["id"]])
     repo.mark_dead(item["id"], "worker-1", "boom", "SOME_FAILURE")
     db_session.commit()
 
-    stranded = repo.find_stranded_pending_summaries(date(2026, 8, 10), date(2026, 8, 14))
+    stranded = repo.find_stranded_pending_projection_summaries(date(2026, 8, 10), date(2026, 8, 14))
 
     assert stranded == []
 
 
-def test_find_stranded_pending_summaries_excludes_a_row_outside_the_date_window(db_session):
+def test_find_stranded_pending_projection_summaries_excludes_a_row_outside_the_date_window(db_session):
     _make_pending_summary(db_session, "ORD-TOO-OLD", date(2026, 8, 1))
 
     repo = JobQueueRepository(db_session)
-    stranded = repo.find_stranded_pending_summaries(date(2026, 8, 10), date(2026, 8, 14))
+    stranded = repo.find_stranded_pending_projection_summaries(date(2026, 8, 10), date(2026, 8, 14))
 
     assert stranded == []
 
 
-def test_find_stranded_pending_summaries_excludes_ready_and_failed_rows(db_session):
+def test_find_stranded_pending_projection_summaries_excludes_ready_and_failed_rows(db_session):
     repo = JobQueueRepository(db_session)
-    summaries = FineSummaryRepository(db_session)
+    summaries = FineProjectionSummaryRepository(db_session)
 
     summaries.create_pending(
         order_id="ORD-READY",
@@ -342,7 +344,7 @@ def test_find_stranded_pending_summaries_excludes_ready_and_failed_rows(db_sessi
     )
     db_session.commit()
 
-    stranded = repo.find_stranded_pending_summaries(date(2026, 8, 10), date(2026, 8, 14))
+    stranded = repo.find_stranded_pending_projection_summaries(date(2026, 8, 10), date(2026, 8, 14))
 
     assert stranded == []
 
@@ -377,11 +379,11 @@ def test_enqueue_many_persists_the_passed_max_attempts(db_session):
     assert items[0]["max_attempts"] == 10
 
 
-def test_find_stranded_pending_summaries_excludes_a_row_covered_by_an_order_run(db_session):
+def test_find_stranded_pending_projection_summaries_excludes_a_row_covered_by_an_order_run(db_session):
     """An ORDER_RUN item produces the summary for the same (order, date), so
-    the ledger row is NOT stranded -- even though no SUMMARY_REGEN exists.
+    the ledger row is NOT stranded -- even though no PROJECTION_SUMMARY_REGEN exists.
 
-    Matching the anti-join on task_type='SUMMARY_REGEN' would report this
+    Matching the anti-join on task_type='PROJECTION_SUMMARY_REGEN' would report this
     row as stranded and let the sweep enqueue a second item alongside the
     live ORDER_RUN. Both would then generate the same narrative, and
     nothing at the DB level would stop it: uq_job_item_inflight is scoped
@@ -395,6 +397,6 @@ def test_find_stranded_pending_summaries_excludes_a_row_covered_by_an_order_run(
     repo.enqueue(run["id"], "ORD-BATCH-COVERED", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
     db_session.commit()
 
-    stranded = repo.find_stranded_pending_summaries(date(2026, 8, 10), date(2026, 8, 14))
+    stranded = repo.find_stranded_pending_projection_summaries(date(2026, 8, 10), date(2026, 8, 14))
 
     assert stranded == []

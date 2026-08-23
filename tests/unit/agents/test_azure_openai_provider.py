@@ -9,32 +9,28 @@ from app.agents.providers.azure_openai import (
     AzureOpenAIChatClient,
     AzureOpenAIConfigError,
 )
-from app.core.config import Settings
+from app.core.config import LLMConfig
 
 
-def _configured_settings(**overrides) -> Settings:
+def _configured_config(**overrides) -> LLMConfig:
     defaults = {
-        "azure_openai_api_key": "fake-key",
-        "azure_openai_endpoint": "https://example.openai.azure.com/openai/v1",
-        "azure_openai_deployment_name": "fake-deployment",
+        "api_key": "fake-key",
+        "endpoint": "https://example.openai.azure.com/openai/v1",
+        "deployment": "fake-deployment",
     }
     defaults.update(overrides)
-    return Settings(**defaults)
+    return LLMConfig(**defaults)
 
 
 def test_raises_clear_error_if_azure_openai_not_configured():
-    settings = Settings(
-        azure_openai_api_key="",
-        azure_openai_endpoint="",
-        azure_openai_deployment_name="",
-    )
+    config = LLMConfig(api_key="", endpoint="", deployment="")
     with pytest.raises(AzureOpenAIConfigError):
-        AzureOpenAIChatClient(settings)
+        AzureOpenAIChatClient(config)
 
 
 @patch("app.agents.providers.azure_openai.ChatOpenAI")
-def test_constructor_passes_settings_through_to_chat_openai(mock_chat_openai: MagicMock):
-    AzureOpenAIChatClient(_configured_settings(), timeout_seconds=42.0, max_retries=5)
+def test_constructor_passes_config_through_to_chat_openai(mock_chat_openai: MagicMock):
+    AzureOpenAIChatClient(_configured_config(), timeout_seconds=42.0, max_retries=5)
 
     mock_chat_openai.assert_called_once_with(
         base_url="https://example.openai.azure.com/openai/v1",
@@ -47,7 +43,7 @@ def test_constructor_passes_settings_through_to_chat_openai(mock_chat_openai: Ma
 
 @patch("app.agents.providers.azure_openai.ChatOpenAI")
 def test_constructor_defaults_match_module_constants(mock_chat_openai: MagicMock):
-    client = AzureOpenAIChatClient(_configured_settings())
+    client = AzureOpenAIChatClient(_configured_config())
 
     assert client.model_name == "fake-deployment"
     mock_chat_openai.assert_called_once_with(
@@ -65,7 +61,7 @@ def test_invoke_without_tools_skips_bind_tools(mock_chat_openai: MagicMock):
     mock_chat_openai.return_value = mock_llm_instance
     mock_llm_instance.invoke.return_value = "response"
 
-    client = AzureOpenAIChatClient(_configured_settings())
+    client = AzureOpenAIChatClient(_configured_config())
     result = client.invoke([])
 
     mock_llm_instance.bind_tools.assert_not_called()
@@ -82,7 +78,7 @@ def test_invoke_with_tools_binds_tools_before_invoking(mock_chat_openai: MagicMo
     mock_bound.invoke.return_value = "response"
 
     tools = [MagicMock()]
-    client = AzureOpenAIChatClient(_configured_settings())
+    client = AzureOpenAIChatClient(_configured_config())
     result = client.invoke([], tools=tools)
 
     mock_llm_instance.bind_tools.assert_called_once_with(tools)

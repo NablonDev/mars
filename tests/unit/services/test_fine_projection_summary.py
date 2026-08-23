@@ -1,4 +1,4 @@
-"""Tests for FineSummaryService, using a hand-written fake chat client instead of a LangChain mock."""
+"""Tests for FineProjectionSummaryService, using a hand-written fake chat client instead of a LangChain mock."""
 
 from contextlib import suppress
 from datetime import date
@@ -8,14 +8,14 @@ from unittest.mock import patch
 import pytest
 from langchain_core.messages import ToolMessage
 
-from app.agents.fine_summary_schema import FineSummaryOutput
-from app.agents.prompts.fine_summary.v3 import PROMPT_VERSION
+from app.agents.fine_projection import FineProjectionSummaryOutput
+from app.agents.fine_projection.prompts.v3 import PROMPT_VERSION
 from app.core.exceptions import OrderNotFoundError, ToolLoopExhaustedError
-from app.repositories.fine_summary import FineSummaryRepository
+from app.repositories.fine_projection.summary import FineProjectionSummaryRepository
 from app.services.fine_projection import ProjectionResult, ViolationProjection
-from app.services.fine_summary import (
-    FineSummaryJob,
-    FineSummaryService,
+from app.services.fine_projection.summary import (
+    FineProjectionSummaryJob,
+    FineProjectionSummaryService,
     InvalidAsOfDateError,
     NoProjectionExistsError,
     NoSummaryJobExistsError,
@@ -177,18 +177,18 @@ def _seed_different_projection(services, order_id: str, projection_date: date) -
 
 def _enable_reuse(monkeypatch, *, max_reuse_days: int = 7) -> None:
     monkeypatch.setattr(
-        "app.services.fine_summary.get_settings",
+        "app.services.fine_projection.summary.get_settings",
         lambda: SimpleNamespace(summary_reuse_enabled=True, summary_max_reuse_days=max_reuse_days),
     )
 
 
 @pytest.fixture
-def summary_repo(db_session) -> FineSummaryRepository:
-    return FineSummaryRepository(db_session)
+def summary_repo(db_session) -> FineProjectionSummaryRepository:
+    return FineProjectionSummaryRepository(db_session)
 
 
-def _build_service(services, summary_repo, fake_llm) -> FineSummaryService:
-    return FineSummaryService(
+def _build_service(services, summary_repo, fake_llm) -> FineProjectionSummaryService:
+    return FineProjectionSummaryService(
         orders=services.orders,
         rules=services.rules,
         master_data=services.master_data,
@@ -200,17 +200,17 @@ def _build_service(services, summary_repo, fake_llm) -> FineSummaryService:
 
 
 def _schedule_and_run(
-    service: FineSummaryService,
+    service: FineProjectionSummaryService,
     order_id: str,
     as_of_date: date | None = None,
     force_regenerate: bool = False,
-) -> FineSummaryJob:
+) -> FineProjectionSummaryJob:
     """Runs get_or_schedule, then run_generation inline on a PENDING result --
     what a BackgroundTasks worker does, minus an actual background thread.
 
     run_generation re-raises on failure (see the "run_generation re-raises
     on failure" tests below) after persisting the FAILED ledger row --
-    swallow it here exactly as app.api.dependencies.get_fine_summary_job_runner
+    swallow it here exactly as app.api.dependencies.get_fine_projection_summary_job_runner
     does, since this helper's callers care about the resulting ledger state
     (via get_status), not about propagating the exception themselves."""
     job = service.get_or_schedule(order_id, as_of_date=as_of_date, force_regenerate=force_regenerate)
@@ -392,7 +392,7 @@ def test_force_regenerate_against_an_already_cached_key_replaces_the_row_in_plac
     there's still exactly one row under that key afterwards, not two."""
     from sqlalchemy import func, select
 
-    from app.models import FineSummary
+    from app.models import ProjectionSummary
 
     _seed_flat_rule_order(services)
     fake_llm = FakeChatClient(final_content="Flat $2.50 expected delay fine.")
@@ -412,10 +412,10 @@ def test_force_regenerate_against_an_already_cached_key_replaces_the_row_in_plac
 
     row_count = db_session.scalar(
         select(func.count())
-        .select_from(FineSummary)
+        .select_from(ProjectionSummary)
         .where(
-            FineSummary.order_id == "ORD-EXP",
-            FineSummary.as_of_date == date(2026, 8, 5),
+            ProjectionSummary.order_id == "ORD-EXP",
+            ProjectionSummary.as_of_date == date(2026, 8, 5),
         )
     )
     assert row_count == 1
@@ -428,9 +428,9 @@ def test_cache_miss_on_prompt_version_bump(services, summary_repo):
     _seed_flat_rule_order(services)
     # Simulate a stale row persisted under an old prompt version.
     stale_agent_id = services.prompt_registry.ensure_registered(
-        agent_name="fine_summary",
+        agent_name="fine_projection_summary",
         prompt_version="v0-stale",
-        module_path="app.agents.prompts.fine_summary.v0_stale",
+        module_path="app.agents.fine_projection_summary.prompts.v0_stale",
     )
     summary_repo.mark_ready(
         order_id="ORD-EXP",
@@ -584,7 +584,7 @@ def test_bounded_loop_marks_the_job_failed_after_max_tool_rounds(services, summa
     # run_generation never raises -- a background job with nothing
     # awaiting it must persist the failure, not throw it away.
     assert job.status == "FAILED"
-    assert job.error_message == "Fine summary generation failed upstream"
+    assert job.error_message == "Fine projection summary generation failed upstream"
     # 3 optional tool-calling rounds + the 1 final (empty-content) round.
     assert len(fake_llm.invocations) == 4
 
@@ -600,7 +600,7 @@ def test_provider_failure_on_an_early_tool_round_results_in_a_failed_job_not_a_c
     job = _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 5))
 
     assert job.status == "FAILED"
-    assert job.error_message == "Fine summary generation failed upstream"
+    assert job.error_message == "Fine projection summary generation failed upstream"
     # The raw exception text must never reach the persisted, client-facing
     # error_message -- only the generic client-safe message does.
     assert "simulated upstream failure" not in job.error_message
@@ -646,7 +646,7 @@ def test_get_status_reports_pending_before_generation_runs(services, summary_rep
 
 
 def test_ready_output_reconstructed_from_the_rows_own_columns(services, summary_repo):
-    """FineSummaryOutput is rebuilt from the row's own columns, never
+    """FineProjectionSummaryOutput is rebuilt from the row's own columns, never
     parsed out of the persisted summary text (it's plain text, not JSON)."""
     _seed_flat_rule_order(services)
     fake_llm = FakeChatClient(final_content="The current total is $2.50 because of a flat OTIF fee.")
@@ -655,7 +655,7 @@ def test_ready_output_reconstructed_from_the_rows_own_columns(services, summary_
     job = _schedule_and_run(service, "ORD-EXP", as_of_date=date(2026, 8, 5))
 
     assert job.status == "READY"
-    assert isinstance(job.output, FineSummaryOutput)
+    assert isinstance(job.output, FineProjectionSummaryOutput)
     assert job.output.order_id == "ORD-EXP"
     assert job.output.as_of_date == date(2026, 8, 5)
     assert job.output.prompt_version == PROMPT_VERSION
@@ -903,7 +903,7 @@ def test_run_generation_reraises_after_persisting_the_failed_ledger_row(services
     # The FAILED ledger row was still written before the re-raise.
     persisted = summary_repo.get_by_key("ORD-EXP", date(2026, 8, 5), PROMPT_VERSION)
     assert persisted["status"] == "FAILED"
-    assert persisted["error_message"] == "Fine summary generation failed upstream"
+    assert persisted["error_message"] == "Fine projection summary generation failed upstream"
 
 
 def test_run_generation_reraise_leaves_ledger_write_failure_handling_intact(services, summary_repo):
@@ -917,14 +917,14 @@ def test_run_generation_reraise_leaves_ledger_write_failure_handling_intact(serv
 
     with (
         patch.object(summary_repo, "mark_failed", side_effect=RuntimeError("db is down")),
-        pytest.raises(ToolLoopExhaustedError, match="Fine summary generation failed upstream"),
+        pytest.raises(ToolLoopExhaustedError, match="Fine projection summary generation failed upstream"),
     ):
         service.run_generation(job.order_id, job.as_of_date, job.prompt_version)
 
 
 def test_dependencies_job_runner_swallows_the_reraise_and_still_marks_failed(services, summary_repo):
     """Regression test for app/api/dependencies.py's
-    get_fine_summary_job_runner guard: it must absorb run_generation's
+    get_fine_projection_summary_job_runner guard: it must absorb run_generation's
     re-raise (a BackgroundTasks callable has no retry contract of its own)
     while the ledger row it reads back is already FAILED."""
     _seed_flat_rule_order(services)
@@ -934,7 +934,7 @@ def test_dependencies_job_runner_swallows_the_reraise_and_still_marks_failed(ser
     job = service.get_or_schedule("ORD-EXP", as_of_date=date(2026, 8, 5))
 
     def _run(order_id: str, as_of_date: date, prompt_version: str) -> None:
-        """The exact guard shape used in get_fine_summary_job_runner._run."""
+        """The exact guard shape used in get_fine_projection_summary_job_runner._run."""
         with suppress(Exception):
             service.run_generation(order_id, as_of_date, prompt_version)
 
@@ -1035,14 +1035,14 @@ def test_non_reused_output_carries_backward_compatible_reuse_defaults(services, 
     assert job.output.unchanged_for_days is None
 
 
-def test_fine_summary_response_schema_additive_fields_default(services, summary_repo):
-    """Schema-level check: FineSummaryResponse.model_validate against a
-    plain (non-reuse-aware) FineSummaryOutput -- the shape existing
+def test_fine_projection_summary_response_schema_additive_fields_default(services, summary_repo):
+    """Schema-level check: ProjectionSummaryResponse.model_validate against a
+    plain (non-reuse-aware) FineProjectionSummaryOutput -- the shape existing
     clients built against -- still resolves the new fields to their
     documented defaults instead of raising."""
-    from app.schemas.fine_summaries import FineSummaryResponse
+    from app.schemas.fine_projection.summaries import ProjectionSummaryResponse
 
-    plain_output = FineSummaryOutput(
+    plain_output = FineProjectionSummaryOutput(
         order_id="ORD-EXP",
         as_of_date=date(2026, 8, 5),
         prompt_version=PROMPT_VERSION,
@@ -1050,7 +1050,7 @@ def test_fine_summary_response_schema_additive_fields_default(services, summary_
         summary="Flat $2.50 expected OTIF fee.",
     )
 
-    response = FineSummaryResponse.model_validate(plain_output)
+    response = ProjectionSummaryResponse.model_validate(plain_output)
 
     assert response.order_id == "ORD-EXP"
     assert response.as_of_date == date(2026, 8, 5)
@@ -1069,10 +1069,10 @@ def test_fine_summary_response_schema_additive_fields_default(services, summary_
 
 
 def test_v3_prompt_version_is_registered_on_first_use(services, summary_repo):
-    """_ensure_registered must insert a new dim_prompt_version row keyed
+    """_ensure_registered must insert a new prompt_version row keyed
     on (agent_id, "v3") the first time this service runs against a fresh
-    registry -- exercising the same FK the fact_fine_summary row depends
-    on (fk_fine_summary_agent_prompt_version)."""
+    registry -- exercising the same FK the projection_summary row depends
+    on (fk_fine_projection_summary_agent_prompt_version)."""
     _seed_flat_rule_order(services)
     fake_llm = FakeChatClient()
     service = _build_service(services, summary_repo, fake_llm)

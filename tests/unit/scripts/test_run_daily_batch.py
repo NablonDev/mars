@@ -6,7 +6,7 @@ the job-queue backend, the LLM client, `process_jobs`,
 `main()`'s control flow / exit-code decisions -- each underlying
 component already has its own dedicated test module (worker loop:
 test_worker_loop.py; repository: test_job_queue_repository.py; recovery
-sweep: test_worker_sweep.py).
+sweep: test_worker_fine_projection.py).
 """
 
 from __future__ import annotations
@@ -17,9 +17,10 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 import scripts.ops.run_daily_batch as batch_script
+from app.queue.types import SweepResult
 from app.repositories.job_queue import JobQueueRepository
-from app.workers.loop import EnqueueResult, WorkerLoopSummary
-from app.workers.sweep import SweepResult
+from app.workers.fine_projection import EnqueueResult
+from app.workers.loop import WorkerLoopSummary
 
 
 def _invoke_main() -> int:
@@ -73,7 +74,7 @@ def _mock_common(monkeypatch, database):
         batch_script, "build_job_queue", lambda settings, db: (_FakeDispatcher(), _FakeSource())
     )
     monkeypatch.setattr(batch_script, "AzureOpenAIChatClient", lambda *a, **k: object())
-    monkeypatch.setattr(batch_script, "sweep_stranded_pending_summaries", _fake_sweep)
+    monkeypatch.setattr(batch_script, "sweep_stranded_pending_projection_summaries", _fake_sweep)
     monkeypatch.setattr(batch_script, "enqueue_daily_run", _fake_enqueue_daily_run)
     monkeypatch.setattr("sys.argv", ["run_daily_batch.py"])
 
@@ -128,7 +129,7 @@ def test_lock_already_held_exits_zero_without_enqueueing_or_draining(monkeypatch
     )
     monkeypatch.setattr(
         batch_script,
-        "sweep_stranded_pending_summaries",
+        "sweep_stranded_pending_projection_summaries",
         lambda *a, **k: calls.append("sweep") or _fake_sweep(),
     )
 
@@ -167,7 +168,7 @@ def test_sweep_runs_before_enqueue(monkeypatch):
         order.append("enqueue")
         return _fake_enqueue_daily_run()
 
-    monkeypatch.setattr(batch_script, "sweep_stranded_pending_summaries", _sweep)
+    monkeypatch.setattr(batch_script, "sweep_stranded_pending_projection_summaries", _sweep)
     monkeypatch.setattr(batch_script, "enqueue_daily_run", _enqueue)
     monkeypatch.setattr(batch_script, "process_jobs", lambda *a, **k: WorkerLoopSummary())
 

@@ -1,20 +1,20 @@
-"""Unit tests for FineSummaryService's content fingerprint -- a pure,
+"""Unit tests for FineProjectionSummaryService's content fingerprint -- a pure,
 DB-free function over the engine's OUTPUTS for the "current" day plus
 material facts, deliberately excluding as_of_date/current_projection_date,
 any generated-at timestamp, and days_to_delivery. See
-app/agents/prompts/fine_summary/v3.py and PROGRESS.local.md for why."""
+app/agents/fine_projection_summary/prompts/v3.py and PROGRESS.local.md for why."""
 
 from datetime import date
 from typing import Any
 
-from app.agents.fine_summary_context import (
+from app.agents.fine_projection import (
     ActiveRule,
     DailyHistoryEntry,
-    FineSummaryContext,
+    FineProjectionSummaryContext,
     OrderContext,
     ViolationEntry,
 )
-from app.services.fine_summary import _compute_content_fingerprint, _fmt_number
+from app.services.fine_projection.summary import _compute_content_fingerprint, _fmt_number
 
 
 def _order(**overrides: Any) -> OrderContext:
@@ -80,8 +80,8 @@ def _context(
     active_rules: list[ActiveRule] | None = None,
     order: OrderContext | None = None,
     stacking_mode: str = "SUM",
-) -> FineSummaryContext:
-    return FineSummaryContext(
+) -> FineProjectionSummaryContext:
+    return FineProjectionSummaryContext(
         order=order or _order(),
         current_projection_date=current_projection_date,
         stacking_mode=stacking_mode,

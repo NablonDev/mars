@@ -4,6 +4,7 @@ import unittest
 
 from fastapi.testclient import TestClient
 
+from app.api.dependencies import require_internal_api_key
 from app.core.exceptions import ServiceError
 from app.main import create_app
 
@@ -115,7 +116,12 @@ class FakePoValidationService:
 
 class PoValidationApiTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.client = TestClient(create_app(FakeCMIRRunService(), FakePoValidationService()))
+        app = create_app(FakeCMIRRunService(), FakePoValidationService())
+        # This suite builds its own app/client rather than using conftest's
+        # `app` fixture, so it needs its own explicit override -- it tests
+        # the PO Validation contract, not the auth gate (see test_internal_api_key.py).
+        app.dependency_overrides[require_internal_api_key] = lambda: None
+        self.client = TestClient(app)
 
     def test_ingest_po_lines_returns_accepted_batch(self) -> None:
         response = self.client.post(
