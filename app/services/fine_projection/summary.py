@@ -1,4 +1,4 @@
-"""Service for generating and persisting fine summaries."""
+"""Service for generating and persisting fine projection summaries."""
 
 from __future__ import annotations
 
@@ -14,19 +14,19 @@ from uuid import UUID
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from app.agents.fine_summary_context import (
+from app.agents.fine_projection import (
     ActiveRule,
     ActualOutcome,
     DailyHistoryEntry,
-    FineSummaryContext,
+    FineProjectionSummaryContext,
+    FineProjectionSummaryOutput,
     OrderContext,
     TierBand,
     ViolationEntry,
+    build_fine_projection_summary_tools,
 )
-from app.agents.fine_summary_schema import FineSummaryOutput
-from app.agents.prompts.fine_summary.v3 import PROMPT_VERSION, SYSTEM_PROMPT
+from app.agents.fine_projection.prompts.v3 import PROMPT_VERSION, SYSTEM_PROMPT
 from app.agents.providers.azure_openai import AzureOpenAIChatClient
-from app.agents.tools.fine_summary import build_fine_summary_tools
 from app.core.config import get_settings
 from app.core.exceptions import (
     InvalidAsOfDateError,
@@ -37,20 +37,20 @@ from app.core.exceptions import (
 )
 from app.models.enums import SummaryStatus
 from app.repositories.agent_registry import PromptRegistryRepository
+from app.repositories.fine_master_data import MasterDataRepository
+from app.repositories.fine_projection.projection import ProjectionRepository
+from app.repositories.fine_projection.summary import FineProjectionSummaryRepository
 from app.repositories.fine_rule import FineRuleRepository
-from app.repositories.fine_summary import FineSummaryRepository
-from app.repositories.master_data import MasterDataRepository
 from app.repositories.order import OrderRepository
-from app.repositories.projection import ProjectionRepository
 from app.services.fine_projection import DELAY_VIOLATION_TYPES, SHORTAGE_VIOLATION_TYPES
 
 MAX_TOOL_ROUNDS = 4
-_UPSTREAM_FAILURE_MESSAGE = "Fine summary generation failed upstream"
+_UPSTREAM_FAILURE_MESSAGE = "Fine projection summary generation failed upstream"
 
 # Registered lazily on the service's read/write path rather than at startup.
-_AGENT_NAME = "fine_summary"
-_AGENT_SOURCE = "fines"
-_PROMPT_MODULE_PATH = "app.agents.prompts.fine_summary.v3"
+_AGENT_NAME = "fine_projection_summary"
+_AGENT_SOURCE = "fine_projection"
+_PROMPT_MODULE_PATH = "app.agents.fine_projection.prompts.v3"
 _LLM_PROVIDER = "azure_openai"
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ def _fmt_number(value: float) -> str:
     return f"{float(value):.6f}"
 
 
-def _compute_content_fingerprint(mandatory_context: FineSummaryContext) -> str:
+def _compute_content_fingerprint(mandatory_context: FineProjectionSummaryContext) -> str:
     """Hash the facts that determine the generated narrative.
 
     Excludes dates and other values that may change without changing the
@@ -112,8 +112,8 @@ def _compute_content_fingerprint(mandatory_context: FineSummaryContext) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-class FineSummaryOutputWithReuse(FineSummaryOutput):
-    """FineSummaryOutput with fields describing narrative reuse."""
+class FineProjectionSummaryOutputWithReuse(FineProjectionSummaryOutput):
+    """FineProjectionSummaryOutput with fields describing narrative reuse."""
 
     is_reused: bool = False
     generated_for_date: date | None = None
@@ -122,22 +122,22 @@ class FineSummaryOutputWithReuse(FineSummaryOutput):
 
 
 @dataclass
-class FineSummaryJob:
+class FineProjectionSummaryJob:
     order_id: str
     as_of_date: date
     prompt_version: str
     status: SummaryStatus
-    output: FineSummaryOutput | None = None
+    output: FineProjectionSummaryOutput | None = None
     error_message: str | None = None
 
 
 @dataclass
-class FineSummaryService:
+class FineProjectionSummaryService:
     orders: OrderRepository
     rules: FineRuleRepository
     master_data: MasterDataRepository
     projections: ProjectionRepository
-    summaries: FineSummaryRepository
+    summaries: FineProjectionSummaryRepository
     prompt_registry: PromptRegistryRepository
     llm: AzureOpenAIChatClient
 
@@ -155,7 +155,7 @@ class FineSummaryService:
         order_id: str,
         as_of_date: date | None = None,
         force_regenerate: bool = False,
-    ) -> FineSummaryJob:
+    ) -> FineProjectionSummaryJob:
         order, as_of_date, history = self._validate(order_id, as_of_date)
 
         mandatory_context = self._assemble_mandatory_context(
@@ -171,7 +171,7 @@ class FineSummaryService:
         ).hexdigest()
         content_fingerprint = _compute_content_fingerprint(mandatory_context)
         logger.info(
-            "Fine summary content fingerprint: order_id=%s as_of_date=%s fingerprint=%s",
+            "Fine projection summary content fingerprint: order_id=%s as_of_date=%s fingerprint=%s",
             order_id,
             as_of_date,
             content_fingerprint,
@@ -184,7 +184,7 @@ class FineSummaryService:
                 PROMPT_VERSION,
             )
             if cached is not None:
-                return FineSummaryJob(
+                return FineProjectionSummaryJob(
                     order_id=order_id,
                     as_of_date=as_of_date,
                     prompt_version=PROMPT_VERSION,
@@ -195,7 +195,7 @@ class FineSummaryService:
             if get_settings().summary_reuse_enabled:
                 reused = self._try_reuse(order_id, as_of_date, content_fingerprint, context_hash)
                 if reused is not None:
-                    return FineSummaryJob(
+                    return FineProjectionSummaryJob(
                         order_id=order_id,
                         as_of_date=as_of_date,
                         prompt_version=PROMPT_VERSION,
@@ -214,7 +214,7 @@ class FineSummaryService:
         )
         self.summaries.commit()
 
-        return FineSummaryJob(
+        return FineProjectionSummaryJob(
             order_id=order_id,
             as_of_date=as_of_date,
             prompt_version=PROMPT_VERSION,
@@ -258,7 +258,7 @@ class FineSummaryService:
         self.summaries.commit()
 
         logger.info(
-            "Fine summary reused: order_id=%s as_of_date=%s source_as_of_date=%s fingerprint=%s",
+            "Fine projection summary reused: order_id=%s as_of_date=%s source_as_of_date=%s fingerprint=%s",
             order_id,
             as_of_date,
             original_source_date,
@@ -271,7 +271,7 @@ class FineSummaryService:
         self,
         order_id: str,
         as_of_date: date | None = None,
-    ) -> FineSummaryJob:
+    ) -> FineProjectionSummaryJob:
         _, as_of_date, _ = self._validate(order_id, as_of_date)
 
         row = self.summaries.get_by_key(
@@ -289,11 +289,11 @@ class FineSummaryService:
                 PROMPT_VERSION,
             )
         if row is None:
-            raise NoSummaryJobExistsError(order_id, as_of_date)
+            raise NoSummaryJobExistsError(order_id, as_of_date, domain="projection")
 
         output = self._to_output(row) if row["summary"] is not None else None
 
-        return FineSummaryJob(
+        return FineProjectionSummaryJob(
             order_id=order_id,
             as_of_date=row["as_of_date"],
             prompt_version=PROMPT_VERSION,
@@ -303,12 +303,12 @@ class FineSummaryService:
         )
 
     @staticmethod
-    def _to_output(row: dict) -> FineSummaryOutput:
+    def _to_output(row: dict) -> FineProjectionSummaryOutput:
         source_as_of_date = row.get("source_as_of_date")
         is_reused = source_as_of_date is not None
         as_of_date = row["as_of_date"]
 
-        return FineSummaryOutputWithReuse(
+        return FineProjectionSummaryOutputWithReuse(
             order_id=row["order_id"],
             as_of_date=as_of_date,
             prompt_version=row["prompt_version"],
@@ -336,7 +336,7 @@ class FineSummaryService:
         order = self.orders.get_order(order_id)
         if order is None:
             logger.error(
-                "Fine summary job: order %s no longer exists",
+                "Fine projection summary job: order %s no longer exists",
                 order_id,
             )
             return
@@ -350,7 +350,7 @@ class FineSummaryService:
             )
             content_fingerprint = _compute_content_fingerprint(mandatory_context)
             logger.info(
-                "Fine summary content fingerprint: order_id=%s as_of_date=%s fingerprint=%s",
+                "Fine projection summary content fingerprint: order_id=%s as_of_date=%s fingerprint=%s",
                 order_id,
                 as_of_date,
                 content_fingerprint,
@@ -365,7 +365,7 @@ class FineSummaryService:
             )
         except ToolLoopExhaustedError as exc:
             logger.error(
-                "Fine summary generation failed: order_id=%s date=%s: %s",
+                "Fine projection summary generation failed: order_id=%s date=%s: %s",
                 order_id,
                 as_of_date,
                 exc.detail or exc.message,
@@ -379,7 +379,7 @@ class FineSummaryService:
             raise
         except Exception:
             logger.exception(
-                "Fine summary generation crashed: order_id=%s date=%s",
+                "Fine projection summary generation crashed: order_id=%s date=%s",
                 order_id,
                 as_of_date,
             )
@@ -418,7 +418,7 @@ class FineSummaryService:
             )
         except Exception:
             logger.exception(
-                "Failed to persist fine summary failure: order_id=%s date=%s",
+                "Failed to persist fine projection summary failure: order_id=%s date=%s",
                 order_id,
                 as_of_date,
             )
@@ -429,7 +429,7 @@ class FineSummaryService:
         as_of_date: date | None,
     ) -> tuple[dict, date, list[dict]]:
         logger.info(
-            "Fine summary requested for order_id=%s as_of_date=%s",
+            "Fine projection summary requested for order_id=%s as_of_date=%s",
             order_id,
             as_of_date,
         )
@@ -463,7 +463,7 @@ class FineSummaryService:
         order: dict,
         as_of_date: date,
         history: list[dict],
-    ) -> FineSummaryContext:
+    ) -> FineProjectionSummaryContext:
         order_id = order["order_id"]
         retailer_id = order["retailer_id"]
         rules = self.rules.get_rules_for_retailer(retailer_id)
@@ -530,7 +530,7 @@ class FineSummaryService:
                 for fine in self.orders.list_actual_fines(order_id)
             ]
 
-        return FineSummaryContext(
+        return FineProjectionSummaryContext(
             order=OrderContext(
                 order_id=order_id,
                 order_status=order["order_status"],
@@ -558,7 +558,7 @@ class FineSummaryService:
         bounded_history: list[dict],
     ) -> list[DailyHistoryEntry]:
         """One entry per distinct projection_date, combining that day's
-        engine outputs (from fact_projected_fine, via bounded_history) with
+        engine outputs (from projected_fine, via bounded_history) with
         that day's inputs (via OrderRepository.build_snapshot)"""
         entries: list[DailyHistoryEntry] = []
 
@@ -618,14 +618,14 @@ class FineSummaryService:
         retailer_id: str,
         order_status: str,
         as_of_date: date,
-        mandatory_context: FineSummaryContext,
+        mandatory_context: FineProjectionSummaryContext,
         heartbeat: Callable[[], None] | None = None,
     ) -> str:
         messages: list[BaseMessage] = [
             SystemMessage(content=SYSTEM_PROMPT),
             HumanMessage(content=_wrap_data(mandatory_context.model_dump(mode="json"))),
         ]
-        tools = build_fine_summary_tools(
+        tools = build_fine_projection_summary_tools(
             carrier_reliability=lambda carrier_id: self._get_carrier_reliability(carrier_id),
             actual_fines=lambda: self.orders.list_actual_fines(order_id),
             tier_bands=lambda rule_id: self._get_tier_bands(retailer_id, rule_id),
@@ -648,7 +648,7 @@ class FineSummaryService:
                 response = self.llm.invoke(messages, tools=tools)
 
                 logger.info(
-                    "Fine summary LLM round %s completed in %.1fs",
+                    "Fine projection summary LLM round %s completed in %.1fs",
                     round_number,
                     time.monotonic() - started,
                 )
@@ -677,8 +677,9 @@ class FineSummaryService:
         except Exception as exc:
             raise ToolLoopExhaustedError(
                 _UPSTREAM_FAILURE_MESSAGE,
+                domain="projection",
                 detail=(
-                    f"Fine summary generation failed after "
+                    f"Fine projection summary generation failed after "
                     f"{MAX_TOOL_ROUNDS} rounds limit for order_id={order_id!r}, "
                     f"as_of_date={as_of_date!r}: {exc}"
                 ),
@@ -687,8 +688,9 @@ class FineSummaryService:
         if not final_response.content:
             raise ToolLoopExhaustedError(
                 _UPSTREAM_FAILURE_MESSAGE,
+                domain="projection",
                 detail=(
-                    f"Fine summary generation failed: "
+                    f"Fine projection summary generation failed: "
                     f"Model returned no summary "
                     f"for order_id={order_id!r}, as_of_date={as_of_date!r}."
                 ),
@@ -697,8 +699,9 @@ class FineSummaryService:
         if not isinstance(final_response.content, str):
             raise ToolLoopExhaustedError(
                 _UPSTREAM_FAILURE_MESSAGE,
+                domain="projection",
                 detail=(
-                    f"Fine summary generation failed: "
+                    f"Fine projection summary generation failed: "
                     f"Model returned non-text final content "
                     f"for order_id={order_id!r}, as_of_date={as_of_date!r}."
                 ),
@@ -715,7 +718,7 @@ class FineSummaryService:
             heartbeat()
         except Exception:
             logger.exception(
-                "Fine summary heartbeat callback failed for order_id=%s; continuing generation",
+                "Fine projection summary heartbeat callback failed for order_id=%s; continuing generation",
                 order_id,
             )
 

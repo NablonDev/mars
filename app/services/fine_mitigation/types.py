@@ -13,7 +13,7 @@ class ShortageCause(Enum):
 @dataclass
 class MitigationInputs:
     """Cause/cost assumptions for one order -- mutable, current-best-guess
-    data, not a historized fact. See app/repositories/mitigation.py."""
+    data, not a historized fact. See app/repositories/fine_mitigation/mitigation.py."""
 
     order_id: str
     shortage_cause: ShortageCause = ShortageCause.UNKNOWN

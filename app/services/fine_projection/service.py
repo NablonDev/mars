@@ -6,15 +6,15 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 from app.core.exceptions import NoActiveRulesError, OrderNotFoundError
+from app.repositories.fine_master_data import MasterDataRepository
+from app.repositories.fine_projection.projection import ProjectionRepository
 from app.repositories.fine_rule import FineRuleRepository
-from app.repositories.master_data import MasterDataRepository
 from app.repositories.order import OrderRepository
-from app.repositories.projection import ProjectionRepository
-from app.services.fine_projection import ProjectionResult, project_order
+from app.services.fine_projection import ProjectionEngine, ProjectionResult
 
 
 @dataclass
-class ProjectionService:
+class FineProjectionService:
     orders: OrderRepository
     rules: FineRuleRepository
     master_data: MasterDataRepository
@@ -39,7 +39,7 @@ class ProjectionService:
             )
 
         stacking_mode = stacking_mode_override or self.master_data.get_stacking_mode(order["retailer_id"])
-        result = project_order(snapshot, rule_list, stacking_mode=stacking_mode)
+        result = ProjectionEngine().project(snapshot, rule_list, stacking_mode=stacking_mode)
         self.projections.save_result(result)
         return result
 

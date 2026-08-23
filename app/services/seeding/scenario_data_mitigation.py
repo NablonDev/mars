@@ -2,12 +2,12 @@
 few synthetic snapshots for edge cases the four don't cover.
 
 Numbers are chosen to be hand-verifiable, not to model a real Mars order --
-same posture as app/services/fine_projection/scenario_data.py.
+same posture as app/services/seeding/scenario_data_projection.py.
 """
 
 from datetime import date
 
-from app.services.fine_mitigation.models import MitigationInputs, ShortageCause
+from app.services.fine_mitigation.types import MitigationInputs, ShortageCause
 from app.services.fine_projection import (
     AppointmentStatus,
     CalcType,
@@ -17,11 +17,11 @@ from app.services.fine_projection import (
 )
 
 # ---------------------------------------------------------------------
-# The four seeded demo orders -- see app/services/fine_projection/scenario_data.py
+# The four seeded demo orders -- see app/services/seeding/scenario_data_projection.py
 # for their OrderSnapshot/qty/unit_price history. AMZ-778501 deliberately
 # has no entry here at all: the "not present" tier. MitigationRepository
 # returns all-defaults (ShortageCause.UNKNOWN, no cost data) for it, never
-# an error -- see app/repositories/mitigation.py.
+# an error -- see app/repositories/fine_mitigation/mitigation.py.
 # ---------------------------------------------------------------------
 SEEDED_MITIGATION_INPUTS: dict[str, MitigationInputs] = {
     # Full/confirmed tier: every field known and confirmed.

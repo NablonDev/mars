@@ -3,7 +3,7 @@ from __future__ import annotations
 
 class CLIHumanReviewPort:
     """Console-based human review used only by the legacy CLI ingest job
-    (app/jobs/cli_ingest.py). The API path (app/api/v1) is the primary
+    (scripts/ops/cmir_cli_ingest.py). The API path (app/api/v1) is the primary
     reviewer surface and does not use this class.
     """
 

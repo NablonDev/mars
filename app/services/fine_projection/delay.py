@@ -1,8 +1,8 @@
-"""Delay probability + pricing. See docs/FINE_ENGINE.md "Delay probability" for the full table and rationale."""
+"""Delay probability + pricing."""
 
 from datetime import date, timedelta
 
-from app.services.fine_projection.models import (
+from app.services.fine_projection.types import (
     AppointmentStatus,
     CalcType,
     FineRule,
@@ -90,7 +90,7 @@ def compute_delay_probability(s: OrderSnapshot) -> float:
 
 def price_delay_fine(rule: FineRule, order_qty: int, unit_price: float) -> float:
     """Flat reference cost for the violation type, not scaled by the
-    current buffer. See docs/FINE_ENGINE.md "Pricing the fine"."""
+    current buffer."""
     if rule.calc_type == CalcType.PERCENT_OF_PO:
         fine = rule.rate * order_qty * unit_price
     elif rule.calc_type == CalcType.FLAT_FEE:
@@ -101,8 +101,7 @@ def price_delay_fine(rule: FineRule, order_qty: int, unit_price: float) -> float
         # Includes CalcType.TIERED: tiered pricing is implemented for
         # shortage rules (banded by gap_pct) but not yet for delay rules
         # (which would need to be banded by days-late instead). This is a
-        # known, documented gap -- see docs/FINE_ENGINE.md "Open items" --
-        # not a silent failure mode.
+        # known, documented gap, not a silent failure mode.
         raise NotImplementedError(f"calc_type={rule.calc_type} not supported for delay rule {rule.rule_id}")
 
     if rule.cap_amount is not None:
