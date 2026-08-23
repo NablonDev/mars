@@ -1,4 +1,4 @@
-"""API schemas for fine-summary requests and responses."""
+"""API schemas for fine-mitigation-summary requests and responses."""
 
 from datetime import date
 
@@ -7,12 +7,12 @@ from pydantic import BaseModel, ConfigDict
 from app.models.enums import SummaryStatus
 
 
-class FineSummaryRequest(BaseModel):
+class MitigationSummaryRequest(BaseModel):
     as_of_date: date | None = None
     force_regenerate: bool = False
 
 
-class FineSummaryResponse(BaseModel):
+class MitigationSummaryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     order_id: str
@@ -27,10 +27,10 @@ class FineSummaryResponse(BaseModel):
     unchanged_for_days: int | None = None
 
 
-class FineSummaryStatusResponse(BaseModel):
+class MitigationSummaryStatusResponse(BaseModel):
     order_id: str
     as_of_date: date
     prompt_version: str
     status: SummaryStatus
-    summary: FineSummaryResponse | None = None
+    summary: MitigationSummaryResponse | None = None
     error_message: str | None = None

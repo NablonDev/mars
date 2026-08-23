@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from app.schemas.fine_summaries import FineSummaryStatusResponse
+from app.schemas.fine_projection.summaries import ProjectionSummaryStatusResponse
 
 
 class RunProjectionRequest(BaseModel):
@@ -75,4 +75,4 @@ class OrderRunResponse(BaseModel):
     """Response for POST /orders/{order_id}/run."""
 
     projection: ProjectionResultResponse
-    summary: FineSummaryStatusResponse
+    summary: ProjectionSummaryStatusResponse
