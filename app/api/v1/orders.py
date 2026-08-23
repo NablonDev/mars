@@ -15,7 +15,7 @@ def create_order(
     orders: OrderRepository = Depends(get_order_repository),
 ) -> dict:
     orders.create_order(**body.model_dump())
-    return orders.get_order(body.order_id)
+    return orders.require_order(body.order_id)
 
 
 @router.get("/orders", response_model=list[OrderResponse])

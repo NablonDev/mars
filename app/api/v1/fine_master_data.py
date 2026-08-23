@@ -3,8 +3,8 @@
 from fastapi import APIRouter, Depends
 
 from app.api.dependencies import get_master_data_repository
-from app.repositories.master_data import MasterDataRepository
-from app.schemas.master_data import (
+from app.repositories.fine_master_data import MasterDataRepository
+from app.schemas.fine_master_data import (
     CarrierRequest,
     CarrierResponse,
     LocationRequest,
