@@ -97,7 +97,7 @@ def _result_to_dict(row: MitigationResult) -> dict:
 
 class MitigationResultRepository:
     """Repository for mitigation_option -- persisted, ranked output of
-    app/services/fine_mitigation/engine.py::evaluate_mitigation_options."""
+    app/services/fine_mitigation/engine.py::MitigationEngine.evaluate."""
 
     def __init__(self, session: Session) -> None:
         self._session = session

@@ -111,7 +111,7 @@ class FineMitigationService:
         if not day_rows:
             raise NoProjectionExistsError(
                 f"No projection exists for order_id={order_id!r} on "
-                f"projection_date={projection_date!r}. Run "
+                f"projection_date={projection_date.isoformat()}. Run "
                 f"POST /orders/{{order_id}}/projections for that date first."
             )
 

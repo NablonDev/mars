@@ -443,17 +443,17 @@ class FineProjectionSummaryService:
 
         history = self.projections.get_history(order_id)
         if not history:
-            raise NoProjectionExistsError(f"No projections exist yet for order_id={order_id!r}.")
+            raise NoProjectionExistsError(f"No projections exist yet for order_id={order_id}.")
 
         earliest_projection_date = min(row["projection_date"] for row in history)
 
         if as_of_date > today:
-            raise InvalidAsOfDateError(f"as_of_date={as_of_date!r} is in the future.")
+            raise InvalidAsOfDateError(f"as_of_date={as_of_date.isoformat()} is in the future.")
 
         if as_of_date < earliest_projection_date:
             raise InvalidAsOfDateError(
-                f"as_of_date={as_of_date!r} predates the earliest "
-                f"projection date, {earliest_projection_date!r}."
+                f"as_of_date={as_of_date.isoformat()} predates the earliest "
+                f"projection date, {earliest_projection_date.isoformat()}."
             )
 
         return order, as_of_date, history
@@ -681,7 +681,7 @@ class FineProjectionSummaryService:
                 detail=(
                     f"Fine projection summary generation failed after "
                     f"{MAX_TOOL_ROUNDS} rounds limit for order_id={order_id!r}, "
-                    f"as_of_date={as_of_date!r}: {exc}"
+                    f"as_of_date={as_of_date.isoformat()}: {exc}"
                 ),
             ) from exc
 
@@ -692,7 +692,7 @@ class FineProjectionSummaryService:
                 detail=(
                     f"Fine projection summary generation failed: "
                     f"Model returned no summary "
-                    f"for order_id={order_id!r}, as_of_date={as_of_date!r}."
+                    f"for order_id={order_id!r}, as_of_date={as_of_date.isoformat()}."
                 ),
             )
 
@@ -703,7 +703,7 @@ class FineProjectionSummaryService:
                 detail=(
                     f"Fine projection summary generation failed: "
                     f"Model returned non-text final content "
-                    f"for order_id={order_id!r}, as_of_date={as_of_date!r}."
+                    f"for order_id={order_id!r}, as_of_date={as_of_date.isoformat()}."
                 ),
             )
 

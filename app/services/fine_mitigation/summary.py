@@ -405,15 +405,15 @@ class FineMitigationSummaryService:
 
         earliest_options_date = self.mitigation_results.earliest_date(order_id)
         if earliest_options_date is None:
-            raise NoMitigationOptionsExistError(f"No mitigation options exist yet for order_id={order_id!r}.")
+            raise NoMitigationOptionsExistError(f"No mitigation options exist yet for order_id={order_id}.")
 
         if as_of_date > today:
-            raise InvalidAsOfDateError(f"as_of_date={as_of_date!r} is in the future.")
+            raise InvalidAsOfDateError(f"as_of_date={as_of_date.isoformat()} is in the future.")
 
         if as_of_date < earliest_options_date:
             raise InvalidAsOfDateError(
-                f"as_of_date={as_of_date!r} predates the earliest "
-                f"mitigation-options date, {earliest_options_date!r}."
+                f"as_of_date={as_of_date.isoformat()} predates the earliest "
+                f"mitigation-options date, {earliest_options_date.isoformat()}."
             )
 
         options_rows = self.mitigation_results.get_latest_not_after(order_id, as_of_date)
@@ -565,7 +565,7 @@ class FineMitigationSummaryService:
                 detail=(
                     f"Fine mitigation summary generation failed after "
                     f"{MAX_TOOL_ROUNDS} rounds limit for order_id={order_id!r}, "
-                    f"as_of_date={as_of_date!r}: {exc}"
+                    f"as_of_date={as_of_date.isoformat()}: {exc}"
                 ),
             ) from exc
 
@@ -576,7 +576,7 @@ class FineMitigationSummaryService:
                 detail=(
                     f"Fine mitigation summary generation failed: "
                     f"Model returned no summary "
-                    f"for order_id={order_id!r}, as_of_date={as_of_date!r}."
+                    f"for order_id={order_id!r}, as_of_date={as_of_date.isoformat()}."
                 ),
             )
 
@@ -587,7 +587,7 @@ class FineMitigationSummaryService:
                 detail=(
                     f"Fine mitigation summary generation failed: "
                     f"Model returned non-text final content "
-                    f"for order_id={order_id!r}, as_of_date={as_of_date!r}."
+                    f"for order_id={order_id!r}, as_of_date={as_of_date.isoformat()}."
                 ),
             )
 
