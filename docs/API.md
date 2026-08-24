@@ -70,6 +70,10 @@ but rendered by the same `register_exception_handlers` entry point in
 | `MATERIAL_NOT_FOUND` | 422 | PO Validation: a reviewer-submitted/chosen SAP material number has no `material_master` row |
 | `QUEUE_NOT_CONFIGURED` | 500 | Email queue ingestion attempted without an email repository configured |
 
+`details` is only present on a 4xx. On a 5xx it is withheld entirely: those
+call sites carry internal failure text, which belongs in the log stream with
+the request id, not in the response body.
+
 ### CMIR Resolution Agent
 
 Routes defined in `app/api/v1/cmir.py`, backed by `app.services.cmir_run_service.CMIRRunService`.
