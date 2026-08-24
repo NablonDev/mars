@@ -150,7 +150,17 @@ class CMIRRunService:
 
         if self._email_repository is not None:
             queue_state = self._email_repository.get_queue_state(email_id)
-            if queue_state and queue_state.get("queue_status") == "processed":
+            if queue_state is None:
+                # Every downstream write (agent_runs, workflow_threads, ...) carries an
+                # email_id FK to email_events. Without the row those inserts fail as a
+                # ForeignKeyViolation mid-transaction; report the missing email instead.
+                raise ServiceError(
+                    "EMAIL_NOT_FOUND",
+                    "Unknown email_id.",
+                    status_code=404,
+                    details={"email_id": str(email_id), "queue_message_id": queue_message_id},
+                )
+            if queue_state.get("queue_status") == "processed":
                 logger.info("Skipping already processed queued email %s", email_id)
                 existing_thread = self._workflow_threads.get_by_email_id(email_id)
                 if existing_thread is not None:
@@ -167,7 +177,7 @@ class CMIRRunService:
                 return self._already_processed_summary(batch_id, email_id)
             self._email_repository.mark_processing(email_id, queue_message_id)
 
-        email_message = self._email_from_payload(email)
+        email_message = self._email_from_payload(email, fallback_imap_id=str(email_id))
         try:
             result = self._process_email_thread(
                 batch_id,
@@ -701,9 +711,24 @@ class CMIRRunService:
         return asdict(email)
 
     @staticmethod
-    def _email_from_payload(payload: dict[str, Any]) -> EmailMessage:
+    def _email_from_payload(payload: dict[str, Any], *, fallback_imap_id: str | None = None) -> EmailMessage:
+        # email_id is a required top-level field of the request; the nested copy
+        # inside `email` is a convenience the Service Bus consumer adds, so fall
+        # back to the authoritative value rather than KeyError-ing on its absence.
+        imap_id = (
+            payload.get("imap_id")
+            or payload.get("source_imap_id")
+            or payload.get("email_id")
+            or fallback_imap_id
+        )
+        if imap_id is None:
+            raise ServiceError(
+                "VALIDATION_ERROR",
+                "Queued email payload must include imap_id, source_imap_id, or email_id.",
+                status_code=422,
+            )
         return EmailMessage(
-            imap_id=str(payload.get("imap_id") or payload.get("source_imap_id") or payload["email_id"]),
+            imap_id=str(imap_id),
             sender=payload["sender"],
             subject=payload["subject"],
             body=payload.get("body") or payload.get("raw_content") or "",

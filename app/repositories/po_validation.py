@@ -36,7 +36,8 @@ class PostgresPoLineRepository:
                 plant=line.plant,
                 order_quantity=line.order_quantity,
                 uom=line.uom,
-                requested_delivery_date=line.requested_delivery_date,
+                # PoLine.requested_delivery_date is a str; "" is not a date literal.
+                requested_delivery_date=line.requested_delivery_date or None,
                 raw_payload=line.raw_payload,
                 status=line.status,
             )
