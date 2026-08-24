@@ -107,7 +107,7 @@ docker compose --profile tools run --rm worker
 - `AZURE_OPENAI_*` vars are passed through from the host shell
   (`${AZURE_OPENAI_API_KEY:-}` etc.), never hardcoded. Leave them unset on
   the host to run everything except the fine-projection-summary endpoint, same as
-  bare-metal (`docs/RUNBOOK.md` step 8).
+  bare-metal (`docs/RUNBOOK.md` step 9).
 
 ## Verification performed
 
@@ -146,7 +146,7 @@ import resolution, `Settings()` also loaded cleanly, because every
 `azure_openai_*` defaulting to `""`). This confirms both that the module
 path resolves and that a completely bare `docker run` won't crash on
 missing config; it will only fail at the point something actually calls
-Azure OpenAI, same as bare-metal (`docs/RUNBOOK.md` step 8).
+Azure OpenAI, same as bare-metal (`docs/RUNBOOK.md` step 9).
 
 `docker compose -f docker/docker-compose.yml config --quiet` also passed
 (valid compose syntax).

@@ -31,7 +31,9 @@ database, split across separate **schemas**:
   bookkeeping table, `public.alembic_version` -- one linear migration
   history covers both domain schemas, so that table belongs in the schema
   neither domain owns, not tucked inside `fines` or `cmir` as if it were
-  one domain's private state.
+  one domain's private state -- plus LangGraph's `checkpoint_*` tables,
+  which its saver creates and owns (see "LangGraph checkpoint tables"
+  below).
 
 Every FK string across both domains is schema-qualified
 (`ForeignKey(f"{CMIR_SCHEMA}.agent_runs.id")`, matching the existing
@@ -62,10 +64,22 @@ chain and the CMIR branch's own `0001`-`0005` chain. Nothing on that
 to preserve, and every residual naming/type issue it had accumulated
 (the `dim_`/`fact_` prefixes themselves, stale `dim_penalty_rule_*`
 constraint names from an even earlier pass, `agent_trace` ->
-`agent_traces`, `agent_runs.id` `SERIAL` -> UUIDv7) is gone with it. A
-database still on the old 11-revision chain -- or the chain before that --
-has no forward path onto the new one -- see `docs/RUNBOOK.md`'s "Database:
-migrate" section for the drop/recreate steps.
+`agent_traces`, `agent_runs.id` `SERIAL` -> UUIDv7) is gone with it.
+
+Column widths and text types were recalibrated as part of the same squash
+and folded into these two migrations rather than added as a third
+revision, so the chain stays two revisions long. The per-column reasoning
+lives in each migration's own docstring and isn't restated here.
+
+Alembic cannot move a database still on the old 11-revision chain -- or on
+the chain before that -- onto this one: `alembic upgrade head` aborts with
+`Can't locate revision identified by 'e4b7c391a052'` before any DDL,
+because that revision file no longer exists. Such a database is repaired
+in place instead, every row preserved, by
+`scripts/ops/repair_pre_squash_db.py` -- see `docs/RUNBOOK.md`'s "A
+database stranded on the pre-squash chain" section. Dropping and
+recreating is now just the fallback for a database whose contents don't
+matter.
 
 ## CMIR / PO Validation tables
 
@@ -168,19 +182,21 @@ primary key. Business identifiers (`order_id`, `retailer_id`, `rule_id`,
 tests, and every worked example already address resources by
 (`/orders/WMT-100234`, not `/orders/<uuid>`), and foreign keys reference
 them directly rather than the surrogate `id` where a business key exists.
-A handful of CMIR/PO-validation tables (`cmir_records`, `email_action_logs`,
-`hitl_actions`, `pending_human_actions`, `agent_traces` themselves) still
-use a plain integer PK -- untouched by this convention, since they have no
-business key and nothing FKs into them from outside their own domain.
+Every CMIR/PO-validation table follows the same rule: `cmir_records`,
+`email_events`, `email_action_logs`, `hitl_actions`,
+`pending_human_actions`, `agent_traces`, `po_lines`, `material_master` and
+`po_line_errors` all have a UUID `id` too. The integer PKs the CMIR branch
+originally used are gone -- converted during the fines/cmir merge, and
+nothing in either schema carries one now.
 
 `app/db/base.py::generate_uuid7()` (a Python-side default on every
-UUID-surrogate `id` column) is the id-generation path the application
-itself uses. The initial fines migration
-(`alembic/versions/e803d9470f31_initial_fines_schema.py`) additionally sets
-`server_default=uuidv7()` (Postgres's own builtin, 18+) directly on every
-`fines`-schema table's `id` column via raw DDL, purely as a migration-level
-safety net for a hypothetical future non-ORM writer that inserts without
-supplying `id`. Version-gated to Postgres 18+, and a no-op on SQLite.
+UUID-surrogate `id` column) is the only id-generation path. Neither
+migration sets a database-side default on an `id` column: the pre-squash
+chain carried a `server_default=uuidv7()` safety net (Postgres 18's own
+builtin) for a hypothetical non-ORM writer, and the squash dropped it, so
+`id` columns come out of `alembic upgrade head` with no `column_default`
+on Postgres or SQLite. Anything inserting outside the ORM has to supply
+its own `id`.
 
 One exception: `projected_fine` has no single natural key -- its
 business identity is the triple `(order_id, rule_id, projection_date)`,
@@ -220,8 +236,8 @@ follow this pattern.
 `production_schedule` is keyed by `(sku_id, location_id)`, not
 `order_id` -- a production line serves whichever orders draw on it. Two
 orders that share a line will see each other's status updates; see
-`tests/test_known_limitations.py` for the one place in the mock data
-where that's a real, accepted wrinkle rather than a bug.
+`tests/unit/services/test_known_limitations.py` for the one place in the
+mock data where that's a real, accepted wrinkle rather than a bug.
 
 ## Agent/prompt registry
 
@@ -282,17 +298,20 @@ UUIDv7, which doubles as a FIFO tiebreaker when the claim query orders by
 itself (not after dispatch), so a crash mid-attempt still consumes retry
 budget rather than retrying forever.
 
-`task_type` gained a third value, `MITIGATION_SUMMARY_REGEN`, alongside
+`task_type` carries three values -- `ORDER_RUN`,
+`PROJECTION_SUMMARY_REGEN`, and `MITIGATION_SUMMARY_REGEN`
+(`app/models/enums.py::JobTaskType`), the last of which arrived with
 `mitigation_summary` (see "Tables (fines schema)" below):
 mitigation-options computation (`mitigation_option`) is always
 synchronous/inline via the API, never a `job_item` -- only its LLM-powered
-summary goes through this queue, the same relationship `PROJECTION_SUMMARY_REGEN` has
-to `projected_fine`. The `job_item.task_type` `CHECK` constraint is
-extended accordingly (Postgres-only migration; SQLite has no `ALTER TABLE
-... DROP/ADD CONSTRAINT` for a table-level `CHECK`, and
-`tests/test_migration_parity.py` only diffs table/column names, never
-constraint bodies, so this follows the same dialect-gating precedent as
-the `121840bc4fdf` constraint rename).
+summary goes through this queue, the same relationship
+`PROJECTION_SUMMARY_REGEN` has to `projected_fine`. The
+`ck_job_item_task_type` `CHECK` listing all three is created inline with
+the table in `e803d9470f31`, on both dialects -- the squash folded in what
+had been an `ALTER TABLE ... DROP/ADD CONSTRAINT` step that only Postgres
+could run. Note that `tests/unit/db/test_migration_parity.py` diffs
+table/column names only, never constraint bodies, so a wrong value here
+would not fail the build.
 
 ### The partial unique index is migration-only, not on the ORM model
 
@@ -311,8 +330,8 @@ the same key.
 
 Two direct consequences worth knowing about if you touch this table:
 
-- **`tests/test_migration_parity.py` cannot catch a divergence here
-  either way** -- it only diffs table/column names between the migration
+- **`tests/unit/db/test_migration_parity.py` cannot catch a divergence
+  here either way** -- it only diffs table/column names between the migration
   and `Base.metadata.create_all()`, never indexes. This index's actual
   correctness (does it exist, does it reject/permit the right rows) is
   verified only against a real Postgres, in
@@ -333,21 +352,19 @@ statement is dialect-branched inside the migration: schema-qualified
 `apply_sqlite_schema_translation`'s `schema_translate_map` only rewrites
 schema-qualified names inside SQLAlchemy-compiled DDL (`op.create_table`,
 `op.create_index`, ...), never inside a raw SQL string passed to
-`op.execute`. The same asymmetry, for the same reason, is why the
-migration's `op.add_column`/`op.drop_column` calls for the two new
-`projection_summary` columns also branch on dialect instead of always
-passing `schema='fines'` -- unlike `create_table`/`create_index`, Alembic's
-ADD/DROP COLUMN DDL renders the schema-qualified table name directly
-rather than through the connection's translate map, so the same
-literal-schema-prefix problem shows up there too on SQLite.
+`op.execute`. The same branch appears in `downgrade()`, around the
+matching `DROP INDEX`. Those four `op.execute` calls are the only raw SQL
+in either migration -- everything else, `projection_summary`'s
+`content_fingerprint`/`source_as_of_date` columns included, is now created
+inline by `op.create_table` and needs no dialect handling at all.
 
 ## Schema-change checklist
 
-Per `docs/legacy/root-CLAUDE.md`/`./CLAUDE.local.md`: a **fines**-schema
+Per `./CLAUDE.local.md` "Engineering Rules": a **fines**-schema
 change touches, together, in one commit -- the relevant `app/models/*.py`
 file, a new Alembic migration (`alembic/versions/`), this document, and
-`tests/test_migration_parity.py` should still pass (it builds one SQLite
-DB via the migration and another via `Base.metadata.create_all()`, then
+`tests/unit/db/test_migration_parity.py` should still pass (it builds one
+SQLite DB via the migration and another via `Base.metadata.create_all()`, then
 diffs them -- a real check that the two never drift apart). A **cmir**-schema
 change touches the model file and a new migration; this document is
 fines-only and doesn't need updating for cmir tables.
@@ -375,7 +392,7 @@ fines-only and doesn't need updating for cmir tables.
 | `job_run` | -- (no status column, see above) | One row per batch trigger |
 | `job_item` | -- (see "Batch job queue" above) | Work ledger; in-flight uniqueness enforced by a migration-only partial index |
 | `mitigation_input` | `order_id` (unique) | Mutable current-best-guess cause/cost assumptions feeding mitigation ranking; no soft delete/history, deliberately unlike every other append-only table in this schema |
-| `mitigation_option` | `(order_id, projection_date, action)` | ORM class is `MitigationResult`, not `MitigationOption` -- deliberately kept apart from the pure-engine `MitigationOption` dataclass in `app/services/fine_mitigation/models.py`. Persisted, ranked output of `evaluate_mitigation_options`; computed synchronously, never via the job queue |
+| `mitigation_option` | `(order_id, projection_date, action)` | ORM class is `MitigationResult`, not `MitigationOption` -- deliberately kept apart from the pure-engine `MitigationOption` dataclass in `app/services/fine_mitigation/types.py`. Persisted, ranked output of `MitigationEngine.evaluate`; computed synchronously, never via the job queue |
 | `mitigation_summary` | -- (see above) | LLM-generated fine-mitigation-summary audit trail; structural mirror of `projection_summary` |
 
 ## Why no `dim_`/`fact_` prefix

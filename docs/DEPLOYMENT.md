@@ -287,7 +287,7 @@ database, and disagreeing about `JOB_QUEUE_BACKEND` or
 | `DATABASE_URL` | localhost | both | Must use the `postgresql+psycopg://` prefix |
 | `ENVIRONMENT` | `development` | both | Set `production` on Azure |
 | `DOCS_ENABLED` | `false` | api | Closed by default — it gates `/docs`, `/redoc`, `/openapi.json`. Set `true` explicitly for local dev |
-| `INTERNAL_API_KEY` | — (required, no default) | both | Shared-secret gate on every route except `/health` (`X-Internal-Api-Key` header). App startup fails if unset, blank, the `.env.example` placeholder, or under 32 characters — see `app/core/config.py` |
+| `INTERNAL_API_KEY` | — (required, no default) | both | Shared-secret gate on every route except `/api/v1/health` (`X-Internal-Api-Key` header). App startup fails if unset, blank, the `.env.example` placeholder, or under 64 characters — generate with `python -c "import secrets; print(secrets.token_hex(32))"`, see `app/core/config.py` |
 | `LOG_LEVEL` | `INFO` | both | |
 
 ### Azure OpenAI

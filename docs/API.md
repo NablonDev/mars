@@ -325,8 +325,10 @@ an HTTP connection open for.
 - **Cache hit** (not `force_regenerate`, and a `READY` row already exists
   for `(order_id, as_of_date, prompt_version)`): returns `200` with the
   full summary body immediately -- no job scheduled, nothing to poll.
-  Body: `{order_id, as_of_date, prompt_version, model_name, summary}`,
-  where `summary` is the model's free-text response.
+  Body: `{order_id, as_of_date, prompt_version, model_name, summary,
+  is_reused, generated_for_date, unchanged_since, unchanged_for_days}`,
+  where `summary` is the model's free-text response and the last four
+  fields are the reuse disclosure (see below).
 - **Cache miss, or `force_regenerate: true`**: persists a `PENDING` row
   for that key (overwriting whatever was there before -- a stale `READY`
   summary or a previous `FAILED` attempt), schedules the actual LLM
@@ -354,11 +356,34 @@ an HTTP connection open for.
   doesn't match a known value -- same data-integrity failure mode as
   `POST /projections/run`.
 
+**Reuse disclosure**: when `settings.summary_reuse_enabled` is `true`
+(default `false`) and there's no exact-date cache hit, the service will
+look for the nearest earlier `READY` summary for this order (within
+`settings.summary_max_reuse_days`, default 7) whose *content
+fingerprint* -- the violations/probabilities/statuses that actually
+drive the narrative, not `as_of_date` itself or fields like
+`days_to_delivery` -- is byte-for-byte identical to today's. If one is
+found, its narrative text is copied forward under today's `as_of_date`
+instead of making a new LLM call, and the response/job body carries:
+  - `is_reused` (`bool`): `true` if this summary's text was copied
+    forward from an earlier date rather than freshly generated for
+    `as_of_date`; `false` otherwise.
+  - `generated_for_date` (`date | null`): the date the narrative was
+    actually generated for -- equal to `as_of_date` when `is_reused` is
+    `false`, or the earlier source date when `is_reused` is `true`.
+  - `unchanged_since` (`date | null`): `null` when `is_reused` is
+    `false`; otherwise the earlier source date, i.e. the date since
+    which the underlying content has stayed identical.
+  - `unchanged_for_days` (`int | null`): `null` when `is_reused` is
+    `false`; otherwise `(as_of_date - unchanged_since).days`.
+
 `GET` behavior (same `as_of_date` semantics/validation as the `POST`,
 including the `404`/`422` cases above -- plus):
 
 - Always `200` for a key that was validly `POST`ed at least once, body
-  `{order_id, as_of_date, prompt_version, status, summary, error_message}`:
+  `{order_id, as_of_date, prompt_version, status, summary, error_message}`
+  where a non-null `summary` has the same shape as the `POST` cache-hit
+  body above, including the four reuse-disclosure fields:
   - `status: "PENDING"` -- job scheduled, not finished yet;
     `summary`/`error_message` both `null`.
   - `status: "READY"` -- `summary` populated with the full body (same
@@ -459,11 +484,18 @@ Same cache-hit/cache-miss, `202`-then-poll, `force_regenerate`, and
 `NoProjectionExistsError` (run `POST /orders/{order_id}/mitigation-options`
 first) and `NoMitigationSummaryJobExistsError` (`404`) for
 `NoProjectionSummaryJobExistsError`. Keyed on `(order_id, as_of_date,
-prompt_version)`, same reasoning as the projection-summary table. The
-content fingerprint driving reuse-across-days hashes the ranked
-mitigation options themselves (action/cost/saving/risk/confidence), not
-projection-specific fields -- see
-`app/services/fine_mitigation/summary.py::_compute_content_fingerprint`.
+prompt_version)`, same reasoning as the projection-summary table.
+Response bodies are the same shape too: `POST` cache-hit `200` and the
+`summary` object inside `GET`'s `200` are both `{order_id, as_of_date,
+prompt_version, model_name, summary, is_reused, generated_for_date,
+unchanged_since, unchanged_for_days}` -- see "Reuse disclosure" under
+Fine Projection Summaries above for what the last four fields mean;
+the semantics (including `settings.summary_reuse_enabled` /
+`summary_max_reuse_days`) are identical here. The only difference is
+*what* the content fingerprint driving reuse-across-days hashes: here
+it's the ranked mitigation options themselves
+(action/cost/saving/risk/confidence), not projection-specific fields --
+see `app/services/fine_mitigation/summary.py::_compute_content_fingerprint`.
 
 ### Run mitigation options + mitigation summary together
 

@@ -1,13 +1,13 @@
 # Runbook
 
 Every way to set up, run, seed, exercise, and troubleshoot this service.
-For *how the code is laid out*, see `docs/legacy/root-CLAUDE.md` (the
-detailed architecture map; `./CLAUDE.local.md` is the current working
-instructions file); for endpoint-by-endpoint reference, see `docs/API.md`.
+For *how the code is laid out*, see `docs/architecture/folder-structure.md`
+and `./CLAUDE.local.md` (the current working instructions file); for
+endpoint-by-endpoint reference, see `docs/API.md`.
 This file is about running it.
 
 **Every curl example below needs `-H "X-Internal-Api-Key: $INTERNAL_API_KEY"`
-except `/health`.** It's omitted from most of the commands in this file for
+except `/api/v1/health`.** It's omitted from most of the commands in this file for
 readability -- see `docs/API.md` "Authentication" for the full contract
 (missing/wrong key -> `401`, generic body, nothing echoed back).
 
@@ -156,18 +156,23 @@ WHERE customer_identity_key = UPPER(REGEXP_REPLACE(:customer_identity, '[^A-Za-z
 - `requirements.txt` (not `pyproject.toml`/`uv.lock`) is what Azure Functions' Python
   deployment model builds from -- keep it regenerated (`uv export`) after any dependency
   change, or the Function App deployment silently uses stale versions.
-- Already-deployed databases on either project's old migration chain have no forward
-  path onto the new consolidated one -- see "4. Database: migrate" below and
-  `docs/DATABASE.md`'s "Migration history" section for the drop/recreate steps. This
-  supersedes the old CMIR-branch guidance to `alembic stamp head` against a
-  pre-Alembic database; that guidance no longer applies now that both domains share
-  one squashed history.
+- Already-deployed databases on either project's old migration chain cannot be moved
+  forward by Alembic itself -- `alembic upgrade head` aborts before any DDL. One whose
+  contents are worth keeping is repaired in place, rows intact, by
+  `scripts/ops/repair_pre_squash_db.py`; see "A database stranded on the pre-squash
+  chain" under "4. Database: migrate" below. Dropping and recreating is now the
+  fallback, not the only option. This supersedes the old CMIR-branch guidance to
+  `alembic stamp head` against a pre-Alembic database; that guidance no longer
+  applies now that both domains share one squashed history.
 
 ## 2. Prerequisites
 
 - Python 3.12+
-- Either a Postgres instance, or nothing at all -- SQLite works for
-  everything below except item 9 (a real Postgres deployment check).
+- A Postgres instance. SQLite is enough to create the schema and to run
+  the test suite, but a SQLite database built by `alembic upgrade head`
+  rejects every write (see "Switching database backends" in step 4), so
+  the seeding, projection, and mitigation walkthroughs below all need
+  real Postgres.
 
 ## 3. First-time setup
 
@@ -178,15 +183,31 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Edit .env: point DATABASE_URL at Postgres, or leave the SQLite line
-# uncommented for a zero-install local setup.
+# Edit .env: point DATABASE_URL at your Postgres, and set INTERNAL_API_KEY
+# to a real value -- the app refuses to start without one.
 ```
 
 `app/core/config.py::Settings` reads `DATABASE_URL` from `.env` via
 `pydantic-settings`. If `.env` doesn't exist or doesn't set it, the
-default is the Postgres URL shown in `.env.example` -- so on a machine
-with no Postgres running, always set `.env` (or export `DATABASE_URL`
-directly) before doing anything else.
+default is `postgresql+psycopg://postgres:postgres@localhost:5432/mars`
+-- a real Postgres URL, not a SQLite fallback, and not the placeholder
+`.env.example` carries -- so on a machine with no Postgres running,
+always set `.env` (or export `DATABASE_URL` directly) before doing
+anything else.
+
+`INTERNAL_API_KEY` has no default at all. `Settings` declares it required
+and rejects a blank or too-short value, so a missing key fails app
+startup rather than quietly booting something unauthenticated. Every
+route except `/api/v1/health` is gated on it.
+
+**Check for a second `INTERNAL_API_KEY` further down `.env` before
+debugging a `401`.** Compose parses that file as plain dotenv and keeps
+the *last* assignment to a name, then interpolates it into the backend as
+`${INTERNAL_API_KEY:?...}` (`docker-compose.yml`). A duplicate definition
+lower in the file therefore wins silently: `docker compose up` starts a
+backend holding a different key from the one at the top of the file, and
+every authenticated call begins returning `401` with nothing in the
+response to say why. Grep the whole file, not just its first hit.
 
 ## 4. Database: migrate
 
@@ -197,17 +218,33 @@ alembic upgrade head          # run from the repo root, not app/
 This creates every table in `docs/DATABASE.md`'s table list. Safe to
 re-run (Alembic tracks the applied revision in `alembic_version`).
 
-**Switching database backends** (e.g. SQLite for a quick local check
-instead of Postgres): just change `DATABASE_URL` and re-run
-`alembic upgrade head` against the new one -- migrations are backend-
-agnostic (`docs/DATABASE.md` "Primary keys" -- the surrogate `id` type
-works on both).
+**Switching database backends.** Changing `DATABASE_URL` and re-running
+`alembic upgrade head` builds the schema on either backend -- the DDL
+itself compiles on both (`docs/DATABASE.md` "Primary keys" -- the
+surrogate `id` type works on both).
 
 ```bash
 # One-off SQLite database in /tmp, no Postgres needed at all:
 export DATABASE_URL="sqlite:////tmp/fines_demo.db"
 alembic upgrade head
 ```
+
+**A SQLite database built that way cannot be written to, though.** Both
+migrations give every `created_at`/`updated_at` column
+`server_default=sa.text("now()")` -- 67 of them, with no dialect branch.
+SQLite accepts that as `DEFAULT (now())` at `CREATE TABLE` time and only
+fails on the first insert:
+
+```
+sqlite3.OperationalError: unknown function: now()
+```
+
+so the recipe above looks like it worked and then breaks the moment
+anything writes a row. The test suite never hits this: `tests/conftest.py`
+builds its SQLite database with `Base.metadata.create_all()`, and the
+ORM's `server_default=func.now()` compiles to `CURRENT_TIMESTAMP` on
+SQLite, so the migration path is never exercised there. Treat the SQLite
+recipe as a way to inspect schema shape, not to run the app.
 
 **Adding a new migration** after changing `app/models/`:
 
@@ -216,15 +253,75 @@ alembic revision -m "add whatever" --autogenerate   # needs a live DB connection
 ```
 
 Then hand-check the generated file against `app/models/` before
-committing -- `tests/test_migration_parity.py` will fail the build if
-they disagree.
+committing -- `tests/unit/db/test_migration_parity.py` will fail the
+build if they disagree.
+
+### A database stranded on the pre-squash chain
+
+A database last migrated before commit `37f5f56` (the squash down to two
+initial migrations) still holds the old chain's head in `alembic_version`,
+and that revision file no longer exists:
+
+```
+ERROR [alembic.util.messaging] Can't locate revision identified by 'e4b7c391a052'
+```
+
+Alembic stops there, before any DDL, so nothing is half-applied. Earlier
+versions of this runbook and of `docs/DATABASE.md` said the only way out
+was to drop and recreate. That is no longer true:
+`scripts/ops/repair_pre_squash_db.py` turns the pre-squash physical schema
+into the post-squash one in place, preserving every row, and stamps
+`alembic_version` to `43d8ced96170`.
+
+```bash
+python scripts/ops/repair_pre_squash_db.py --dry-run   # prints every statement, changes nothing
+python scripts/ops/repair_pre_squash_db.py             # the real run
+python scripts/ops/repair_pre_squash_db.py --database-url postgresql+psycopg://...
+```
+
+It renames the 16 `dim_`/`fact_`-prefixed fines tables along with their
+indexes and constraints, syncs every column type and nullability against
+`app/models/` (derived from `Base.metadata` at runtime rather than
+transcribed, so it cannot drift from the ORM), remaps
+`job_item.task_type = 'SUMMARY_REGEN'` to `'PROJECTION_SUMMARY_REGEN'` and
+rebuilds that `CHECK`, creates the three tables with no pre-squash
+counterpart (`mitigation_input`, `mitigation_option`,
+`mitigation_summary`), and stamps the version row. LangGraph's own
+`public.checkpoint_*` tables are left alone. The script's module docstring
+is the authoritative description.
+
+Worth knowing before running it:
+
+- **`--dry-run` is genuinely read-only.** It opens a plain connection, no
+  transaction, prints the statements it would execute, and exits.
+- **It refuses anything that isn't the exact pre-squash shape.**
+  `alembic_version` must hold exactly `e4b7c391a052`, every old table name
+  must be present, and no post-squash name may exist yet -- a partially
+  repaired schema is rejected rather than guessed at. A pre-flight pass
+  also confirms every value still fits its narrowed column and names the
+  offending column and row if not. Exit `2` is a refusal, exit `3` a
+  failed data check; neither writes anything.
+- **The real run is a single transaction** ending in a `compare_metadata`
+  check against `Base.metadata`. Any residual difference raises and rolls
+  the whole thing back, so there is no half-repaired outcome to clean up.
+- **Stop the backend (and any worker or consumer) first.** The table,
+  index and constraint renames and the `ALTER COLUMN ... TYPE` statements
+  all take `ACCESS EXCLUSIVE` locks for the length of that transaction; a
+  live app either blocks the repair or gets blocked by it.
+- It is deliberately not an Alembic revision: a third revision on top of
+  `43d8ced96170` would also run against fresh databases and would have to
+  detect-and-no-op there, baking a legacy repair into the history
+  permanently. `scripts/ops/migrate_legacy_cmir_data.py` is the precedent
+  for one-off surgery living in `scripts/ops/`.
 
 ### The `cmir` and `fines` schemas
 
 On Postgres, this app's two domains each live in their own schema, not
 `public`: CMIR/PO-validation tables (and their agent-observability tables)
-in `cmir`, fines-domain tables in `fines`. `public` is currently
-unused -- see `docs/DATABASE.md`'s "Postgres schema separation" section.
+in `cmir`, fines-domain tables in `fines`. `public` holds no domain
+tables of either -- only Alembic's `alembic_version` and LangGraph's
+`checkpoint_*` tables -- see `docs/DATABASE.md`'s "Postgres schema
+separation" section.
 Each schema name is declared once, in `app/db/base.py::CMIR_SCHEMA`/
 `FINES_SCHEMA`, and every model's `__table_args__` binds to one or the
 other, so nothing in `app/` needs to qualify a table name by hand beyond
@@ -244,7 +341,9 @@ Three consequences worth knowing:
   translates both `cmir` and `fines` away at the connection level
   (SQLAlchemy's `schema_translate_map`), which is why the SQLite paths --
   the whole test suite, and the `sqlite:////tmp/fines_demo.db` recipe
-  above -- keep working unchanged.
+  above -- keep working unchanged. Schema translation is not what breaks
+  writes on a migration-built SQLite database; the `now()` defaults above
+  are.
 
 ## 5. Running the API
 
@@ -334,10 +433,84 @@ python scripts/ops/run_projection_cli.py --all-open --date 2026-08-05 --stacking
 python scripts/ops/run_projection_cli.py --all-open --with-summary
 ```
 
-This is what a daily cron/Airflow task should call in production --
-standing up an HTTP server just to run a scheduled batch job is
-unnecessary overhead. No scheduler is actually provisioned yet
-(documentation-only).
+This is the no-HTTP-server path for one order or a backfilled date --
+standing up a server just to run a batch job is unnecessary overhead. The
+*scheduled* daily run is `scripts/ops/run_daily_batch.py` instead (it
+enqueues and drains in one call; see the note at the top of this file and
+`docs/DEPLOYMENT.md` §3.5). No scheduler is actually provisioned yet --
+`docs/DEPLOYMENT.md` §6.6 is the build sheet for the nightly job, §10
+tracks it as outstanding.
+
+### Mitigation options need a projection for the same date first
+
+`POST /orders/{order_id}/mitigation-options` never computes a projection of
+its own. `FineMitigationService.run_for_order` loads the order's persisted
+`fines.projected_fine` rows for one `projection_date` -- today, in UTC,
+when the body omits it -- and raises `NO_PROJECTION_EXISTS` (`422`) if that
+day has none. The order is always projections first, mitigation second,
+against the same date:
+
+```bash
+# 1. Project today, every open order:
+curl -X POST http://127.0.0.1:8000/api/v1/projections/run \
+  -H "Content-Type: application/json" -d '{"all_open": true}'
+
+# 2. Then rank mitigation actions for one of them:
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/mitigation-options \
+  -H "Content-Type: application/json" -d '{}'
+```
+
+**A freshly seeded database has projection rows and still fails step 2.**
+`simulate-daily-run` replays each order's scripted history and stops there
+-- 2026-08-02 to 08-11 for WMT-100234, 08-06 to 08-14 for WMT-100511,
+08-03 to 08-13 for AMZ-778501, 08-11 to 08-17 for AMZ-780112
+(`app/services/seeding/scenario_data_projection.py`). It is a historical
+time series, not a projection for the current date, so
+`GET /orders/{id}/projections` looks perfectly healthy while
+`POST /orders/{id}/mitigation-options` with an empty body returns `422`.
+Either run today's projection first, or ask for a date the history
+actually covers:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/mitigation-options \
+  -H "Content-Type: application/json" -d '{"projection_date": "2026-08-05"}'
+```
+
+**`all_open: true` skips the four demo orders once they have been
+simulated.** `simulate-daily-run` marks each one `DELIVERED` after its last
+scripted day, and `run_for_all_open` iterates only `order_status = 'OPEN'`
+-- so on a fully simulated database the batch form runs nothing and returns
+`[]`. Project those orders one at a time with
+`POST /orders/{order_id}/projections`, or re-seed without simulating.
+
+`POST /projections/run` is batch-only. `RunProjectionRequest` still carries
+an `order_id` field, but the handler rejects any body without
+`all_open: true` and points at the per-order route -- a deliberate `422`
+redirect, not a validation gap. Its other two fields are `projection_date`
+(defaults to today) and `stacking_mode_override` (`SUM` / `MAX`).
+
+Why this is keyed by date rather than computed once and reused: a
+projection is that day's snapshot of failure probability, and the inputs
+move daily -- days-to-delivery shrinks, confirmations arrive and change the
+confirmed quantity, production status changes, a shipment is created and
+then actually ships. A ranking of mitigation actions priced against
+yesterday's probabilities is the wrong ranking, which is why the engine
+reads one specific day's rows instead of "the latest".
+
+`POST /orders/{order_id}/mitigation-run` does mitigation and its LLM
+summary in one call, the same way `POST /orders/{order_id}/run` does for
+projections -- it too assumes the projection for that date already exists.
+`200` when the mitigation summary was already cached for that day, `202`
+on a cache miss (poll `GET /orders/{order_id}/mitigation-summary`).
+Endpoint reference: `docs/API.md` "Run mitigation options + mitigation
+summary together".
+
+**Without a server:** `scripts/ops/run_mitigation_cli.py` mirrors
+`run_projection_cli.py` for the mitigation side --
+`--order-id`/`--all-open` and `--date` to rank, plus `--with-summary` to
+also run the fine mitigation summary inline (no `BackgroundTasks` needed
+in a one-shot process) right after each order's ranking succeeds. Same
+prerequisite as the API: a projection has to exist for that date first.
 
 ## 8. Feeding new facts (not one of the four scripted scenarios)
 
@@ -377,14 +550,20 @@ schema calls for it (`docs/DATABASE.md` "Historization"), so posting the
 same kind of fact again doesn't overwrite the last one, it adds to the
 timeline `build_snapshot` reads "as of" a given date from.
 
-## 9. Azure OpenAI configuration (for the fine-projection-summary feature)
+## 9. Azure OpenAI configuration (for the fine-projection-summary and fine-mitigation-summary features)
 
 `POST /orders/{order_id}/projection-summary` (see `docs/API.md` "Fine Projection Summaries")
-is the only thing in this codebase that calls out to an LLM. Everything
+and `POST /orders/{order_id}/mitigation-summary` (see `docs/API.md` "Fine
+Mitigation Summaries") are the only things in this codebase that call out
+to an LLM. The mitigation one is a full mirror of the projection one --
+same bounded tool-calling loop, same cache/background-job mechanics --
+just explaining an order's ranked mitigation options instead of its
+projection trace (`app/services/fine_mitigation/summary.py`). Everything
 else works with no Azure credentials set at all. Generation runs as a
-background job -- the `POST` itself never calls Azure OpenAI inline, so
-missing/bad credentials surface as a `FAILED` status on
-`GET /orders/{order_id}/projection-summary`, not as a failure of the `POST`
+background job for both -- the `POST` itself never calls Azure OpenAI
+inline, so missing/bad credentials surface as a `FAILED` status on
+`GET /orders/{order_id}/projection-summary` or
+`GET /orders/{order_id}/mitigation-summary`, not as a failure of the `POST`
 itself.
 
 ```bash
@@ -417,13 +596,16 @@ AZURE_OPENAI_MAX_ATTEMPTS=3
 Generation runs inside `FastAPI.BackgroundTasks`, not inline with the
 `POST`, so a failure -- upstream timeout, rate limit, bad credentials,
 anything `ChatOpenAI.invoke()` can raise -- is caught by
-`FineProjectionSummaryService.run_generation` and persisted as a `FAILED` row
-rather than propagating into an HTTP response at all. The real
-exception is logged server-side
-(`app.services.fine_projection.summary`, `logger.exception(...)`); only the
-generic, client-safe `"Fine projection summary generation failed upstream"`
-message reaches the row a client can poll, per this app's
-message/detail split (`app/core/exceptions.py`).
+`FineProjectionSummaryService.run_generation` (or, on the mitigation
+side, `FineMitigationSummaryService.run_generation`) and persisted as a
+`FAILED` row rather than propagating into an HTTP response at all. The
+real exception is logged server-side
+(`app.services.fine_projection.summary` /
+`app.services.fine_mitigation.summary`, `logger.exception(...)`); only
+the generic, client-safe `"Fine projection summary generation failed
+upstream"` (or, for mitigation, `"Fine mitigation summary generation
+failed upstream"`) message reaches the row a client can poll, per this
+app's message/detail split (`app/core/exceptions.py`).
 
 With those set:
 
@@ -440,14 +622,36 @@ curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/projection-summary \
   -H "Content-Type: application/json" -d '{"force_regenerate": true}'
 ```
 
+The mitigation summary is the same three calls against
+`/mitigation-summary` instead, with the same `as_of_date`/
+`force_regenerate` body fields -- it needs ranked mitigation options to
+already exist for that date (`POST /orders/{order_id}/mitigation-options`
+first, see step 7's "Mitigation options need a projection for the same
+date first"):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/mitigation-summary \
+  -H "Content-Type: application/json" -d '{}'
+
+curl http://127.0.0.1:8000/api/v1/orders/WMT-100234/mitigation-summary
+
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/mitigation-summary \
+  -H "Content-Type: application/json" -d '{"force_regenerate": true}'
+```
+
 Or the scripted equivalent, which looks up each order's actual latest
-projection date first rather than relying on today happening to fall
-inside the mock scenarios' Aug 2026 date range:
+projection (or, for mitigation, mitigation-options) date first rather
+than relying on today happening to fall inside the mock scenarios' Aug
+2026 date range:
 
 ```bash
 python scripts/demo/demo_fine_projection_summary.py                          # every order on file
 python scripts/demo/demo_fine_projection_summary.py --order-id WMT-100234     # one order
 python scripts/demo/demo_fine_projection_summary.py --order-id WMT-100234 --force-regenerate
+
+python scripts/demo/demo_fine_mitigation_summary.py                          # same idea, for mitigation options
+python scripts/demo/demo_fine_mitigation_summary.py --order-id WMT-100234
+python scripts/demo/demo_fine_mitigation_summary.py --order-id WMT-100234 --force-regenerate
 ```
 
 **The full tour, in one command** -- seed, replay all four scenarios,
@@ -461,38 +665,40 @@ python scripts/demo/run_end_to_end_demo.py --skip-fine-projection-summary  # eng
 
 Leave the `AZURE_OPENAI_*` vars unset/blank to run every other part of
 the app normally -- `Settings` defaults them all to `""`, and the
-fine-projection-summary endpoint only fails (`AzureOpenAIConfigError`, surfaced as a
-clean error, not a stack trace) the first time it's actually called, not
-at app startup.
+fine-projection-summary and fine-mitigation-summary endpoints only fail
+(`AzureOpenAIConfigError`, surfaced as a clean error, not a stack trace)
+the first time either is actually called, not at app startup.
 
 ### Known limitation: no request-level rate limiting
 
-`POST /orders/{order_id}/projection-summary` validates `as_of_date` against the
-order's real projection history (rejects anything before the earliest
-projection date or after today, 422) specifically so a caller can't mint
-unbounded cache keys -- and therefore unbounded real Azure OpenAI calls
--- just by varying that one field. That closes the "vary a parameter to
-always miss cache" vector, but there is still no request-level rate
-limiting (per-IP/per-caller) anywhere in this codebase (checked
-`app/main.py`, `app/core/`, `pyproject.toml` -- no `slowapi` or
-equivalent is installed) protecting this endpoint's real per-call cost
+`POST /orders/{order_id}/projection-summary` and
+`POST /orders/{order_id}/mitigation-summary` both validate `as_of_date`
+against the order's real history -- projection dates for the former,
+mitigation-options dates for the latter (rejects anything before the
+earliest such date or after today, 422) -- specifically so a caller can't
+mint unbounded cache keys -- and therefore unbounded real Azure OpenAI
+calls -- just by varying that one field. That closes the "vary a
+parameter to always miss cache" vector, but there is still no
+request-level rate limiting (per-IP/per-caller) anywhere in this codebase
+(checked `app/main.py`, `app/core/`, `pyproject.toml` -- no `slowapi` or
+equivalent is installed) protecting either endpoint's real per-call cost
 from an authenticated-but-abusive or simply high-volume caller. Adding
 one is deliberately out of scope here -- it's infra-level and belongs
 applied consistently across the app if/when other endpoints need it
-too, not bolted onto this one route as a one-off. Needed before this
+too, not bolted onto either route as a one-off. Needed before either
 endpoint is exposed in production.
 
 ## 10. Tests
 
 ```bash
-pytest tests/ -v              # everything, ~1 second, in-memory SQLite, no Postgres needed
-pytest tests/test_fine_engine.py -v   # just the pure engine
-pytest tests/test_migration_parity.py -v # just the Alembic/ORM parity check
+pytest tests/ -v              # everything: 544 passed, 5 skipped, ~65s, in-memory SQLite
+pytest tests/unit/services/test_fine_engine.py -v   # just the pure engine
+pytest tests/unit/db/test_migration_parity.py -v    # just the Alembic/ORM parity check
 ```
 
-Before this has ever run against a real Postgres instance in any
-environment (see `docs/legacy/root-PROGRESS.md` "Next up") -- if you have
-one available, worth doing once:
+The suite itself never touches Postgres. Re-running the worked examples
+against a real Postgres instance is still worth doing after any change to
+the engine or the seeding data:
 
 ```bash
 export DATABASE_URL="postgresql+psycopg://<real-connection-string>"
@@ -502,8 +708,8 @@ python scripts/demo/demo_daily_simulation.py
 ```
 
 and diff the printed numbers against `data/samples/mars_fines_mock_seed_data.sql`
--- they should match exactly, same as the SQLite verification already
-documented in `docs/legacy/root-PROGRESS.md`.
+-- they should match exactly, same as the verification runs logged in
+`PROGRESS.local.md`.
 
 ## 11. Linting and formatting
 
@@ -512,8 +718,8 @@ ruff check app/ scripts/ tests/ alembic/
 ruff format app/ scripts/ tests/ alembic/
 ```
 
-Both must be clean before a change is done -- see
-`docs/legacy/root-CLAUDE.md` "Python coding standards."
+Both must be clean before a change is done -- see `./CLAUDE.local.md`
+"Engineering Rules."
 
 ## 12. Common tasks, quick reference
 
@@ -527,7 +733,11 @@ Both must be clean before a change is done -- see
 | Run projection + summary together, one call | `curl -X POST .../orders/WMT-100234/run -d '{}'` (or `run_projection_cli.py --with-summary`) |
 | See the whole system, end to end, in one command | `python scripts/demo/run_end_to_end_demo.py` |
 | Get an LLM summary of why an order's fine is what it is | `python scripts/demo/demo_fine_projection_summary.py --order-id WMT-100234` |
-| Add a new violation type | Update `SHORTAGE_VIOLATION_TYPES`/`DELAY_VIOLATION_TYPES` in `app/services/fine_projection/models.py` (`docs/legacy/root-CLAUDE.md` "Conventions") |
+| Rank mitigation actions for an order | Project that date first, then `curl -X POST .../orders/WMT-100234/mitigation-options -d '{}'` (§7) |
+| Get an LLM summary of an order's ranked mitigation options | `python scripts/demo/demo_fine_mitigation_summary.py --order-id WMT-100234` |
+| Rank mitigation actions + summarize them together, one call | `curl -X POST .../orders/WMT-100234/mitigation-run -d '{}'` (or `run_mitigation_cli.py --with-summary`) |
+| Repair a database stuck on the old migration chain | `python scripts/ops/repair_pre_squash_db.py --dry-run`, then without the flag (§4) |
+| Add a new violation type | Update `SHORTAGE_VIOLATION_TYPES`/`DELAY_VIOLATION_TYPES` in `app/services/fine_projection/types.py` (`./CLAUDE.local.md` "Engineering Rules") |
 | Add a DB column | `app/models/*.py` + `alembic revision --autogenerate` + update `docs/DATABASE.md` + confirm `tests/unit/db/test_migration_parity.py` still passes |
 | Run the full nightly batch locally | `python scripts/ops/run_daily_batch.py` (see `docs/DEPLOYMENT.md` §3.5) |
 | See why the queue looks stuck | `docs/DEPLOYMENT.md` §3.7 — the SQL to run and what each status means |
@@ -541,12 +751,50 @@ Both must be clean before a change is done -- see
   exact `DATABASE_URL` exported first. Easy to hit if a shell without
   `.env` loaded runs a script separately from the one that started
   `uvicorn` -- each process reads its own environment independently.
-- **`alembic upgrade head` fails with `relation "retailer" already
-  exists` on a database that is clearly already migrated**: it's still on
-  an old, pre-squash migration chain -- see `docs/DATABASE.md`'s
-  "Migration history" section; there is no forward path onto the new
-  consolidated chain (starting at `e803d9470f31`). Drop and recreate
-  the database instead.
+- **`alembic upgrade head` fails with `Can't locate revision identified
+  by 'e4b7c391a052'`**: the database is still on the pre-squash migration
+  chain, whose head revision file the squash deleted. Alembic aborts
+  before any DDL, so nothing is half-applied. Repair it in place with
+  `scripts/ops/repair_pre_squash_db.py` (`--dry-run` first) -- see "A
+  database stranded on the pre-squash chain" in step 4. Dropping and
+  recreating is still fine if the rows don't matter.
+- **`401` `{"detail": "Not authenticated"}` on every call**: the header
+  name is exactly `X-Internal-Api-Key`. A **missing** header and a
+  **wrong** key produce byte-identical responses, so the body tells you
+  nothing about which of the two you hit: `require_internal_api_key`
+  (`app/api/dependencies.py`) raises `HTTPException(401, detail="Not
+  authenticated")`, and `register_exception_handlers`
+  (`app/core/exceptions.py`) registers handlers for `AppError`,
+  `ServiceError` and bare `Exception` but none for `HTTPException` -- so
+  Starlette's default handler answers, and the reply is a flat
+  `{"detail": ...}` rather than this project's usual
+  `{"error": {"code": ..., "message": ...}}` envelope. Debug it from both
+  ends instead: confirm the header is actually being sent, then confirm
+  its value matches the `INTERNAL_API_KEY` the *running process* loaded --
+  not merely the first one in `.env` (step 3, on duplicate definitions).
+  `curl http://127.0.0.1:8000/api/v1/health` needs no key and separates
+  "is the app up" from "is my key right".
+- **`404` from `/health`**: the health route sits under the API prefix
+  like everything else -- it's `GET /api/v1/health`. It is also the one
+  route that needs no API key.
+- **`422` `NO_PROJECTION_EXISTS` from `POST
+  /orders/{order_id}/mitigation-options`**: no projection row exists for
+  that order on that date. Mitigation reads a persisted projection and
+  never computes one, so run `POST /orders/{order_id}/projections` for the
+  same date first. On a freshly seeded database this happens even though
+  the order has plenty of projection rows -- the seeded history stops in
+  mid-August 2026 and the endpoint defaults to today. See "Mitigation
+  options need a projection for the same date first" in step 7.
+- **`422` `NO_MITIGATION_OPTIONS_EXIST` from `POST`/`GET
+  /orders/{order_id}/mitigation-summary` (or `mitigation-run`)**: no
+  ranked mitigation options exist for that order yet -- run `POST
+  /orders/{order_id}/mitigation-options` (which itself needs a projection
+  first, see above) before asking for a summary of them.
+- **`404` `NO_MITIGATION_SUMMARY_JOB_EXISTS` from `GET
+  /orders/{order_id}/mitigation-summary`**: no job was ever `POST`ed for
+  that exact `(order_id, as_of_date, prompt_version)` key -- `POST` it
+  first, then poll. Same shape as `NO_PROJECTION_SUMMARY_JOB_EXISTS` for
+  the projection-summary side.
 - **`422` from `POST /orders/{order_id}/projections` (or `POST
   /projections/run` with `all_open: true`)**: the order's retailer has
   no active fine rules yet. Seed master data (step 6) or add a rule
@@ -562,7 +810,8 @@ Both must be clean before a change is done -- see
 - **Calling `simulate-daily-run` more than once gives a different
   AMZ-778501 number for Aug 11 the second time onward** (WMT-100234,
   WMT-100511, and AMZ-780112 are unaffected): expected, not a bug -- see
-  `tests/test_known_limitations.py`. AMZ-778501 and AMZ-780112 share a
+  `tests/unit/services/test_known_limitations.py`. AMZ-778501 and
+  AMZ-780112 share a
   production line with contradictory scripted statuses on their
   overlapping dates; only the *first* `simulate-daily-run` call is
   guaranteed to match the published table for AMZ-778501 -- every call
@@ -571,9 +820,6 @@ Both must be clean before a change is done -- see
   time AMZ-778501 gets re-projected in call 2 onward. Reset with
   `alembic downgrade base && alembic upgrade head` before re-seeding if
   you need the original numbers back.
-- **`StarletteDeprecationWarning` about `httpx`/`httpx2` in test
-  output**: known, not yet acted on -- see `docs/legacy/root-PROGRESS.md`
-  "Verification status."
 - **Port already in use on `uvicorn --reload`**: `uvicorn app.main:app --reload --port 8001`,
   and point scripts at it with `--base-url http://127.0.0.1:8001/api/v1`.
 - **`AzureOpenAIConfigError` / the polled job never leaves `FAILED`**:
@@ -581,11 +827,15 @@ Both must be clean before a change is done -- see
   `AZURE_OPENAI_DEPLOYMENT_NAME` isn't set -- see step 9. Double-check
   the deployment var has the `_NAME` suffix; `AZURE_OPENAI_DEPLOYMENT`
   (no suffix) is silently ignored. Since generation is now a background
-  job, this surfaces as a `FAILED` status on `GET .../projection-summary`, not
-  as an immediate error from the `POST`.
-- **`GET /orders/{id}/projection-summary` reports `status: "FAILED"`**: the
+  job, this surfaces as a `FAILED` status on `GET .../projection-summary`
+  or `GET .../mitigation-summary` (both share the same Azure OpenAI
+  config), not as an immediate error from the `POST`.
+- **`GET /orders/{id}/projection-summary` or `GET
+  /orders/{id}/mitigation-summary` reports `status: "FAILED"`**: the
   model didn't return valid structured output within the bounded
-  tool-calling loop (`ToolLoopExhaustedError`) -- an Azure OpenAI-side
-  issue (bad deployment, model overloaded, etc.), not a client input
-  error. `POST` again (or with `force_regenerate: true`), or check the
-  deployment in the Azure portal.
+  tool-calling loop (`ToolLoopExhaustedError`, coded
+  `FINE_PROJECTION_SUMMARY_UPSTREAM_FAILED` /
+  `FINE_MITIGATION_SUMMARY_UPSTREAM_FAILED` respectively) -- an Azure
+  OpenAI-side issue (bad deployment, model overloaded, etc.), not a
+  client input error. `POST` again (or with `force_regenerate: true`), or
+  check the deployment in the Azure portal.
