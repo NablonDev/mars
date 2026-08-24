@@ -21,7 +21,7 @@ import os
 # calls get_settings() at import time). Exposed as a constant so
 # tests/unit/api/test_internal_api_key.py -- which exercises the real
 # dependency instead of the override below -- can assert against it.
-TEST_INTERNAL_API_KEY = "test-internal-api-key-do-not-use-in-prod"
+TEST_INTERNAL_API_KEY = "test-internal-api-key-do-not-use-in-prod-000000000000000000000000"
 os.environ.setdefault("INTERNAL_API_KEY", TEST_INTERNAL_API_KEY)
 
 from types import SimpleNamespace
@@ -81,6 +81,7 @@ class _UnconfiguredFakeChatClient:
     Any test that actually reaches an LLM-calling code path must provide
     its own richer fake through dependency_overrides[get_llm_client].
     """
+
     model_name = "fake-model"
 
     def invoke(self, messages, *, tools=None):

@@ -151,6 +151,22 @@ def test_settings_rejects_a_too_short_internal_api_key(monkeypatch: pytest.Monke
 
 
 def test_settings_accepts_a_real_looking_internal_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("INTERNAL_API_KEY", "a-generated-secret-that-is-long-enough-1234")
+    """64 hex characters -- the shape secrets.token_hex(32) produces, which is
+    what .env.example tells operators to generate."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "3f8a1c94e27b06d5af13e8c72b409d61fa5e2d78c0b34917e6da85f2c71b0348")
 
-    assert Settings(_env_file=None).internal_api_key == "a-generated-secret-that-is-long-enough-1234"
+    assert (
+        Settings(_env_file=None).internal_api_key
+        == "3f8a1c94e27b06d5af13e8c72b409d61fa5e2d78c0b34917e6da85f2c71b0348"
+    )
+
+
+def test_settings_rejects_a_urlsafe_key_despite_equal_entropy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """secrets.token_urlsafe(32) carries the same 256 bits in 43 characters, but
+    the floor is a character count, so it is rejected. Pinned deliberately: the
+    minimum enforces an encoding, not a strength, and the error message has to
+    say which generator to use."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "x" * 43)
+
+    with pytest.raises(ValidationError, match="token_hex"):
+        Settings(_env_file=None)
