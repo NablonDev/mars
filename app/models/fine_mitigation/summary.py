@@ -5,17 +5,17 @@ same PENDING/READY/FAILED lifecycle, same fingerprint/reuse columns. See
 that module for the field-level rationale; not repeated here.
 """
 
-from datetime import date, datetime
+from datetime import date
 from uuid import UUID
 
-from sqlalchemy import Date, DateTime, ForeignKey, ForeignKeyConstraint, String, Text, UniqueConstraint, func
+from sqlalchemy import Date, ForeignKey, ForeignKeyConstraint, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
+from app.db.base import FINES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 from app.models.enums import SummaryStatus
 
 
-class MitigationSummary(Base):
+class MitigationSummary(Base, TimestampMixin):
     __tablename__ = "mitigation_summary"
     __table_args__ = (
         UniqueConstraint(
@@ -50,6 +50,3 @@ class MitigationSummary(Base):
     model_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)  # free-text; null until READY
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)  # set only when FAILED
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

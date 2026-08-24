@@ -1,15 +1,14 @@
 """Dimension tables: retailers, SKUs, locations, and carriers."""
 
-from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, Numeric, String, Text, func
+from sqlalchemy import Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
+from app.db.base import FINES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
-class Retailer(Base):
+class Retailer(Base, TimestampMixin):
     __tablename__ = "retailer"
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
@@ -19,12 +18,9 @@ class Retailer(Base):
     priority_tier: Mapped[str | None] = mapped_column(String(30), nullable=True)
     # SUM or MAX; retailer-specific stacking policy.
     stacking_mode: Mapped[str] = mapped_column(String(30), default="SUM")
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class Sku(Base):
+class Sku(Base, TimestampMixin):
     __tablename__ = "sku"
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
@@ -32,12 +28,9 @@ class Sku(Base):
     sku_id: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     sku_code: Mapped[str] = mapped_column(String(50))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class Location(Base):
+class Location(Base, TimestampMixin):
     __tablename__ = "location"
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
@@ -45,12 +38,9 @@ class Location(Base):
     location_id: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     location_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     location_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class Carrier(Base):
+class Carrier(Base, TimestampMixin):
     __tablename__ = "carrier"
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
@@ -58,6 +48,3 @@ class Carrier(Base):
     carrier_id: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     carrier_name: Mapped[str] = mapped_column(String(100))
     historical_reliability_score: Mapped[float] = mapped_column(Numeric(5, 2), default=90.0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

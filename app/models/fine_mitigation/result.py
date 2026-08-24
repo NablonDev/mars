@@ -1,15 +1,15 @@
 """Database model for persisted, ranked mitigation options."""
 
-from datetime import date, datetime
+from datetime import date
 from uuid import UUID
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Date, ForeignKey, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
+from app.db.base import FINES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
-class MitigationResult(Base):
+class MitigationResult(Base, TimestampMixin):
     """One row per (order_id, projection_date, action): the persisted,
     ranked output of app/services/fine_mitigation/engine.py for a given
     order and projection day. Append-only like projected_fine --
@@ -39,6 +39,3 @@ class MitigationResult(Base):
     risk_level: Mapped[str] = mapped_column(String(30))  # LOW / MEDIUM / HIGH
     confidence: Mapped[str] = mapped_column(String(30))  # CONFIRMED / ESTIMATED
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

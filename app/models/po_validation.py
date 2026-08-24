@@ -7,10 +7,10 @@ from uuid import UUID
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import CMIR_SCHEMA, JSONB_OR_JSON, UUID_PK, Base, generate_uuid7
+from app.db.base import CMIR_SCHEMA, JSONB_OR_JSON, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
-class PoLineORM(Base):
+class PoLineORM(Base, TimestampMixin):
     """One row per PO line under validation by the PO Validation Agent."""
 
     __tablename__ = "po_lines"
@@ -28,14 +28,9 @@ class PoLineORM(Base):
     requested_delivery_date: Mapped[date | None] = mapped_column(Date)
     raw_payload: Mapped[dict[str, Any]] = mapped_column(JSONB_OR_JSON)
     status: Mapped[str] = mapped_column(String(64), default="NEW")
-    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class MaterialMasterORM(Base):
+class MaterialMasterORM(Base, TimestampMixin):
     """Local mirror of the SAP MARC fields this agent needs, keyed by (material, plant)."""
 
     __tablename__ = "material_master"
@@ -51,14 +46,9 @@ class MaterialMasterORM(Base):
     effective_out_date: Mapped[date | None] = mapped_column(Date)
     follow_up_material_number: Mapped[str | None] = mapped_column(String(64))
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class PoLineErrorORM(Base):
+class PoLineErrorORM(Base, TimestampMixin):
     """One row per validation/processing failure on a PO line."""
 
     __tablename__ = "po_line_errors"
@@ -76,8 +66,3 @@ class PoLineErrorORM(Base):
     resolved: Mapped[bool] = mapped_column(Boolean, default=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_by: Mapped[str | None] = mapped_column(String(320))
-    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -3,13 +3,13 @@
 from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
+from app.db.base import FINES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
-class OrderConfirmation(Base):
+class OrderConfirmation(Base, TimestampMixin):
     __tablename__ = "order_confirmation"
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
@@ -19,12 +19,9 @@ class OrderConfirmation(Base):
     confirmed_qty: Mapped[int] = mapped_column(Integer)
     confirmation_date: Mapped[datetime] = mapped_column(DateTime)
     cut_reason_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class ProductionSchedule(Base):
+class ProductionSchedule(Base, TimestampMixin):
     __tablename__ = "production_schedule"
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
@@ -34,12 +31,9 @@ class ProductionSchedule(Base):
     location_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.location.location_id"))
     status: Mapped[str] = mapped_column(String(30))  # ON_TRACK / AT_RISK / BEHIND
     status_date: Mapped[datetime] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class Shipment(Base):
+class Shipment(Base, TimestampMixin):
     """Historized, append-only shipment facts; one row per update."""
 
     __tablename__ = "shipment"
@@ -56,12 +50,9 @@ class Shipment(Base):
     appointment_status: Mapped[str] = mapped_column(String(30), default="SCHEDULED")
     expected_transit_days: Mapped[int] = mapped_column(Integer, default=2)
     recorded_at: Mapped[datetime] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class DemandException(Base):
+class DemandException(Base, TimestampMixin):
     __tablename__ = "demand_exception"
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
@@ -70,6 +61,3 @@ class DemandException(Base):
     order_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.sales_order.order_id"))
     flagged_date: Mapped[date] = mapped_column(Date)
     resolved: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

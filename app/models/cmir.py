@@ -6,10 +6,10 @@ from uuid import UUID
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import CMIR_SCHEMA, UUID_PK, Base, generate_uuid7
+from app.db.base import CMIR_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
-class CMIRRecordORM(Base):
+class CMIRRecordORM(Base, TimestampMixin):
     """Approved CMIR record."""
 
     __tablename__ = "cmir_records"

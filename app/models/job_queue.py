@@ -17,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
+from app.db.base import FINES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 from app.models.enums import JobItemStatus, JobRunType, JobTaskType
 
 
@@ -31,7 +31,7 @@ def _check_in_sql(
     return f"{column} IN ({values})"
 
 
-class JobRun(Base):
+class JobRun(Base, TimestampMixin):
     """A single scheduled, manual, or on-demand batch run.
 
     Run status is derived from its job items rather than stored separately
@@ -53,12 +53,9 @@ class JobRun(Base):
     stacking_mode_override: Mapped[str | None] = mapped_column(String(30), nullable=True)
     triggered_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     requested_item_count: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class JobItem(Base):
+class JobItem(Base, TimestampMixin):
     """A unit of work for one order, projection date, and task type.
 
     Retryable failures return to PENDING with a future available_at;
@@ -98,6 +95,3 @@ class JobItem(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

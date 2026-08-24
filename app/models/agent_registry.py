@@ -1,15 +1,14 @@
 """Registry of LLM agents and the prompt versions they use."""
 
-from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
+from app.db.base import FINES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
-class Agent(Base):
+class Agent(Base, TimestampMixin):
     """One LLM-backed feature/agent in this codebase."""
 
     __tablename__ = "agent"
@@ -20,12 +19,9 @@ class Agent(Base):
     # "fine_projection" | "fine_mitigation" | "cmir" | "po_validation"
     source: Mapped[str | None] = mapped_column(String(30), nullable=True, default=None)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class PromptVersion(Base):
+class PromptVersion(Base, TimestampMixin):
     """One versioned prompt belonging to an agent"""
 
     __tablename__ = "prompt_version"
@@ -41,6 +37,3 @@ class PromptVersion(Base):
     provider: Mapped[str | None] = mapped_column(String(50), nullable=True)  # e.g. "azure_openai"
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

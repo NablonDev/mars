@@ -4,13 +4,13 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import CMIR_SCHEMA, JSONB_OR_JSON, UUID_PK, Base, generate_uuid7
+from app.db.base import CMIR_SCHEMA, JSONB_OR_JSON, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
-class EmailEventORM(Base):
+class EmailEventORM(Base, TimestampMixin):
     """Persisted inbound email event."""
 
     __tablename__ = "email_events"
@@ -32,14 +32,9 @@ class EmailEventORM(Base):
     processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     queue_delivery_count: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class EmailActionLogORM(Base):
+class EmailActionLogORM(Base, TimestampMixin):
     """Audit log for email-level workflow events."""
 
     __tablename__ = "email_action_logs"
@@ -50,8 +45,3 @@ class EmailActionLogORM(Base):
     action: Mapped[str] = mapped_column(String(100))
     actor: Mapped[str] = mapped_column(String(50))
     details: Mapped[dict[str, Any]] = mapped_column(JSONB_OR_JSON)
-    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

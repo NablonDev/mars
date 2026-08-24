@@ -2,11 +2,12 @@
 
 import secrets
 import time
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import JSON, MetaData, Uuid
+from sqlalchemy import JSON, DateTime, MetaData, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 CMIR_SCHEMA = "cmir"
 FINES_SCHEMA = "fines"
@@ -20,6 +21,24 @@ INDEX_NAMING_CONVENTION = {
 
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=INDEX_NAMING_CONVENTION)
+
+
+class TimestampMixin:
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
 
 def generate_uuid7() -> UUID:

@@ -7,10 +7,10 @@ from uuid import UUID
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import CMIR_SCHEMA, JSONB_OR_JSON, UUID_PK, Base, generate_uuid7
+from app.db.base import CMIR_SCHEMA, JSONB_OR_JSON, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
-class AgentRunORM(Base):
+class AgentRunORM(Base, TimestampMixin):
     """One per-email agent execution grouped by batch_id."""
 
     __tablename__ = "agent_runs"
@@ -30,16 +30,11 @@ class AgentRunORM(Base):
     failed_threads: Mapped[int] = mapped_column(Integer, default=0)
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB_OR_JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class WorkflowThreadORM(Base):
+class WorkflowThreadORM(Base, TimestampMixin):
     """UI-facing workflow thread for one source email."""
 
     __tablename__ = "workflow_threads"
@@ -61,15 +56,10 @@ class WorkflowThreadORM(Base):
     latest_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB_OR_JSON)
     pending_action_id: Mapped[UUID | None] = mapped_column(UUID_PK)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class PendingHumanActionORM(Base):
+class PendingHumanActionORM(Base, TimestampMixin):
     """Open or completed human-review interrupt."""
 
     __tablename__ = "pending_human_actions"
@@ -89,15 +79,10 @@ class PendingHumanActionORM(Base):
     status: Mapped[str] = mapped_column(String(30), default="open")
     answer: Mapped[dict[str, Any] | None] = mapped_column(JSONB_OR_JSON)
     actor: Mapped[str | None] = mapped_column(String(50))
-    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class AgentTraceORM(Base):
+class AgentTraceORM(Base, TimestampMixin):
     """One row per LangGraph node execution."""
 
     __tablename__ = "agent_traces"
@@ -115,14 +100,9 @@ class AgentTraceORM(Base):
     input_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB_OR_JSON)
     output_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB_OR_JSON)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class HITLActionORM(Base):
+class HITLActionORM(Base, TimestampMixin):
     """Audit trail of human answers and draft edits."""
 
     __tablename__ = "hitl_actions"
@@ -143,8 +123,3 @@ class HITLActionORM(Base):
     action_type: Mapped[str | None] = mapped_column(String(64))
     field_changes: Mapped[dict[str, Any] | None] = mapped_column(JSONB_OR_JSON)
     po_line_id: Mapped[UUID | None] = mapped_column(UUID_PK, ForeignKey(f"{CMIR_SCHEMA}.po_lines.id"))
-    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

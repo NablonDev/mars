@@ -1,15 +1,14 @@
 """Cause/cost assumptions feeding the mitigation-ranking stage."""
 
-from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import Boolean, ForeignKey, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
+from app.db.base import FINES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
-class MitigationInput(Base):
+class MitigationInput(Base, TimestampMixin):
     """One row per order: the current best-guess cause/cost assumptions
     used to rank mitigation options. Mutable -- represents a current
     assumption, not a historized event, deliberately unlike
@@ -32,6 +31,3 @@ class MitigationInput(Base):
     express_carrier_transit_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     express_carrier_data_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     split_shipment_handling_cost: Mapped[float] = mapped_column(Numeric(10, 2), default=0.0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -1,15 +1,15 @@
 """Fine rules and their optional tiered bands."""
 
-from datetime import date, datetime
+from datetime import date
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import Boolean, Date, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
+from app.db.base import FINES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
-class FineRule(Base):
+class FineRule(Base, TimestampMixin):
     __tablename__ = "fine_rule"
     __table_args__ = ({"schema": FINES_SCHEMA},)
 
@@ -26,12 +26,9 @@ class FineRule(Base):
     effective_start_date: Mapped[date] = mapped_column(Date, default=date(2026, 1, 1))
     effective_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     source_doc_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class FineRuleTier(Base):
+class FineRuleTier(Base, TimestampMixin):
     """One tier band belonging to a tiered fine rule."""
 
     __tablename__ = "fine_rule_tier"
@@ -43,6 +40,3 @@ class FineRuleTier(Base):
     band_min: Mapped[float] = mapped_column(Numeric(6, 4))
     band_max: Mapped[float] = mapped_column(Numeric(6, 4))
     rate: Mapped[float] = mapped_column(Numeric(10, 4))
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

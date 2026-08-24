@@ -1,6 +1,6 @@
 """Register and re-export all ORM models so they are available through `app.models`."""
 
-from app.db.base import Base
+from app.db.base import Base, TimestampMixin
 from app.models.agent_registry import Agent, PromptVersion
 from app.models.cmir import CMIRRecordORM
 from app.models.email import EmailActionLogORM, EmailEventORM
@@ -66,5 +66,6 @@ __all__ = [
     "Shipment",
     "Sku",
     "SummaryStatus",
+    "TimestampMixin",
     "WorkflowThreadORM",
 ]

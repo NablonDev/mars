@@ -1,15 +1,15 @@
 """Database models for projected fines and post-delivery actual fines."""
 
-from datetime import date, datetime
+from datetime import date
 from uuid import UUID
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint, func
+from sqlalchemy import Date, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
+from app.db.base import FINES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
-class ProjectedFine(Base):
+class ProjectedFine(Base, TimestampMixin):
     """Periodic fine projection for an order, rule, and projection date."""
 
     __tablename__ = "projected_fine"
@@ -27,12 +27,9 @@ class ProjectedFine(Base):
     projected_fine_amount: Mapped[float] = mapped_column(Numeric(12, 2))
     days_to_delivery: Mapped[int] = mapped_column(Integer)
     projection_status: Mapped[str] = mapped_column(String(30), default="OPEN")
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class ActualFine(Base):
+class ActualFine(Base, TimestampMixin):
     """Post-delivery fine recorded against an order."""
 
     __tablename__ = "actual_fine"
@@ -46,6 +43,3 @@ class ActualFine(Base):
     actual_fine_amount: Mapped[float] = mapped_column(Numeric(12, 2))
     invoice_or_deduction_date: Mapped[date] = mapped_column(Date)
     dispute_status: Mapped[str] = mapped_column(String(30), default="NONE")  # NONE/DISPUTED/WAIVED/UPHELD
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
