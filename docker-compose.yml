@@ -50,7 +50,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mars}
       POSTGRES_DB: ${POSTGRES_DB:-mars}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - mars_postgres_data:/var/lib/postgresql
     healthcheck:
@@ -91,16 +91,13 @@ services:
         condition: service_healthy
 
   # Local stand-in for the standalone Service Bus consumer process.
-  # Run:
-  #   docker compose --profile tools run --rm cmir-consumer
   cmir-consumer:
     <<: *app-image
     container_name: mars-cmir-consumer
     command: python -m app.workers.cmir_service_bus_consumer
-    profiles:
-      - tools
     environment:
       <<: *app-database
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?INTERNAL_API_KEY is required}
       SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE:-}
       SERVICE_BUS_CONNECTION_STRING: ${SERVICE_BUS_CONNECTION_STRING:-}
       SERVICE_BUS_QUEUE_NAME: ${SERVICE_BUS_QUEUE_NAME:-}
@@ -110,6 +107,7 @@ services:
       postgres:
         condition: service_healthy
 
+  # Local stand-in for the postgres alembic migration.
   # Run explicitly:
   #   docker compose --profile tools run --rm migrate
   migrate:
@@ -119,6 +117,7 @@ services:
       - tools
     environment:
       <<: *app-database
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?INTERNAL_API_KEY is required}
     depends_on:
       postgres:
         condition: service_healthy
@@ -135,6 +134,7 @@ services:
     environment:
       <<: *app-database
       ENVIRONMENT: ${ENVIRONMENT:-development}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?INTERNAL_API_KEY is required}
       JOB_QUEUE_BACKEND: ${JOB_QUEUE_BACKEND:-postgres}
       JOB_QUEUE_WORKER_CONCURRENCY: ${JOB_QUEUE_WORKER_CONCURRENCY:-5}
       # Keep DB pool capacity >= worker concurrency.
