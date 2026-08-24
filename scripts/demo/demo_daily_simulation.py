@@ -22,6 +22,7 @@ import argparse
 import sys
 
 import httpx
+from _helpers import _auth_headers
 
 
 def main() -> None:
@@ -29,7 +30,11 @@ def main() -> None:
     parser.add_argument("--base-url", default="http://127.0.0.1:8000/api/v1")
     args = parser.parse_args()
 
-    resp = httpx.post(f"{args.base_url}/admin/simulate-daily-run", timeout=60)
+    resp = httpx.post(
+        f"{args.base_url}/admin/simulate-daily-run",
+        headers=_auth_headers(),
+        timeout=60,
+    )
     if resp.status_code != 200:
         print(f"Simulation failed: {resp.status_code} {resp.text}", file=sys.stderr)
         sys.exit(1)

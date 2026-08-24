@@ -50,15 +50,27 @@ def _error_message(resp: httpx.Response) -> str:
     return resp.text
 
 
-def _poll_until_ready(base_url: str, order_id: str, as_of_date: str) -> dict | None:
-    """Polls `GET .../projection-summary` until the job leaves PENDING, or gives
+def _poll_until_ready(
+    base_url: str,
+    order_id: str,
+    as_of_date: str,
+    summary_path: str = "projection-summary",
+) -> dict | None:
+    """Polls `GET .../{summary_path}` until the job leaves PENDING, or gives
     up after POLL_TIMEOUT_SECONDS. Returns the job body (status READY or
-    FAILED) or None on timeout."""
+    FAILED) or None on timeout.
+
+    `summary_path` defaults to the fine-projection-summary endpoint the two
+    original callers use; `demo_fine_mitigation_summary.py` passes
+    "mitigation-summary" instead. Both endpoints return the same
+    status/summary/error_message envelope (ProjectionSummaryStatusResponse
+    and MitigationSummaryStatusResponse are field-for-field identical), so
+    one poller covers both."""
     deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
     headers = _auth_headers()
     while time.monotonic() < deadline:
         resp = httpx.get(
-            f"{base_url}/orders/{order_id}/projection-summary",
+            f"{base_url}/orders/{order_id}/{summary_path}",
             params={"as_of_date": as_of_date},
             headers=headers,
             timeout=30,

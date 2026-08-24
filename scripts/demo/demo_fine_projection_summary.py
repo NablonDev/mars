@@ -40,7 +40,7 @@ import sys
 from datetime import UTC, datetime
 
 import httpx
-from _helpers import POLL_TIMEOUT_SECONDS, _error_message, _poll_until_ready
+from _helpers import POLL_TIMEOUT_SECONDS, _auth_headers, _error_message, _poll_until_ready
 
 
 def _latest_projection_date(base_url: str, order_id: str) -> str | None:
@@ -51,7 +51,7 @@ def _latest_projection_date(base_url: str, order_id: str) -> str | None:
     before "today" depending on when this actually runs -- three of the
     four routinely extend past it. Taking a blind `max()` over all
     history picks a future date for those and 422s every time."""
-    resp = httpx.get(f"{base_url}/orders/{order_id}/projections", timeout=30)
+    resp = httpx.get(f"{base_url}/orders/{order_id}/projections", headers=_auth_headers(), timeout=30)
     resp.raise_for_status()
     history = resp.json()
     if not history:
@@ -78,6 +78,7 @@ def _summarize_one(base_url: str, order_id: str, force_regenerate: bool) -> None
     resp = httpx.post(
         f"{base_url}/orders/{order_id}/projection-summary",
         json={"as_of_date": as_of_date, "force_regenerate": force_regenerate},
+        headers=_auth_headers(),
         timeout=30,
     )
     if resp.status_code == 200:
@@ -117,7 +118,7 @@ def main() -> None:
     if args.order_id:
         order_ids = [args.order_id]
     else:
-        resp = httpx.get(f"{args.base_url}/orders", timeout=30)
+        resp = httpx.get(f"{args.base_url}/orders", headers=_auth_headers(), timeout=30)
         resp.raise_for_status()
         order_ids = [o["order_id"] for o in resp.json()]
         if not order_ids:

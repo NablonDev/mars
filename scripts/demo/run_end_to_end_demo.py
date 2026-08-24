@@ -38,12 +38,12 @@ import sys
 from datetime import UTC, datetime
 
 import httpx
-from _helpers import POLL_TIMEOUT_SECONDS, _error_message, _poll_until_ready
+from _helpers import POLL_TIMEOUT_SECONDS, _auth_headers, _error_message, _poll_until_ready
 
 
 def _seed(base_url: str) -> None:
     print("== Seeding master data ==")
-    resp = httpx.post(f"{base_url}/admin/seed-master-data", timeout=30)
+    resp = httpx.post(f"{base_url}/admin/seed-master-data", headers=_auth_headers(), timeout=30)
     if resp.status_code != 200:
         print(f"Seeding failed: {resp.status_code} {_error_message(resp)}", file=sys.stderr)
         sys.exit(1)
@@ -54,7 +54,7 @@ def _seed(base_url: str) -> None:
 
 def _simulate(base_url: str) -> list[dict]:
     print("\n== Replaying daily scenarios ==")
-    resp = httpx.post(f"{base_url}/admin/simulate-daily-run", timeout=60)
+    resp = httpx.post(f"{base_url}/admin/simulate-daily-run", headers=_auth_headers(), timeout=60)
     if resp.status_code != 200:
         print(f"Simulation failed: {resp.status_code} {_error_message(resp)}", file=sys.stderr)
         sys.exit(1)
@@ -86,6 +86,7 @@ def _summarize_all(base_url: str, scenarios: list[dict], force_regenerate: bool)
         resp = httpx.post(
             f"{base_url}/orders/{order_id}/projection-summary",
             json={"as_of_date": as_of_date, "force_regenerate": force_regenerate},
+            headers=_auth_headers(),
             timeout=30,
         )
         if resp.status_code == 200:
