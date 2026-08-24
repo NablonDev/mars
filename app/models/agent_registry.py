@@ -36,7 +36,7 @@ class PromptVersion(Base):
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     agent_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{FINES_SCHEMA}.agent.id"))
-    prompt_version: Mapped[str] = mapped_column(String(20))
+    prompt_version: Mapped[str] = mapped_column(String(50))
     module_path: Mapped[str] = mapped_column(String(100))  # e.g. "app.agents.fine_projection.prompts.v3"
     provider: Mapped[str | None] = mapped_column(String(50), nullable=True)  # e.g. "azure_openai"
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

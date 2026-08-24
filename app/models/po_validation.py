@@ -17,7 +17,7 @@ class PoLineORM(Base):
     __table_args__ = ({"schema": CMIR_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    batch_id: Mapped[str] = mapped_column(String(50))
+    batch_id: Mapped[str] = mapped_column(String(100))
     po_number: Mapped[str] = mapped_column(String(50))
     po_line_number: Mapped[str] = mapped_column(String(50))
     customer_id: Mapped[str] = mapped_column(String(50))
@@ -27,7 +27,7 @@ class PoLineORM(Base):
     uom: Mapped[str | None] = mapped_column(String(50))
     requested_delivery_date: Mapped[date | None] = mapped_column(Date)
     raw_payload: Mapped[dict[str, Any]] = mapped_column(JSONB_OR_JSON)
-    status: Mapped[str] = mapped_column(String(30), default="NEW")
+    status: Mapped[str] = mapped_column(String(64), default="NEW")
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -42,14 +42,14 @@ class MaterialMasterORM(Base):
     __table_args__ = ({"schema": CMIR_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    sap_material_number: Mapped[str] = mapped_column(String(50))
+    sap_material_number: Mapped[str] = mapped_column(String(64))
     plant: Mapped[str] = mapped_column(String(30))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     available_quantity: Mapped[float] = mapped_column(Numeric, default=0)
     uom: Mapped[str | None] = mapped_column(String(50))
     discontinuation_indicator: Mapped[str | None] = mapped_column(String(30))
     effective_out_date: Mapped[date | None] = mapped_column(Date)
-    follow_up_material_number: Mapped[str | None] = mapped_column(String(50))
+    follow_up_material_number: Mapped[str | None] = mapped_column(String(64))
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(
@@ -68,7 +68,7 @@ class PoLineErrorORM(Base):
     po_line_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{CMIR_SCHEMA}.po_lines.id"))
     agent_run_id: Mapped[UUID | None] = mapped_column(UUID_PK, ForeignKey(f"{CMIR_SCHEMA}.agent_runs.id"))
     error_type: Mapped[str] = mapped_column(String(50))
-    error_code: Mapped[str | None] = mapped_column(String(50))
+    error_code: Mapped[str | None] = mapped_column(String(100))
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     node_name: Mapped[str | None] = mapped_column(String(100))
     raw_error_detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB_OR_JSON)

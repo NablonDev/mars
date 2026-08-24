@@ -30,13 +30,15 @@ class MitigationResult(Base):
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     order_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.sales_order.order_id"))
     projection_date: Mapped[date] = mapped_column(Date)
-    action: Mapped[str] = mapped_column(String(30))  # ACCEPT / SPEED_UP_PRODUCTION / SPLIT_SHIPMENT / FASTER_CARRIER
+    action: Mapped[str] = mapped_column(
+        String(30), nullable=True
+    )  # ACCEPT / SPEED_UP_PRODUCTION / SPLIT_SHIPMENT / FASTER_CARRIER
     projected_fine_after: Mapped[float] = mapped_column(Numeric(12, 2))
     action_cost: Mapped[float] = mapped_column(Numeric(12, 2))
     net_saving: Mapped[float] = mapped_column(Numeric(12, 2))
     risk_level: Mapped[str] = mapped_column(String(30))  # LOW / MEDIUM / HIGH
     confidence: Mapped[str] = mapped_column(String(30))  # CONFIRMED / ESTIMATED
-    rationale: Mapped[str] = mapped_column(Text, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

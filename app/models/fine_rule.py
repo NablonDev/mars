@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
@@ -25,7 +25,7 @@ class FineRule(Base):
     grace_period_days: Mapped[int] = mapped_column(Integer, default=0)
     effective_start_date: Mapped[date] = mapped_column(Date, default=date(2026, 1, 1))
     effective_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    source_doc_reference: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    source_doc_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

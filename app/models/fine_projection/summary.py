@@ -33,10 +33,14 @@ class ProjectionSummary(Base):
     order_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.sales_order.order_id"))
     agent_id: Mapped[UUID] = mapped_column(UUID_PK)
     as_of_date: Mapped[date] = mapped_column(Date)
-    prompt_version: Mapped[str] = mapped_column(String(20))
+    prompt_version: Mapped[str] = mapped_column(String(50))
     context_hash: Mapped[str] = mapped_column(String(64))  # sha256 hex digest, diagnostic only
-    content_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)  # sha256 hex digest of the generated narrative; nullable so existing rows migrate cleanly
-    source_as_of_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # the date the narrative was actually generated for, when a summary is reused across days
+    content_fingerprint: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )  # sha256 hex digest of the generated narrative; nullable so existing rows migrate cleanly
+    source_as_of_date: Mapped[date | None] = mapped_column(
+        Date, nullable=True
+    )  # the date the narrative was actually generated for, when a summary is reused across days
     status: Mapped[str] = mapped_column(String(30), default=SummaryStatus.PENDING)  # PENDING / READY / FAILED
     model_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)  # free-text; null until READY

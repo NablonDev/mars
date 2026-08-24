@@ -18,7 +18,7 @@ class OrderConfirmation(Base):
     order_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.sales_order.order_id"))
     confirmed_qty: Mapped[int] = mapped_column(Integer)
     confirmation_date: Mapped[datetime] = mapped_column(DateTime)
-    cut_reason_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    cut_reason_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

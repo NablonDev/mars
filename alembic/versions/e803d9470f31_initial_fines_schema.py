@@ -1,70 +1,26 @@
-"""initial fines schema
+"""Initial fines schema.
 
 Revision ID: e803d9470f31
 Revises:
-Create Date: 2026-08-22 14:10:42.334934
+Create Date: 2026-08-23
 
-Full re-squash of the entire `fines`-schema migration history (previously
-11 revisions spanning both the `fines` and `cmir` schemas -- see
-43d8ced96170 for the equivalent `cmir`-schema squash, chained after this
-one) into one clean initial migration, with every `dim_`/`fact_` table
-already renamed to its final name. Nothing in either schema has shipped
-anywhere real yet, so a table that was "created as X, renamed to Y" across
-a chain that never shipped doesn't need to carry that history forward --
-same reasoning as the earlier `fact_fine_summary` -> `fact_fine_projection_
-summary` rename (121840bc4fdf) and the original per-schema `0001`-`0011`
-squash this repeats.
+Squashes the previous fines schema migration history into a single initial
+migration. All historical `dim_`/`fact_` table prefixes are removed and
+tables are created directly with their final names; ORM class names remain
+unchanged where required for compatibility.
 
-Table renames applied (old fines-schema name -> new; ORM class names are
-unchanged except where noted -- see docs/DATABASE.md "Why no dim_/fact_
-prefix" for the rationale):
-    dim_agent                     -> agent
-    dim_prompt_version            -> prompt_version
-    dim_retailer                  -> retailer
-    dim_sku                       -> sku
-    dim_location                  -> location
-    dim_carrier                   -> carrier
-    dim_fine_rule                 -> fine_rule
-    dim_fine_rule_tier            -> fine_rule_tier
-    fact_order                    -> sales_order       (Order class unchanged)
-    fact_order_confirmation       -> order_confirmation
-    fact_production_schedule      -> production_schedule
-    fact_shipment                 -> shipment
-    fact_demand_exception         -> demand_exception
-    fact_projected_fine           -> projected_fine
-    fact_actual_fine              -> actual_fine
-    fact_mitigation_input         -> mitigation_input
-    fact_mitigation_result        -> mitigation_option (MitigationResult class
-                                                         unchanged -- keeps it
-                                                         distinct from the pure
-                                                         -engine MitigationOption
-                                                         dataclass in
-                                                         app/services/fine_mitigation/models.py)
-    fact_fine_projection_summary  -> projection_summary
-    fact_fine_mitigation_summary  -> mitigation_summary
-    job_run, job_item              unchanged
+DDL was generated from Base.metadata against an empty PostgreSQL database
+and hand-reviewed. The final schema includes the accumulated changes from
+the replaced migrations, including calibrated column types and widths,
+constraints, foreign keys, and the MITIGATION_SUMMARY_REGEN task type.
 
-DDL derived from `Base.metadata` via `alembic revision --autogenerate`
-against a truly empty Postgres database, then hand-reviewed. Two known
-autogenerate artifacts from the migrations this squash replaces are
-carried forward deliberately, neither reproduced automatically by
-autogenerate against Base.metadata:
+The partial unique index `uq_job_item_inflight` is intentionally created as
+raw DDL because it cannot be represented reliably through the ORM across
+PostgreSQL and SQLite migration tests.
 
-- `uq_job_item_inflight`: a partial unique index (`WHERE status IN
-  ('PENDING', 'RUNNING')`), not expressible on the ORM model itself (see
-  `app/models/job_queue.py::JobItem`'s docstring) -- added below as raw DDL,
-  dialect-gated the same way the original ff84c023d5e9 was, so it still
-  renders correctly on the SQLite database `test_migration_parity.py` runs
-  this migration against.
-- The `langgraph-checkpoint-postgres` checkpoint tables (`checkpoint_blobs`/
-  `checkpoints`/`checkpoint_writes`/`checkpoint_migrations`) are correctly
-  absent -- they're created directly by that library against the live DB,
-  never part of `Base.metadata`, and were never part of this squash's
-  source of truth.
-
-`job_item.task_type`'s CHECK constraint already includes
-`MITIGATION_SUMMARY_REGEN` (added in 176a1ab0e4f3) -- this squash keeps it,
-not removes it.
+Column widths and text types were calibrated as part of this squash rather
+than carried forward as separate migrations. Corresponding application-level
+validation remains in the existing schemas.
 """
 
 from collections.abc import Sequence
@@ -179,7 +135,7 @@ def upgrade() -> None:
         sa.Column("grace_period_days", sa.Integer(), nullable=False),
         sa.Column("effective_start_date", sa.Date(), nullable=False),
         sa.Column("effective_end_date", sa.Date(), nullable=True),
-        sa.Column("source_doc_reference", sa.String(length=300), nullable=True),
+        sa.Column("source_doc_reference", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
@@ -224,7 +180,7 @@ def upgrade() -> None:
         "prompt_version",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("agent_id", sa.Uuid(), nullable=False),
-        sa.Column("prompt_version", sa.String(length=20), nullable=False),
+        sa.Column("prompt_version", sa.String(length=50), nullable=False),
         sa.Column("module_path", sa.String(length=100), nullable=False),
         sa.Column("provider", sa.String(length=50), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False),
@@ -359,7 +315,7 @@ def upgrade() -> None:
         sa.Column("job_run_id", sa.Uuid(), nullable=False),
         sa.Column("order_id", sa.String(length=50), nullable=False),
         sa.Column("projection_date", sa.Date(), nullable=False),
-        sa.Column("task_type", sa.String(length=30), nullable=False),
+        sa.Column("task_type", sa.String(length=64), nullable=False),
         sa.Column("stacking_mode_override", sa.String(length=30), nullable=True),
         sa.Column("force_regenerate_summary", sa.Boolean(), nullable=False),
         sa.Column("status", sa.String(length=30), nullable=False),
@@ -371,7 +327,7 @@ def upgrade() -> None:
         sa.Column("heartbeat_at", sa.DateTime(), nullable=True),
         sa.Column("dispatched_at", sa.DateTime(), nullable=True),
         sa.Column("last_error", sa.Text(), nullable=True),
-        sa.Column("last_error_code", sa.String(length=50), nullable=True),
+        sa.Column("last_error_code", sa.String(length=100), nullable=True),
         sa.Column("completed_at", sa.DateTime(), nullable=True),
         sa.Column("created_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
@@ -479,7 +435,7 @@ def upgrade() -> None:
         sa.Column("order_id", sa.String(length=50), nullable=False),
         sa.Column("agent_id", sa.Uuid(), nullable=False),
         sa.Column("as_of_date", sa.Date(), nullable=False),
-        sa.Column("prompt_version", sa.String(length=20), nullable=False),
+        sa.Column("prompt_version", sa.String(length=50), nullable=False),
         sa.Column("context_hash", sa.String(length=64), nullable=False),
         sa.Column("content_fingerprint", sa.String(length=64), nullable=True),
         sa.Column("source_as_of_date", sa.Date(), nullable=True),
@@ -512,7 +468,7 @@ def upgrade() -> None:
         sa.Column("order_id", sa.String(length=50), nullable=False),
         sa.Column("confirmed_qty", sa.Integer(), nullable=False),
         sa.Column("confirmation_date", sa.DateTime(), nullable=False),
-        sa.Column("cut_reason_code", sa.String(length=50), nullable=True),
+        sa.Column("cut_reason_code", sa.String(length=100), nullable=True),
         sa.Column("created_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(), server_default=sa.text("now()"), nullable=False),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
@@ -564,7 +520,7 @@ def upgrade() -> None:
         sa.Column("order_id", sa.String(length=50), nullable=False),
         sa.Column("agent_id", sa.Uuid(), nullable=False),
         sa.Column("as_of_date", sa.Date(), nullable=False),
-        sa.Column("prompt_version", sa.String(length=20), nullable=False),
+        sa.Column("prompt_version", sa.String(length=50), nullable=False),
         sa.Column("context_hash", sa.String(length=64), nullable=False),
         sa.Column("content_fingerprint", sa.String(length=64), nullable=True),
         sa.Column("source_as_of_date", sa.Date(), nullable=True),
