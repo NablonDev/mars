@@ -23,7 +23,7 @@ class JobQueueBackend(StrEnum):
     SERVICE_BUS = "service_bus"
 
 
-_INTERNAL_API_KEY_MIN_LENGTH = 32
+_INTERNAL_API_KEY_MIN_LENGTH = 64
 
 
 class Settings(BaseSettings):
@@ -131,10 +131,17 @@ class Settings(BaseSettings):
     @classmethod
     def _internal_api_key_not_blank(cls, value: str) -> str:
         if not value.strip():
-            raise ValueError("internal_api_key must not be blank")
+            raise ValueError("INTERNAL_API_KEY must not be blank")
 
         if len(value) < _INTERNAL_API_KEY_MIN_LENGTH:
-            raise ValueError(f"internal_api_key must be at least {_INTERNAL_API_KEY_MIN_LENGTH} characters")
+            # Length, not entropy: 64 is the width of secrets.token_hex(32), the
+            # generator .env.example documents. A token_urlsafe(32) key carries the
+            # same 256 bits in 43 characters and is rejected here, so say what to
+            # generate rather than leaving the reader to guess at the number.
+            raise ValueError(
+                f"INTERNAL_API_KEY must be at least {_INTERNAL_API_KEY_MIN_LENGTH} characters "
+                '(generate with: python -c "import secrets; print(secrets.token_hex(32))")'
+            )
         return value
 
 
