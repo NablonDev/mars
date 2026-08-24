@@ -17,6 +17,7 @@ from app.core.exceptions import (
     AppError,
     ExternalServiceError,
     NotFoundError,
+    ServiceError,
     ValidationError,
 )
 from app.core.logging import REQUEST_ID_HEADER
@@ -49,6 +50,24 @@ def error_client(app) -> TestClient:
     @app.get("/api/v1/_test/boom")
     def _boom() -> None:
         raise RuntimeError(f"unhandled crash: {LEAKY_DETAIL}")
+
+    @app.get("/api/v1/_test/service-client-error")
+    def _service_client_error() -> None:
+        raise ServiceError(
+            "VALIDATION_ERROR",
+            "Bad field name.",
+            status_code=422,
+            details={"invalid_fields": ["nope"]},
+        )
+
+    @app.get("/api/v1/_test/service-server-error")
+    def _service_server_error() -> None:
+        raise ServiceError(
+            "WORKFLOW_RESUME_FAILED",
+            "Unable to save reviewer update safely.",
+            status_code=500,
+            details={"thread_id": "thread_01J4A", "error": LEAKY_DETAIL},
+        )
 
     return TestClient(app, raise_server_exceptions=False)
 
@@ -211,7 +230,7 @@ def test_access_log_duration_excludes_background_task_time(app, caplog):
     balloon to a few hundred ms from scheduler contention alone, with
     nothing to do with the background task. A fixed `< 100` threshold
     flaked under that load. What actually distinguishes "fixed" from
-    "regressed" is that the logged duration stays a small fraction of the
+    "regressed" is that the logged duration stays a fraction of the
     background task's own sleep -- if the bug came back, duration_ms would
     be at least the full sleep, not a fraction of it. Sleeping seconds
     (rather than the previous 200ms) keeps that fraction comfortably above
@@ -221,7 +240,7 @@ def test_access_log_duration_excludes_background_task_time(app, caplog):
 
     from fastapi import BackgroundTasks
 
-    background_task_sleep_s = 2.0
+    background_task_sleep_s = 3.0
 
     def _slow_background_task() -> None:
         time_module.sleep(background_task_sleep_s)
@@ -238,13 +257,15 @@ def test_access_log_duration_excludes_background_task_time(app, caplog):
 
     record = next(r for r in caplog.records if r.name == "app.access")
     # The background task slept `background_task_sleep_s` -- the logged
-    # duration must stay a small fraction of that regardless of ambient
-    # system load. If the old bug reappeared, duration_ms would be at
-    # least the full sleep (2000ms here), so a quarter of it (500ms) is
-    # still a wide margin below a real regression while comfortably
-    # clearing load-induced jitter in the request path.
+    # duration must stay well under that regardless of ambient system load.
+    # The margin is half the sleep (1500ms against a 3000ms sleep). A
+    # quarter (500ms) flaked under full-suite CPU contention, where the
+    # request path alone has been observed at ~950ms with the fix firmly in
+    # place. Half still discriminates cleanly: a regression puts the whole
+    # background sleep inside duration_ms, so the failing value would be
+    # >=3000ms -- twice the threshold, and never near it.
     background_task_sleep_ms = background_task_sleep_s * 1000
-    assert record.duration_ms < background_task_sleep_ms / 4
+    assert record.duration_ms < background_task_sleep_ms / 2
 
 
 def test_fastapi_request_validation_still_returns_its_own_422_contract(client):
@@ -255,3 +276,34 @@ def test_fastapi_request_validation_still_returns_its_own_422_contract(client):
 
     assert resp.status_code == 422
     assert isinstance(resp.json()["detail"], list)
+
+
+def test_service_error_4xx_keeps_its_details(error_client):
+    """`details` is the client's actionable half of the CMIR/PO error
+    contract on a 4xx -- which field name was wrong, which value was stale."""
+    resp = error_client.get("/api/v1/_test/service-client-error")
+
+    assert resp.status_code == 422
+    assert resp.json()["error"]["details"] == {"invalid_fields": ["nope"]}
+
+
+def test_service_error_5xx_withholds_details_entirely(error_client):
+    """Regression test: the 5xx call sites put internal failure text in
+    `details`, which was serialized straight into the response body."""
+    resp = error_client.get("/api/v1/_test/service-server-error")
+
+    assert resp.status_code == 500
+    assert set(resp.json()["error"]) == {"code", "message"}
+    assert "sup3rs3cret" not in resp.text
+    assert "db.internal" not in resp.text
+    assert "thread_01J4A" not in resp.text
+
+
+def test_service_error_5xx_is_still_logged_with_its_traceback(error_client, caplog):
+    caplog.set_level(logging.ERROR, logger="app.core.exceptions")
+
+    error_client.get("/api/v1/_test/service-server-error")
+
+    record = next(r for r in caplog.records if r.name == "app.core.exceptions")
+    assert record.error_code == "WORKFLOW_RESUME_FAILED"
+    assert record.exc_info is not None
