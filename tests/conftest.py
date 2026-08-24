@@ -12,24 +12,43 @@ populated in tests. Both `get_session` (per-request Session) and
 overridden to point at the SQLite fixture instead.
 """
 
+import os
+
+# INTERNAL_API_KEY is a required setting (see app/core/config.py) with no
+# default -- Settings() raises without it. setdefault() so a real value in
+# the environment/.env wins, but the suite never depends on one existing:
+# this must run before anything below imports app.* (app.api.dependencies
+# calls get_settings() at import time). Exposed as a constant so
+# tests/unit/api/test_internal_api_key.py -- which exercises the real
+# dependency instead of the override below -- can assert against it.
+TEST_INTERNAL_API_KEY = "test-internal-api-key-do-not-use-in-prod-000000000000000000000000"
+os.environ.setdefault("INTERNAL_API_KEY", TEST_INTERNAL_API_KEY)
+
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 
-from app.api.dependencies import get_database, get_job_queue, get_session
+from app.api.dependencies import (
+    get_database,
+    get_job_queue,
+    get_llm_client,
+    get_session,
+    require_internal_api_key,
+)
 from app.core.config import Settings
 from app.db.session import Database
 from app.main import create_app
 from app.queue.factory import build_job_queue
 from app.repositories.agent_registry import PromptRegistryRepository
+from app.repositories.fine_master_data import MasterDataRepository
+from app.repositories.fine_mitigation.mitigation import MitigationRepository
+from app.repositories.fine_projection.projection import ProjectionRepository
 from app.repositories.fine_rule import FineRuleRepository
-from app.repositories.master_data import MasterDataRepository
 from app.repositories.order import OrderRepository
-from app.repositories.projection import ProjectionRepository
-from app.services.projection import ProjectionService
-from app.services.seeding import SeedingService
+from app.services.fine_projection.service import FineProjectionService
+from app.services.seeding.service import FineSeedingService
 
 
 @pytest.fixture
@@ -56,6 +75,23 @@ def job_queue(database: Database):
     return build_job_queue(Settings(), database)
 
 
+class _UnconfiguredFakeChatClient:
+    """Default fake LLM client for tests.
+
+    Any test that actually reaches an LLM-calling code path must provide
+    its own richer fake through dependency_overrides[get_llm_client].
+    """
+
+    model_name = "fake-model"
+
+    def invoke(self, messages, *, tools=None):
+        raise AssertionError(
+            "The default test LLM client was invoked. "
+            "This test reaches an LLM-calling path and must provide "
+            "its own dependency_overrides[get_llm_client]."
+        )
+
+
 @pytest.fixture
 def app(database: Database, job_queue):
     application = create_app()
@@ -71,9 +107,18 @@ def app(database: Database, job_queue):
         finally:
             session.close()
 
+    def _get_test_llm_client():
+        return _UnconfiguredFakeChatClient()
+
     application.dependency_overrides[get_session] = _get_test_db
     application.dependency_overrides[get_database] = lambda: database
     application.dependency_overrides[get_job_queue] = lambda: job_queue
+    application.dependency_overrides[get_llm_client] = _get_test_llm_client
+    # Intentional, visible override: the rest of the suite exercises business
+    # logic, not the auth gate itself -- that gets its own dedicated tests in
+    # tests/unit/api/test_internal_api_key.py, which remove this override.
+    application.dependency_overrides[require_internal_api_key] = lambda: None
+
     return application
 
 
@@ -99,17 +144,19 @@ def services(db_session):
     orders = OrderRepository(db_session)
     projections = ProjectionRepository(db_session)
     prompt_registry = PromptRegistryRepository(db_session)
-    projection_service = ProjectionService(
+    mitigation = MitigationRepository(db_session)
+    projection_service = FineProjectionService(
         orders=orders,
         rules=rules,
         master_data=master_data,
         projections=projections,
     )
-    seeding_service = SeedingService(
+    seeding_service = FineSeedingService(
         master_data=master_data,
         rules=rules,
         orders=orders,
         projection_service=projection_service,
+        mitigation=mitigation,
     )
     return SimpleNamespace(
         master_data=master_data,
@@ -117,6 +164,7 @@ def services(db_session):
         orders=orders,
         projections=projections,
         prompt_registry=prompt_registry,
+        mitigation=mitigation,
         projection_service=projection_service,
         seeding_service=seeding_service,
     )

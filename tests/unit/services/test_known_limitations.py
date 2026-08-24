@@ -1,10 +1,10 @@
 """
 Characterization tests for known, accepted (not fixed) limitations --
 documenting exactly what happens today so nobody has to rediscover it by
-surprise. See docs/FINE_ENGINE.md "Open items" for the write-up.
+surprise.
 
 AMZ-778501 and AMZ-780112 (the two Amazon worked examples) both draw on
-SKU-WHI20 at LOC-COL, and fact_production_schedule is correctly keyed by
+SKU-WHI20 at LOC-COL, and production_schedule is correctly keyed by
 (sku_id, location_id) -- a production line serves whichever orders draw
 on it, matching how real production actually works. But the two demo
 scenarios were authored independently and assign that shared line

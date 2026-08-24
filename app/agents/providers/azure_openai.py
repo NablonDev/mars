@@ -10,7 +10,7 @@ from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
-from app.core.config import Settings
+from app.core.config import LLMConfig
 
 
 class AzureOpenAIConfigError(RuntimeError):
@@ -22,16 +22,12 @@ class AzureOpenAIChatClient:
 
     def __init__(
         self,
-        settings: Settings,
+        config: LLMConfig,
         *,
         timeout_seconds: float | None = None,
         max_retries: int | None = None,
     ) -> None:
-        if not (
-            settings.azure_openai_api_key
-            and settings.azure_openai_endpoint
-            and settings.azure_openai_deployment_name
-        ):
+        if not (config.api_key and config.endpoint and config.deployment):
             raise AzureOpenAIConfigError(
                 "Azure OpenAI is not configured -- set "
                 "AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and "
@@ -39,15 +35,15 @@ class AzureOpenAIChatClient:
             )
 
         if timeout_seconds is None:
-            timeout_seconds = settings.azure_openai_timeout_seconds
+            timeout_seconds = config.timeout_seconds
         if max_retries is None:
-            max_retries = settings.azure_openai_max_attempts
+            max_retries = config.max_retries
 
-        self._model_name = settings.azure_openai_deployment_name
+        self._model_name = config.deployment
         self._llm = ChatOpenAI(
-            base_url=settings.azure_openai_endpoint,
-            api_key=SecretStr(settings.azure_openai_api_key),
-            model=settings.azure_openai_deployment_name,
+            base_url=config.endpoint,
+            api_key=SecretStr(config.api_key),
+            model=config.deployment,
             timeout=timeout_seconds,
             max_retries=max_retries,
         )

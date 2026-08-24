@@ -36,13 +36,14 @@ class PostgresPoLineRepository:
                 plant=line.plant,
                 order_quantity=line.order_quantity,
                 uom=line.uom,
-                requested_delivery_date=line.requested_delivery_date,
+                # PoLine.requested_delivery_date is a str; "" is not a date literal.
+                requested_delivery_date=line.requested_delivery_date or None,
                 raw_payload=line.raw_payload,
                 status=line.status,
             )
             session.add(record)
             session.flush()
-            po_line_id = record.id
+            po_line_id = str(record.id)
         logger.info("Created po_line %s for batch %s", po_line_id, line.batch_id)
         return po_line_id
 
@@ -146,7 +147,7 @@ class PostgresPoLineErrorRepository:
             )
             session.add(record)
             session.flush()
-            error_id = record.id
+            error_id = str(record.id)
         logger.info(
             "Logged po_line_error %s for po_line %s (%s)", error_id, error.po_line_id, error.node_name
         )

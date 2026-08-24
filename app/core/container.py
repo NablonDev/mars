@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from contextlib import ExitStack
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 # Previous implementation using MemorySaver.
 # Replaced by PostgreSQL Checkpointer for durable LangGraph resume support.
@@ -16,7 +16,7 @@ from app.agents.po_validation.graph import build_po_validation_graph
 from app.agents.po_validation.nodes import PoValidationNodes
 from app.core.config import EmailConfig, LLMConfig, ServiceBusConfig, Settings, get_settings
 from app.db.session import Database, checkpoint_dsn
-from app.queue.producer import ServiceBusMailQueue
+from app.queue.cmir_mail_producer import ServiceBusMailQueue
 from app.repositories.action_log import PostgresActionLogRepository
 from app.repositories.cmir import PostgresCMIRRepository
 from app.repositories.email import PostgresEmailRepository
@@ -48,7 +48,7 @@ class Container:
     config: Settings
     email_reader: GmailImapReader
     human_review: CLIHumanReviewPort
-    graph: object
+    graph: Any
     agent_runs: PostgresAgentRunRepository
     hitl_actions: PostgresHITLActionRepository
     hitl_state: PostgresHITLStateRepository
@@ -57,7 +57,7 @@ class Container:
     email_repository: PostgresEmailRepository
     cmir_repository: PostgresCMIRRepository
     service_bus_queue: ServiceBusMailQueue
-    po_validation_graph: object
+    po_validation_graph: Any
     po_lines: PostgresPoLineRepository
     material_master: PostgresMaterialMasterRepository
     po_line_errors: PostgresPoLineErrorRepository

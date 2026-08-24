@@ -1,6 +1,6 @@
 """Calculates shortage probability and shortage-related fines."""
 
-from app.services.fine_projection.models import CalcType, FineRule, OrderSnapshot, ProductionStatus
+from app.services.fine_projection.types import CalcType, FineRule, OrderSnapshot, ProductionStatus
 
 # Estimated shortfall used when no confirmed cut exists.
 ANTICIPATED_SHORTFALL_PCT = {
@@ -84,6 +84,8 @@ def shortfall_units_for_pricing(s: OrderSnapshot) -> float:
 
 
 def _price_tiered(rule: FineRule, measure: float, po_value: float) -> float:
+    if not rule.tiers:
+        return 0.0
     for tier in rule.tiers:
         if tier.band_min <= measure < tier.band_max:
             return tier.rate * po_value

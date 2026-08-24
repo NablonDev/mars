@@ -86,6 +86,8 @@ class PoValidationNodes:
     def check_material_master(self, state: POGraphState) -> POGraphState:
         po_line = state["po_line"]
         sap_material_number = state["sap_material_number"]
+        if sap_material_number is None:
+            raise LookupError("check_material_master reached with no sap_material_number recorded")
         material = self._material_master_repository.find(sap_material_number, po_line["plant"])
         if material is None:
             raise LookupError(
@@ -149,9 +151,12 @@ class PoValidationNodes:
     @_capture_errors("SYSTEM_ERROR")
     def create_cmir_record(self, state: POGraphState) -> POGraphState:
         po_line = state["po_line"]
+        sap_material_number = state["sap_material_number"]
+        if sap_material_number is None:
+            raise ValueError("create_cmir_record reached with no sap_material_number recorded")
         self._cmir_repository.create_manual_mapping(
             customer_identity=po_line["customer_id"],
-            material_identity=state["sap_material_number"],
+            material_identity=sap_material_number,
             target_customer_material_ref=po_line["customer_material_code"],
             description=state.get("manual_entry_description", ""),
         )
@@ -208,4 +213,7 @@ class PoValidationNodes:
     def route_after_qty_mismatch(
         self, state: POGraphState
     ) -> Literal["use_substitute", "proceed_anyway", "mark_stale"]:
-        return state["decision"]
+        decision = state["decision"]
+        if decision is None:
+            raise ValueError("route_after_qty_mismatch reached with no decision recorded")
+        return decision

@@ -1,12 +1,28 @@
 # API
 
 All endpoints are mounted under `/api/v1`. Interactive docs (Swagger UI)
-are served at `/docs` when the app is running (`uvicorn app.main:app`).
-Full request/response schemas: `app/schemas/`. Router implementations:
-`app/api/v1/`.
+are served at `/docs` when the app is running (`uvicorn app.main:app`) and
+`DOCS_ENABLED=true` -- closed by default, see `docs/DEPLOYMENT.md`
+"Configuration reference". Full request/response schemas: `app/schemas/`.
+Router implementations: `app/api/v1/`.
 
-No authentication on any endpoint yet -- internal/demo system, see
-`docs/legacy/root-CLAUDE.md` "Do NOT" and `docs/FINE_ENGINE.md` "Open items."
+## Authentication
+
+Every route requires the `X-Internal-Api-Key` header, checked against the
+`INTERNAL_API_KEY` environment variable (`app/api/dependencies.py::require_internal_api_key`,
+wired in globally at the router-aggregation point in `app/api/router.py` --
+new routers are covered automatically, nothing per-route to remember). The
+one exception is `GET /health`, left open for load balancers/uptime
+monitors. Missing or wrong key -> `401` with a generic
+`{"detail": "Not authenticated"}` body; it never echoes what was sent or
+what was expected.
+
+```bash
+curl http://127.0.0.1:8000/api/v1/orders -H "X-Internal-Api-Key: $INTERNAL_API_KEY"
+```
+
+Every curl example below omits this header for brevity -- add it to every
+call except `/health`.
 
 ## Health
 
@@ -53,6 +69,10 @@ but rendered by the same `register_exception_handlers` entry point in
 | `CMIR_VERSION_CONFLICT` | 409 | Another approval superseded the active `cmir_records` row for this customer/material while this thread was waiting for a decision |
 | `MATERIAL_NOT_FOUND` | 422 | PO Validation: a reviewer-submitted/chosen SAP material number has no `material_master` row |
 | `QUEUE_NOT_CONFIGURED` | 500 | Email queue ingestion attempted without an email repository configured |
+
+`details` is only present on a 4xx. On a 5xx it is withheld entirely: those
+call sites carry internal failure text, which belongs in the log stream with
+the request id, not in the response body.
 
 ### CMIR Resolution Agent
 
@@ -104,7 +124,7 @@ An unrecognized `view` returns `422 VALIDATION_ERROR`.
 
 #### `POST /api/v1/internal/process-email`
 
-**Internal only** -- called by `app/workers/service_bus_consumer.py`, not by reviewer
+**Internal only** -- called by `app/workers/cmir_service_bus_consumer.py`, not by reviewer
 UIs. Runs one Service-Bus-delivered email through the LangGraph workflow synchronously.
 Idempotent against `email_events.queue_status`: already-`processed` or in-flight emails
 short-circuit to their current stage instead of re-running the graph.
@@ -219,7 +239,7 @@ quote it when reporting a failure, it's the key into the JSON logs.
 ### Master data
 
 Thin create+list pairs over `MasterDataRepository`, no update/delete
-(dimension data, rarely churns). Router: `app/api/v1/master_data.py`.
+(dimension data, rarely churns). Router: `app/api/v1/fine_master_data.py`.
 
 | Method | Path |
 |---|---|
@@ -232,7 +252,7 @@ Thin create+list pairs over `MasterDataRepository`, no update/delete
 
 Router: `app/api/v1/fine_rules.py`. `POST /fine-rules` accepts an
 optional `tiers` array in the request body for `calc_type: "TIERED"`
-rules (see `docs/FINE_ENGINE.md` "Pricing the fine").
+rules.
 
 | Method | Path |
 |---|---|
@@ -241,7 +261,7 @@ rules (see `docs/FINE_ENGINE.md` "Pricing the fine").
 
 ### Orders and facts
 
-Router: `app/api/v1/orders.py` (order CRUD) and `app/api/v1/facts.py`
+Router: `app/api/v1/orders.py` (order CRUD) and `app/api/v1/fine_projection/facts.py`
 (the daily facts an ETL job/demo script writes). Every write here is
 what `OrderRepository.build_snapshot` reads back for a projection run.
 
@@ -259,7 +279,7 @@ what `OrderRepository.build_snapshot` reads back for a projection run.
 
 ### Projections
 
-Router: `app/api/v1/projections.py`.
+Router: `app/api/v1/fine_projection/projections.py`.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -279,14 +299,14 @@ order (`OrderNotFoundError`), both via the shared handler in
 schema level and only accepts `"SUM"` or `"MAX"` (`422` otherwise). Also
 returns `500` (`INVALID_FINE_RULE_DATA`) if a stored fine rule's
 `calc_type` doesn't match a known value -- a data-integrity failure in
-`dim_fine_rule`, not a client input error.
+`fine_rule`, not a client input error.
 
-### Fine Summaries
+### Fine Projection Summaries
 
-Router: `app/api/v1/fine_summaries.py`. LLM-powered (Azure OpenAI, see
+Router: `app/api/v1/fine_projection/summaries.py`. LLM-powered (Azure OpenAI, see
 `docs/RUNBOOK.md` "Azure OpenAI configuration") natural-language,
 free-text summary of an order's current projected fine -- a plain prose
-paragraph (see `app/agents/fine_summary_schema.py`), not a structured
+paragraph (see `app/agents/fine_projection/schema.py`), not a structured
 multi-field breakdown. Generation is a background job
 (`FastAPI.BackgroundTasks`), not something a client waits on inline -- a
 real Azure OpenAI call for this feature takes ~45-90s+, too long to hold
@@ -294,8 +314,8 @@ an HTTP connection open for.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/orders/{order_id}/summary` | Summarize the current projection for an order; body: optional `as_of_date` (defaults to today, UTC), optional `force_regenerate` (default `false`) |
-| GET | `/orders/{order_id}/summary` | Poll a summary job; query param: optional `as_of_date` (same semantics as the POST) |
+| POST | `/orders/{order_id}/projection-summary` | Summarize the current projection for an order; body: optional `as_of_date` (defaults to today, UTC), optional `force_regenerate` (default `false`) |
+| GET | `/orders/{order_id}/projection-summary` | Poll a summary job; query param: optional `as_of_date` (same semantics as the POST) |
 
 `POST` behavior:
 
@@ -305,8 +325,10 @@ an HTTP connection open for.
 - **Cache hit** (not `force_regenerate`, and a `READY` row already exists
   for `(order_id, as_of_date, prompt_version)`): returns `200` with the
   full summary body immediately -- no job scheduled, nothing to poll.
-  Body: `{order_id, as_of_date, prompt_version, model_name, summary}`,
-  where `summary` is the model's free-text response.
+  Body: `{order_id, as_of_date, prompt_version, model_name, summary,
+  is_reused, generated_for_date, unchanged_since, unchanged_for_days}`,
+  where `summary` is the model's free-text response and the last four
+  fields are the reuse disclosure (see below).
 - **Cache miss, or `force_regenerate: true`**: persists a `PENDING` row
   for that key (overwriting whatever was there before -- a stale `READY`
   summary or a previous `FAILED` attempt), schedules the actual LLM
@@ -319,7 +341,7 @@ an HTTP connection open for.
   generated under an old version is never served in place of one
   generated under the current one.
 - `as_of_date` must fall within the order's real projection history --
-  not before its earliest `fact_projected_fine` row, and not after
+  not before its earliest `projected_fine` row, and not after
   today (UTC). This is enforced server-side (`InvalidAsOfDateError`,
   `422`), independent of `force_regenerate`, to prevent an unbounded
   number of distinct `(order_id, as_of_date)` cache keys -- and
@@ -334,11 +356,34 @@ an HTTP connection open for.
   doesn't match a known value -- same data-integrity failure mode as
   `POST /projections/run`.
 
+**Reuse disclosure**: when `settings.summary_reuse_enabled` is `true`
+(default `false`) and there's no exact-date cache hit, the service will
+look for the nearest earlier `READY` summary for this order (within
+`settings.summary_max_reuse_days`, default 7) whose *content
+fingerprint* -- the violations/probabilities/statuses that actually
+drive the narrative, not `as_of_date` itself or fields like
+`days_to_delivery` -- is byte-for-byte identical to today's. If one is
+found, its narrative text is copied forward under today's `as_of_date`
+instead of making a new LLM call, and the response/job body carries:
+  - `is_reused` (`bool`): `true` if this summary's text was copied
+    forward from an earlier date rather than freshly generated for
+    `as_of_date`; `false` otherwise.
+  - `generated_for_date` (`date | null`): the date the narrative was
+    actually generated for -- equal to `as_of_date` when `is_reused` is
+    `false`, or the earlier source date when `is_reused` is `true`.
+  - `unchanged_since` (`date | null`): `null` when `is_reused` is
+    `false`; otherwise the earlier source date, i.e. the date since
+    which the underlying content has stayed identical.
+  - `unchanged_for_days` (`int | null`): `null` when `is_reused` is
+    `false`; otherwise `(as_of_date - unchanged_since).days`.
+
 `GET` behavior (same `as_of_date` semantics/validation as the `POST`,
 including the `404`/`422` cases above -- plus):
 
 - Always `200` for a key that was validly `POST`ed at least once, body
-  `{order_id, as_of_date, prompt_version, status, summary, error_message}`:
+  `{order_id, as_of_date, prompt_version, status, summary, error_message}`
+  where a non-null `summary` has the same shape as the `POST` cache-hit
+  body above, including the four reuse-disclosure fields:
   - `status: "PENDING"` -- job scheduled, not finished yet;
     `summary`/`error_message` both `null`.
   - `status: "READY"` -- `summary` populated with the full body (same
@@ -348,7 +393,7 @@ including the `404`/`422` cases above -- plus):
     (`ToolLoopExhaustedError`, upstream, not a client input error).
     `error_message` carries a generic client-safe message only; the
     underlying vendor error is logged server-side, never returned.
-- `404` (`NoSummaryJobExistsError`) if no job was ever `POST`ed for
+- `404` (`NoProjectionSummaryJobExistsError`) if no job was ever `POST`ed for
   this exact `(order_id, as_of_date, prompt_version)` key.
 
 Known limitation: this endpoint has no request-level rate limiting --
@@ -357,28 +402,28 @@ limiting".
 
 ### Run projection + summary together
 
-Router: `app/api/v1/projections.py`. Composes the two features above in
+Router: `app/api/v1/fine_projection/projections.py`. Composes the two features above in
 the right order for whoever wants one call instead of two: runs the
 projection synchronously, then -- only once it has succeeded -- schedules
-the fine summary for that same projection date, exactly the sequencing
+the fine projection summary for that same projection date, exactly the sequencing
 `POST /orders/{order_id}/projections` followed by
-`POST /orders/{order_id}/summary` would give if called by hand in order.
+`POST /orders/{order_id}/projection-summary` would give if called by hand in order.
 Both of those endpoints are unaffected and still work standalone; this is
 additive, not a replacement.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/orders/{order_id}/run` | Run one order's projection, then run (or reuse a cached) fine summary for the same day |
+| POST | `/orders/{order_id}/run` | Run one order's projection, then run (or reuse a cached) fine projection summary for the same day |
 
 Body: `{projection_date?, stacking_mode_override?, force_regenerate_summary?}`
 -- same fields as `POST /orders/{order_id}/projections`'s body, plus
 `force_regenerate_summary` (default `false`), forwarded to the summary
-step exactly as `POST /orders/{order_id}/summary`'s `force_regenerate`
+step exactly as `POST /orders/{order_id}/projection-summary`'s `force_regenerate`
 would be.
 
-Response body: `{projection: ProjectionResultResponse, summary: FineSummaryStatusResponse}`
+Response body: `{projection: ProjectionResultResponse, summary: FineProjectionSummaryStatusResponse}`
 (the same shapes `POST /orders/{order_id}/projections` and
-`GET /orders/{order_id}/summary` already return, nested together) --
+`GET /orders/{order_id}/projection-summary` already return, nested together) --
 
 - **`200`**: the summary was already cached (`READY`) for this order/day
   under the current prompt version -- `summary.summary` is populated,
@@ -386,7 +431,7 @@ Response body: `{projection: ProjectionResultResponse, summary: FineSummaryStatu
 - **`202`**: cache miss (or `force_regenerate_summary: true`) -- the
   summary job is scheduled via `BackgroundTasks` just like the standalone
   endpoint; `summary.status` is `"PENDING"`. Poll
-  `GET /orders/{order_id}/summary` to get the result, same as the
+  `GET /orders/{order_id}/projection-summary` to get the result, same as the
   standalone flow.
 
 Failure modes are the projection step's, since it runs first and gates
@@ -397,6 +442,82 @@ poll).
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/run \
+  -H "Content-Type: application/json" -d '{}'
+```
+
+### Mitigation options
+
+Router: `app/api/v1/fine_mitigation/mitigations.py`. Ranks candidate mitigation actions
+(`ACCEPT`, `SPEED_UP_PRODUCTION`, `SPLIT_SHIPMENT`, `FASTER_CARRIER`)
+against an order's already-persisted projection for one day -- see
+`app/services/fine_mitigation/engine.py`. Computation is synchronous, no
+LLM call, no job queue -- the same posture as `POST /orders/{order_id}/projections`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/orders/{order_id}/mitigation-options` | Compute and persist ranked mitigation options for one order; optional `projection_date` (defaults to today, UTC) |
+| GET | `/orders/{order_id}/mitigation-options` | Latest persisted, ranked options for an order |
+
+`POST` returns `404` (`OrderNotFoundError`) for an unknown order, and
+`422` (`NoProjectionExistsError`) if the order has no projection for the
+requested `projection_date` yet -- run `POST /orders/{order_id}/projections`
+for that date first; mitigation evaluates against an already-persisted
+projection, it never recomputes one itself. `GET` returns `404` for an
+unknown order and `422` (`NoMitigationOptionsExistError`) if nothing has
+been computed yet.
+
+### Fine Mitigation Summaries
+
+Router: `app/api/v1/fine_mitigation/summaries.py`. Full mirror of the
+Fine Projection Summaries contract above, for explaining an order's
+ranked mitigation options (cost, saving, risk, confidence) in plain
+language instead of a projection trace.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/orders/{order_id}/mitigation-summary` | Summarize the current ranked mitigation options for an order; body: optional `as_of_date` (defaults to today, UTC), optional `force_regenerate` (default `false`) |
+| GET | `/orders/{order_id}/mitigation-summary` | Poll a mitigation-summary job; query param: optional `as_of_date` (same semantics as the POST) |
+
+Same cache-hit/cache-miss, `202`-then-poll, `force_regenerate`, and
+`as_of_date`-bounds behavior as `POST`/`GET /orders/{order_id}/projection-summary`
+-- substituting `NoMitigationOptionsExistError` (`422`) for
+`NoProjectionExistsError` (run `POST /orders/{order_id}/mitigation-options`
+first) and `NoMitigationSummaryJobExistsError` (`404`) for
+`NoProjectionSummaryJobExistsError`. Keyed on `(order_id, as_of_date,
+prompt_version)`, same reasoning as the projection-summary table.
+Response bodies are the same shape too: `POST` cache-hit `200` and the
+`summary` object inside `GET`'s `200` are both `{order_id, as_of_date,
+prompt_version, model_name, summary, is_reused, generated_for_date,
+unchanged_since, unchanged_for_days}` -- see "Reuse disclosure" under
+Fine Projection Summaries above for what the last four fields mean;
+the semantics (including `settings.summary_reuse_enabled` /
+`summary_max_reuse_days`) are identical here. The only difference is
+*what* the content fingerprint driving reuse-across-days hashes: here
+it's the ranked mitigation options themselves
+(action/cost/saving/risk/confidence), not projection-specific fields --
+see `app/services/fine_mitigation/summary.py::_compute_content_fingerprint`.
+
+### Run mitigation options + mitigation summary together
+
+Router: `app/api/v1/fine_mitigation/mitigations.py`. Sibling of `POST /orders/{order_id}/run`
+for the mitigation side, not a change to that endpoint's contract: that
+response shape (`{projection, summary}`) has no slot for mitigation, so
+this is a separate, explicit endpoint rather than an overload.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/orders/{order_id}/mitigation-run` | Compute mitigation options for one order, then run (or reuse a cached) mitigation summary for the same day |
+
+Body: `{projection_date?, force_regenerate_summary?}`. Response body:
+`{mitigation_options: MitigationOptionsResponse, summary: FineMitigationSummaryStatusResponse}`.
+`200` when the summary was already cached; `202` on a cache miss (or
+`force_regenerate_summary: true`), same polling contract as the standalone
+mitigation-summary endpoint. Failure modes are the mitigation-options
+step's, since it runs first and gates the summary step -- `404`/`422`
+exactly as documented above for `POST /orders/{order_id}/mitigation-options`.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/mitigation-run \
   -H "Content-Type: application/json" -d '{}'
 ```
 

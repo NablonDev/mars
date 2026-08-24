@@ -1,6 +1,6 @@
 # Database
 
-Conceptual/canonical schema (fines domain only): `docs/mars_fines_projection_schema.sql`.
+Canonical schema reference (fines domain only): this document.
 Runnable ORM for both domains: `app/models/`. Migrations: `alembic/` (repo root, run
 with `alembic upgrade head`). Sample data: `data/samples/mars_fines_mock_seed_data.sql`.
 
@@ -16,7 +16,7 @@ database, split across separate **schemas**:
   *and* its per-run observability/HITL tables (`agent_runs`,
   `agent_traces`, `hitl_actions`, `pending_human_actions`) -- see "CMIR /
   PO Validation tables" below for the per-table reference.
-- **`fines`** -- every table the Projected Fines domain owns (all 16, see
+- **`fines`** -- every table the Projected Fines domain owns (all 21, see
   "Tables" below). Declared in `app/db/base.py::FINES_SCHEMA`.
 - **`public`** -- holds no domain tables of either project's yet (a future
   split that moves the genuinely cross-domain agent-observability tables
@@ -31,7 +31,9 @@ database, split across separate **schemas**:
   bookkeeping table, `public.alembic_version` -- one linear migration
   history covers both domain schemas, so that table belongs in the schema
   neither domain owns, not tucked inside `fines` or `cmir` as if it were
-  one domain's private state.
+  one domain's private state -- plus LangGraph's `checkpoint_*` tables,
+  which its saver creates and owns (see "LangGraph checkpoint tables"
+  below).
 
 Every FK string across both domains is schema-qualified
 (`ForeignKey(f"{CMIR_SCHEMA}.agent_runs.id")`, matching the existing
@@ -50,18 +52,34 @@ One linear chain, two migrations:
 
 | Revision | File | What it adds |
 |---|---|---|
-| (see `alembic/versions/`) | `8209afe73fa4_cmir_initial_schema.py`, `down_revision=5589e602eefa` | Every `cmir`-schema table, replacing the CMIR branch's old standalone `0001`-`0005` raw-SQL chain |
-| `5589e602eefa` | `alembic/versions/5589e602eefa_initial_schema.py` | Every `fines`-schema table |
+| `e803d9470f31` | `alembic/versions/e803d9470f31_initial_fines_schema.py`, `down_revision=None` | Every `fines`-schema table, with every `dim_`/`fact_` table already renamed to its final name (see "Why no dim_/fact_ prefix" below) |
+| `43d8ced96170` | `alembic/versions/43d8ced96170_initial_cmir_schema.py`, `down_revision=e803d9470f31` | Every `cmir`-schema table |
 
-Both the old fines `0001`-`0011` chain and the CMIR branch's own `0001`-`0005`
-chain were squashed rather than reconciled migration-by-migration -- neither
-had shipped to an environment carrying real data (demo/seed rows only), so
-there was nothing an incremental history needed to preserve, and every
-residual naming/type issue either chain had accumulated (stale
-`dim_penalty_rule_*` constraint names, `agent_trace` -> `agent_traces`,
-`agent_runs.id` `SERIAL` -> UUIDv7) is gone with it. A database still on
-either old chain has no forward path onto the new one -- see
-`docs/RUNBOOK.md`'s "Database: migrate" section for the drop/recreate steps.
+This is a full re-squash of what was, before it, an 11-revision chain
+spanning both schemas (`5589e602eefa` through `176a1ab0e4f3`) -- itself
+already the result of an earlier squash of the original fines `0001`-`0011`
+chain and the CMIR branch's own `0001`-`0005` chain. Nothing on that
+11-revision chain had shipped to an environment carrying real data
+(demo/seed rows only), so there was nothing an incremental history needed
+to preserve, and every residual naming/type issue it had accumulated
+(the `dim_`/`fact_` prefixes themselves, stale `dim_penalty_rule_*`
+constraint names from an even earlier pass, `agent_trace` ->
+`agent_traces`, `agent_runs.id` `SERIAL` -> UUIDv7) is gone with it.
+
+Column widths and text types were recalibrated as part of the same squash
+and folded into these two migrations rather than added as a third
+revision, so the chain stays two revisions long. The per-column reasoning
+lives in each migration's own docstring and isn't restated here.
+
+Alembic cannot move a database still on the old 11-revision chain -- or on
+the chain before that -- onto this one: `alembic upgrade head` aborts with
+`Can't locate revision identified by 'e4b7c391a052'` before any DDL,
+because that revision file no longer exists. Such a database is repaired
+in place instead, every row preserved, by
+`scripts/ops/repair_pre_squash_db.py` -- see `docs/RUNBOOK.md`'s "A
+database stranded on the pre-squash chain" section. Dropping and
+recreating is now just the fallback for a database whose contents don't
+matter.
 
 ## CMIR / PO Validation tables
 
@@ -164,99 +182,102 @@ primary key. Business identifiers (`order_id`, `retailer_id`, `rule_id`,
 tests, and every worked example already address resources by
 (`/orders/WMT-100234`, not `/orders/<uuid>`), and foreign keys reference
 them directly rather than the surrogate `id` where a business key exists.
-A handful of CMIR/PO-validation tables (`cmir_records`, `email_action_logs`,
-`hitl_actions`, `pending_human_actions`, `agent_traces` themselves) still
-use a plain integer PK -- untouched by this convention, since they have no
-business key and nothing FKs into them from outside their own domain.
+Every CMIR/PO-validation table follows the same rule: `cmir_records`,
+`email_events`, `email_action_logs`, `hitl_actions`,
+`pending_human_actions`, `agent_traces`, `po_lines`, `material_master` and
+`po_line_errors` all have a UUID `id` too. The integer PKs the CMIR branch
+originally used are gone -- converted during the fines/cmir merge, and
+nothing in either schema carries one now.
 
 `app/db/base.py::generate_uuid7()` (a Python-side default on every
-UUID-surrogate `id` column) is the id-generation path the application
-itself uses. The initial fines migration
-(`alembic/versions/5589e602eefa_initial_schema.py`) additionally sets
-`server_default=uuidv7()` (Postgres's own builtin, 18+) directly on every
-`fines`-schema table's `id` column via raw DDL, purely as a migration-level
-safety net for a hypothetical future non-ORM writer that inserts without
-supplying `id`. Version-gated to Postgres 18+, and a no-op on SQLite.
+UUID-surrogate `id` column) is the only id-generation path. Neither
+migration sets a database-side default on an `id` column: the pre-squash
+chain carried a `server_default=uuidv7()` safety net (Postgres 18's own
+builtin) for a hypothetical non-ORM writer, and the squash dropped it, so
+`id` columns come out of `alembic upgrade head` with no `column_default`
+on Postgres or SQLite. Anything inserting outside the ORM has to supply
+its own `id`.
 
-One exception: `fact_projected_fine` has no single natural key -- its
+One exception: `projected_fine` has no single natural key -- its
 business identity is the triple `(order_id, rule_id, projection_date)`,
 enforced as a `UniqueConstraint`, which is what
 `ProjectionRepository.save_result` upserts against.
 
-`fact_fine_summary.prompt_version` is no longer a bare string: alongside
+`projection_summary.prompt_version` is no longer a bare string: alongside
 a new `agent_id` column (no default -- always supplied by
-`FineSummaryService`), it's a composite FK into
-`dim_prompt_version(agent_id, prompt_version)` -- see "Agent/prompt
+`FineProjectionSummaryService`), it's a composite FK into
+`prompt_version(agent_id, prompt_version)` -- see "Agent/prompt
 registry" below.
 
-Similarly, `fact_fine_summary`'s business identity is the
+Similarly, `projection_summary`'s business identity is the
 triple `(order_id, as_of_date, prompt_version)` -- a prompt-version bump
 is a deliberate content change, so a summary generated under an old
 prompt must never be served in place of one generated under a new one.
-Generation is a background job (`FineSummaryService.get_or_schedule`/
-`run_generation`, see app/api/v1/fine_summaries.py): a row moves through
+Generation is a background job (`FineProjectionSummaryService.get_or_schedule`/
+`run_generation`, see app/api/v1/fine_projection/summaries.py): a row moves through
 `status` PENDING -> READY or PENDING -> FAILED, and a fresh request
 against an already-existing key (a cache miss re-request, or
 `force_regenerate`) overwrites that row in place
-(`FineSummaryRepository.create_pending`) rather than inserting a
+(`FineProjectionSummaryRepository.create_pending`) rather than inserting a
 second one -- this table holds the *latest* summary job per key, not a
 full history of every attempt.
 
 ## Historization
 
-`fact_order_confirmation`, `fact_production_schedule`, and
-`fact_shipment` are all append-only: every write is a new row, never an
+`order_confirmation`, `production_schedule`, and
+`shipment` are all append-only: every write is a new row, never an
 update to an existing one. `OrderRepository.build_snapshot` always
 selects the latest row "as of" the requested projection date from each,
 which is what makes `--date` backfills (via `scripts/ops/run_projection_cli.py`
 or `POST /projections/run`) reflect what was actually known on that day,
-not today's current state. See `docs/FINE_ENGINE.md` changelog for
-why `fact_shipment` specifically needed fixing to follow this pattern.
+not today's current state. `shipment` specifically needed fixing to
+follow this pattern.
 
-`fact_production_schedule` is keyed by `(sku_id, location_id)`, not
+`production_schedule` is keyed by `(sku_id, location_id)`, not
 `order_id` -- a production line serves whichever orders draw on it. Two
 orders that share a line will see each other's status updates; see
-`tests/test_known_limitations.py` for the one place in the mock data
-where that's a real, accepted wrinkle rather than a bug.
+`tests/unit/services/test_known_limitations.py` for the one place in the
+mock data where that's a real, accepted wrinkle rather than a bug.
 
 ## Agent/prompt registry
 
-`dim_agent` and `dim_prompt_version` (part of the fines migration) give
-`fact_fine_summary.prompt_version` a real relationship to the agent that
+`agent` and `prompt_version` (part of the fines migration) give
+`projection_summary.prompt_version` a real relationship to the agent that
 generated it and the module the prompt text actually lives in, in place
 of a bare unchecked string. Deliberately generic (agent_name +
-prompt_version, not fine-summary-specific) and deliberately kept in the
+prompt_version, not fine-projection-summary-specific) and deliberately kept in the
 `fines` schema, separate from the CMIR domain's own `agent_runs` (a
 different concept -- one execution, not a named/versioned agent
-definition). `dim_agent.source` (`"fines"` or `"cmir"`) records which
-domain actually owns/runs a given agent, in case these two registries are
-ever unified later.
+definition). `agent.source` (`"fine_projection"`, `"fine_mitigation"`,
+`"cmir"`, or `"po_validation"`, nullable -- no domain default) records
+which domain actually owns/runs a given agent, in case these two
+registries are ever unified later.
 
-`dim_prompt_version.agent_id`/`fact_fine_summary.agent_id` reference
-`dim_agent.id` (the surrogate UUID), not `agent_name` -- unlike most other
+`prompt_version.agent_id`/`projection_summary.agent_id` reference
+`agent.id` (the surrogate UUID), not `agent_name` -- unlike most other
 FKs in this codebase (see "Primary keys" above), a deliberate choice for
 this specific pair: an agent's identity here is structural/never-renamed,
 not a business key callers address resources by the way `order_id`/
 `retailer_id` are.
 
-Rows are registered idempotently by `FineSummaryService` itself
+Rows are registered idempotently by `FineProjectionSummaryService` itself
 (`PromptRegistryRepository.ensure_registered`), called right before the
-service writes a `fact_fine_summary` row under that key -- not at app
+service writes a `projection_summary` row under that key -- not at app
 startup, and not seeded via a migration or a script. This keeps
 registration tied to the operation that actually needs it (no separate
 boot-time side effect unrelated to any specific request) while still
 guaranteeing the FK is always satisfiable before the write that depends
-on it. Bumping the fine-summary prompt to a new version (a new
-`app/agents/prompts/fine_summary/vN.py`) self-registers on the next call;
+on it. Bumping the fine-projection-summary prompt to a new version (a new
+`app/agents/fine_projection/prompts/vN.py`) self-registers on the next call;
 nothing has to be remembered or run by hand.
 
 ## Batch job queue (`job_run` / `job_item`)
 
 Two tables backing the batch dispatch/claim pipeline for fine projections
 and summary regeneration, added alongside two new nullable columns on
-`fact_fine_summary` (`content_fingerprint`, `source_as_of_date` -- see the
-"Client-facing audit trail" note in `docs/mars_fines_projection_schema.sql`
-for what each supports).
+`projection_summary` (`content_fingerprint`, `source_as_of_date` --
+client-facing audit-trail fields supporting idempotent regeneration and
+backfill provenance).
 
 `job_run` is one row per batch trigger (`SCHEDULED_DAILY` / `MANUAL_BATCH`
 / `ON_DEMAND`). It deliberately has **no status column** -- concurrent
@@ -277,6 +298,21 @@ UUIDv7, which doubles as a FIFO tiebreaker when the claim query orders by
 itself (not after dispatch), so a crash mid-attempt still consumes retry
 budget rather than retrying forever.
 
+`task_type` carries three values -- `ORDER_RUN`,
+`PROJECTION_SUMMARY_REGEN`, and `MITIGATION_SUMMARY_REGEN`
+(`app/models/enums.py::JobTaskType`), the last of which arrived with
+`mitigation_summary` (see "Tables (fines schema)" below):
+mitigation-options computation (`mitigation_option`) is always
+synchronous/inline via the API, never a `job_item` -- only its LLM-powered
+summary goes through this queue, the same relationship
+`PROJECTION_SUMMARY_REGEN` has to `projected_fine`. The
+`ck_job_item_task_type` `CHECK` listing all three is created inline with
+the table in `e803d9470f31`, on both dialects -- the squash folded in what
+had been an `ALTER TABLE ... DROP/ADD CONSTRAINT` step that only Postgres
+could run. Note that `tests/unit/db/test_migration_parity.py` diffs
+table/column names only, never constraint bodies, so a wrong value here
+would not fail the build.
+
 ### The partial unique index is migration-only, not on the ORM model
 
 `job_item` needs `UNIQUE (order_id, projection_date, task_type) WHERE
@@ -284,7 +320,7 @@ status IN ('PENDING', 'RUNNING')` (named `uq_job_item_inflight`) to stop
 duplicate in-flight work for the same order/date/task while still
 allowing many terminal rows across days and retries. This is declared
 **only** as raw DDL in the migration
-(`alembic/versions/ff84c023d5e9_job_queue_and_fine_summary_fingerprint_.py`),
+(`alembic/versions/e803d9470f31_initial_fines_schema.py`),
 never as an `Index(..., postgresql_where=...)` on `JobItem` itself:
 SQLAlchemy silently drops `postgresql_where=` on SQLite (the dialect the
 whole test suite runs against, see `tests/conftest.py`), which would leave
@@ -294,8 +330,8 @@ the same key.
 
 Two direct consequences worth knowing about if you touch this table:
 
-- **`tests/test_migration_parity.py` cannot catch a divergence here
-  either way** -- it only diffs table/column names between the migration
+- **`tests/unit/db/test_migration_parity.py` cannot catch a divergence
+  here either way** -- it only diffs table/column names between the migration
   and `Base.metadata.create_all()`, never indexes. This index's actual
   correctness (does it exist, does it reject/permit the right rows) is
   verified only against a real Postgres, in
@@ -316,45 +352,67 @@ statement is dialect-branched inside the migration: schema-qualified
 `apply_sqlite_schema_translation`'s `schema_translate_map` only rewrites
 schema-qualified names inside SQLAlchemy-compiled DDL (`op.create_table`,
 `op.create_index`, ...), never inside a raw SQL string passed to
-`op.execute`. The same asymmetry, for the same reason, is why the
-migration's `op.add_column`/`op.drop_column` calls for the two new
-`fact_fine_summary` columns also branch on dialect instead of always
-passing `schema='fines'` -- unlike `create_table`/`create_index`, Alembic's
-ADD/DROP COLUMN DDL renders the schema-qualified table name directly
-rather than through the connection's translate map, so the same
-literal-schema-prefix problem shows up there too on SQLite.
+`op.execute`. The same branch appears in `downgrade()`, around the
+matching `DROP INDEX`. Those four `op.execute` calls are the only raw SQL
+in either migration -- everything else, `projection_summary`'s
+`content_fingerprint`/`source_as_of_date` columns included, is now created
+inline by `op.create_table` and needs no dialect handling at all.
 
 ## Schema-change checklist
 
-Per `docs/legacy/root-CLAUDE.md`/`./CLAUDE.local.md`: a **fines**-schema
+Per `./CLAUDE.local.md` "Engineering Rules": a **fines**-schema
 change touches, together, in one commit -- the relevant `app/models/*.py`
-file, a new Alembic migration (`alembic/versions/`),
-`docs/mars_fines_projection_schema.sql`, and `tests/test_migration_parity.py`
-should still pass (it builds one SQLite DB via the migration and another via
-`Base.metadata.create_all()`, then diffs them -- a real check that the two
-never drift apart). A **cmir**-schema change touches the model file and a
-new migration; `docs/mars_fines_projection_schema.sql` is fines-only and
-doesn't need updating for cmir tables.
+file, a new Alembic migration (`alembic/versions/`), this document, and
+`tests/unit/db/test_migration_parity.py` should still pass (it builds one
+SQLite DB via the migration and another via `Base.metadata.create_all()`, then
+diffs them -- a real check that the two never drift apart). A **cmir**-schema
+change touches the model file and a new migration; this document is
+fines-only and doesn't need updating for cmir tables.
 
 ## Tables (fines schema)
 
 | Table | Business key | Notes |
 |---|---|---|
-| `dim_agent` | `agent_name` | See "Agent/prompt registry" above |
-| `dim_prompt_version` | `(agent_id, prompt_version)` | See "Agent/prompt registry" above |
-| `dim_retailer` | `retailer_id` | `stacking_mode` (SUM/MAX) is per-retailer, unconfirmed with either mock retailer |
-| `dim_sku` | `sku_id` | |
-| `dim_location` | `location_id` | |
-| `dim_carrier` | `carrier_id` | `historical_reliability_score` drives the delay-model multiplier |
-| `dim_fine_rule` | `rule_id` | `threshold_pct` is a fraction (0.02 = 2%), enforced by `FineRule.__post_init__` |
-| `dim_fine_rule_tier` | `tier_id` | Only populated for `calc_type = TIERED` rules |
-| `fact_order` | `order_id` | |
-| `fact_order_confirmation` | `confirmation_id` | Historized |
-| `fact_production_schedule` | `production_id` | Historized, keyed by (sku_id, location_id) |
-| `fact_shipment` | `shipment_id` | Historized |
-| `fact_demand_exception` | `exception_id` | |
-| `fact_projected_fine` | -- (see above) | One row per order/rule/day |
-| `fact_actual_fine` | `actual_fine_id` | Populated post-delivery, for calibration (Phase 2) |
-| `fact_fine_summary` | -- (see below) | LLM-generated fine-summary audit trail, one row per order/day/prompt-version |
+| `agent` | `agent_name` | See "Agent/prompt registry" above |
+| `prompt_version` | `(agent_id, prompt_version)` | See "Agent/prompt registry" above |
+| `retailer` | `retailer_id` | `stacking_mode` (SUM/MAX) is per-retailer, unconfirmed with either mock retailer |
+| `sku` | `sku_id` | |
+| `location` | `location_id` | |
+| `carrier` | `carrier_id` | `historical_reliability_score` drives the delay-model multiplier |
+| `fine_rule` | `rule_id` | `threshold_pct` is a fraction (0.02 = 2%), enforced by `FineRule.__post_init__` |
+| `fine_rule_tier` | `tier_id` | Only populated for `calc_type = TIERED` rules |
+| `sales_order` | `order_id` | |
+| `order_confirmation` | `confirmation_id` | Historized |
+| `production_schedule` | `production_id` | Historized, keyed by (sku_id, location_id) |
+| `shipment` | `shipment_id` | Historized |
+| `demand_exception` | `exception_id` | |
+| `projected_fine` | -- (see above) | One row per order/rule/day |
+| `actual_fine` | `actual_fine_id` | Populated post-delivery, for calibration (Phase 2) |
+| `projection_summary` | -- (see below) | LLM-generated fine-projection-summary audit trail, one row per order/day/prompt-version |
 | `job_run` | -- (no status column, see above) | One row per batch trigger |
 | `job_item` | -- (see "Batch job queue" above) | Work ledger; in-flight uniqueness enforced by a migration-only partial index |
+| `mitigation_input` | `order_id` (unique) | Mutable current-best-guess cause/cost assumptions feeding mitigation ranking; no soft delete/history, deliberately unlike every other append-only table in this schema |
+| `mitigation_option` | `(order_id, projection_date, action)` | ORM class is `MitigationResult`, not `MitigationOption` -- deliberately kept apart from the pure-engine `MitigationOption` dataclass in `app/services/fine_mitigation/types.py`. Persisted, ranked output of `MitigationEngine.evaluate`; computed synchronously, never via the job queue |
+| `mitigation_summary` | -- (see above) | LLM-generated fine-mitigation-summary audit trail; structural mirror of `projection_summary` |
+
+## Why no `dim_`/`fact_` prefix
+
+Every `fines`-schema table was originally built with a Kimball-style
+`dim_`/`fact_` prefix (`dim_retailer`, `fact_order`, ...), carried over
+from data-warehouse modeling habits without checking whether it actually
+fit this system. It didn't: this is an operational REST backend serving
+live reads and writes behind a FastAPI app, not a data warehouse queried
+by a BI tool -- there's no star schema, no slowly-changing dimension
+tooling, no separate ETL layer that benefits from a table name
+advertising its role in a load pipeline. Every table name in this schema
+is singular, `snake_case`, with no `dim_`/`fact_` prefix (`retailer`,
+`sales_order`, `projected_fine`, ...) -- see the `postgres-conventions`
+skill for the naming rule this codifies. `fact_order` became
+`sales_order` rather than plain `order` specifically to avoid colliding
+with the SQL reserved word `ORDER`; every other rename is a straight
+prefix drop.
+
+No rationale for the `dim_`/`fact_` convention was ever written down
+anywhere in this repo before this squash -- this section exists so the
+next person asking "why did we have these prefixes, and why did we drop
+them" doesn't have to reconstruct the answer from git history.

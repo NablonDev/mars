@@ -2,7 +2,7 @@
 
 This module was extracted from `app.workers.loop` (which previously held
 its own private `_RateLimitGate`/`_looks_like_rate_limit`) so the
-on-demand API path (`app.api.dependencies.get_fine_summary_job_runner`)
+on-demand API path (`app.api.dependencies.get_fine_projection_summary_job_runner`)
 could share the exact same mechanism. Both call sites now import
 `RateLimitGate`/`looks_like_rate_limit` directly from here -- no
 underscore-prefixed aliases remain anywhere (see
@@ -31,7 +31,7 @@ def test_looks_like_rate_limit_walks_the_cause_chain():
         try:
             raise RuntimeError("429 Too Many Requests")
         except RuntimeError as inner:
-            raise ToolLoopExhaustedError("upstream failed") from inner
+            raise ToolLoopExhaustedError("upstream failed", domain="projection") from inner
     except ToolLoopExhaustedError as outer:
         assert looks_like_rate_limit(outer) is True
 

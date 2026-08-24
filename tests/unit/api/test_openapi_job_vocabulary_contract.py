@@ -1,6 +1,6 @@
 """Public-API-contract guard for the job-vocabulary centralization.
 
-`app/schemas/batches.py` and `app/schemas/fine_summaries.py` moved their
+`app/schemas/batches.py` and `app/schemas/fine_projection/summaries.py` moved their
 `task_type`/`status` fields from `Literal["A", "B", ...]` annotations to
 the shared `StrEnum` types in `app/models/enums.py`. That change is
 implementation-internal, but the actual public contract two things
@@ -30,7 +30,7 @@ from fastapi import FastAPI
 
 from app.models.enums import JobItemStatus, JobRunType, JobTaskType, SummaryStatus
 from app.schemas.batches import BatchItemResponse, BatchStatusCounts
-from app.schemas.fine_summaries import FineSummaryStatusResponse
+from app.schemas.fine_projection.summaries import ProjectionSummaryStatusResponse
 
 
 def _resolve_enum_values(openapi: dict, field_schema: dict) -> set[str]:
@@ -54,7 +54,11 @@ def test_batch_item_response_openapi_enum_values_unchanged(app: FastAPI) -> None
     schema = app.openapi()
     properties = schema["components"]["schemas"]["BatchItemResponse"]["properties"]
 
-    assert _resolve_enum_values(schema, properties["task_type"]) == {"ORDER_RUN", "SUMMARY_REGEN"}
+    assert _resolve_enum_values(schema, properties["task_type"]) == {
+        "ORDER_RUN",
+        "PROJECTION_SUMMARY_REGEN",
+        "MITIGATION_SUMMARY_REGEN",
+    }
     assert _resolve_enum_values(schema, properties["status"]) == {
         "PENDING",
         "RUNNING",
@@ -73,9 +77,9 @@ def test_batch_run_request_status_query_param_openapi_enum_values_unchanged(app:
     assert _resolve_enum_values(schema, ref_schema) == {"PENDING", "RUNNING", "SUCCEEDED", "DEAD"}
 
 
-def test_fine_summary_status_response_openapi_enum_values_unchanged(app: FastAPI) -> None:
+def test_fine_projection_summary_status_response_openapi_enum_values_unchanged(app: FastAPI) -> None:
     schema = app.openapi()
-    properties = schema["components"]["schemas"]["FineSummaryStatusResponse"]["properties"]
+    properties = schema["components"]["schemas"]["ProjectionSummaryStatusResponse"]["properties"]
 
     assert _resolve_enum_values(schema, properties["status"]) == {"PENDING", "READY", "FAILED"}
 
@@ -104,8 +108,8 @@ def test_batch_item_response_serializes_task_type_and_status_as_plain_strings() 
     assert '"status":"PENDING"' in resp.model_dump_json().replace(" ", "")
 
 
-def test_fine_summary_status_response_serializes_status_as_plain_string() -> None:
-    resp = FineSummaryStatusResponse(
+def test_fine_projection_summary_status_response_serializes_status_as_plain_string() -> None:
+    resp = ProjectionSummaryStatusResponse(
         order_id="ORD-1",
         as_of_date="2026-08-15",
         prompt_version="v1",

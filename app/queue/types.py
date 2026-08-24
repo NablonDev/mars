@@ -32,6 +32,18 @@ class ClaimedJob:
     receipt: object | None = None
 
 
+@dataclass
+class SweepResult:
+    """Result of one domain's stranded-PENDING-summary recovery sweep.
+
+    Shared by domain workers to provide a consistent, domain-neutral result.
+    Used to report recovered jobs and the associated job run, when available.
+    """
+
+    recovered_count: int
+    job_run_id: UUID | None = None
+
+
 def claimed_job_from_row(
     row: dict[str, Any],
     *,

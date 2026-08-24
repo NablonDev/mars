@@ -47,5 +47,5 @@ def merge_with_active(
         if merged_value != existing_value:
             diff[field_name] = {"from": existing_value, "to": merged_value}
 
-    merged = CMIR(**merged_values)
+    merged = CMIR.model_validate(merged_values)
     return merged, diff

@@ -24,10 +24,7 @@ class PromptRegistryRepository:
         description: str | None = None,
     ) -> UUID:
         """Idempotently register an agent and one of its prompt versions"""
-        agent = self._session.scalars(
-            select(Agent)
-            .where(Agent.agent_name == agent_name)
-        ).first()
+        agent = self._session.scalars(select(Agent).where(Agent.agent_name == agent_name)).first()
 
         if agent is None:
             agent = Agent(

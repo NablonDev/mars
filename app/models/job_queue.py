@@ -17,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import FINES_SCHEMA, UUID_PK, Base, generate_uuid7
+from app.db.base import FINES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 from app.models.enums import JobItemStatus, JobRunType, JobTaskType
 
 
@@ -31,7 +31,7 @@ def _check_in_sql(
     return f"{column} IN ({values})"
 
 
-class JobRun(Base):
+class JobRun(Base, TimestampMixin):
     """A single scheduled, manual, or on-demand batch run.
 
     Run status is derived from its job items rather than stored separately
@@ -48,17 +48,14 @@ class JobRun(Base):
     )
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    run_type: Mapped[str] = mapped_column(String(20))
+    run_type: Mapped[str] = mapped_column(String(30))
     projection_date: Mapped[date] = mapped_column(Date)
-    stacking_mode_override: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    stacking_mode_override: Mapped[str | None] = mapped_column(String(30), nullable=True)
     triggered_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     requested_item_count: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class JobItem(Base):
+class JobItem(Base, TimestampMixin):
     """A unit of work for one order, projection date, and task type.
 
     Retryable failures return to PENDING with a future available_at;
@@ -82,12 +79,12 @@ class JobItem(Base):
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     job_run_id: Mapped[UUID] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.job_run.id"))
-    order_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.fact_order.order_id"))
+    order_id: Mapped[str] = mapped_column(ForeignKey(f"{FINES_SCHEMA}.sales_order.order_id"))
     projection_date: Mapped[date] = mapped_column(Date)
-    task_type: Mapped[str] = mapped_column(String(20))
-    stacking_mode_override: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    task_type: Mapped[str] = mapped_column(String(64))
+    stacking_mode_override: Mapped[str | None] = mapped_column(String(30), nullable=True)
     force_regenerate_summary: Mapped[bool] = mapped_column(Boolean, default=False)
-    status: Mapped[str] = mapped_column(String(20), default=JobItemStatus.PENDING)
+    status: Mapped[str] = mapped_column(String(30), default=JobItemStatus.PENDING)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=5)
     available_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -96,8 +93,5 @@ class JobItem(Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    last_error_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

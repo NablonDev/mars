@@ -1,7 +1,7 @@
-"""Regression test for scripts/ops/run_projection_cli.py's fine-summary guard.
+"""Regression test for scripts/ops/run_projection_cli.py's fine-projection-summary guard.
 
-FineSummaryService.run_generation now re-raises after persisting a FAILED
-ledger row (see tests/services/test_fine_summary.py for the service-level
+FineProjectionSummaryService.run_generation now re-raises after persisting a FAILED
+ledger row (see tests/services/test_fine_projection_summary.py for the service-level
 coverage). This CLI has always printed the resulting `summary [STATUS]`
 line regardless of success or failure, reading it back via get_status --
 that must still be true, and a run_generation failure must NOT be
@@ -15,8 +15,8 @@ from sqlalchemy.pool import StaticPool
 
 import scripts.ops.run_projection_cli as cli
 from app.db.session import Database
+from app.repositories.fine_master_data import MasterDataRepository
 from app.repositories.fine_rule import FineRuleRepository
-from app.repositories.master_data import MasterDataRepository
 from app.repositories.order import OrderRepository
 
 

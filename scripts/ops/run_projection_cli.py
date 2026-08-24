@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 No-server CLI: runs the projection service directly against the
 configured database (DATABASE_URL / .env), without needing `uvicorn`
@@ -14,12 +13,11 @@ Examples:
     python scripts/ops/run_projection_cli.py --all-open --date 2026-08-05 --stacking-mode MAX
     python scripts/ops/run_projection_cli.py --all-open --with-summary
 
---with-summary additionally runs the fine-summary generation for each
-order right after its projection succeeds -- the same sequential
-guarantee as `POST /orders/{order_id}/run`, for this no-HTTP-server path.
-Runs inline (no BackgroundTasks needed in a one-shot CLI process) and
-needs AZURE_OPENAI_* configured; see docs/scheduling-options.md for how
-this script is meant to be invoked on a schedule.
+--with-summary additionally runs the fine-projection-summary generation
+for each order right after its projection succeeds -- the same
+sequential guarantee as `POST /orders/{order_id}/run`, for this
+no-HTTP-server path. Runs inline (no BackgroundTasks needed in a
+one-shot CLI process) and needs AZURE_OPENAI_* configured.
 """
 
 import argparse
@@ -31,18 +29,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.agents.providers.azure_openai import AzureOpenAIChatClient
-from app.core.config import get_settings
+from app.core.config import LLMConfig, get_settings
 from app.core.exceptions import AppError
 from app.db.session import Database
 from app.models.enums import SummaryStatus
 from app.repositories.agent_registry import PromptRegistryRepository
+from app.repositories.fine_master_data import MasterDataRepository
+from app.repositories.fine_projection.projection import ProjectionRepository
+from app.repositories.fine_projection.summary import FineProjectionSummaryRepository
 from app.repositories.fine_rule import FineRuleRepository
-from app.repositories.fine_summary import FineSummaryRepository
-from app.repositories.master_data import MasterDataRepository
 from app.repositories.order import OrderRepository
-from app.repositories.projection import ProjectionRepository
-from app.services.fine_summary import FineSummaryService
-from app.services.projection import ProjectionService
+from app.services.fine_projection.service import FineProjectionService
+from app.services.fine_projection.summary import FineProjectionSummaryService
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +58,7 @@ def main() -> None:
     parser.add_argument(
         "--with-summary",
         action="store_true",
-        help="Also generate the fine summary for each order after a successful projection",
+        help="Also generate the fine projection summary for each order after a successful projection",
     )
     args = parser.parse_args()
 
@@ -76,23 +74,23 @@ def main() -> None:
         rules = FineRuleRepository(session)
         master_data = MasterDataRepository(session)
         projections = ProjectionRepository(session)
-        projection_service = ProjectionService(
+        projection_service = FineProjectionService(
             orders=orders,
             rules=rules,
             master_data=master_data,
             projections=projections,
         )
-        fine_summary_service = None
+        fine_projection_summary_service = None
         if args.with_summary:
-            fine_summary_service = FineSummaryService(
+            fine_projection_summary_service = FineProjectionSummaryService(
                 orders=orders,
                 rules=rules,
                 master_data=master_data,
                 projections=projections,
-                summaries=FineSummaryRepository(session),
+                summaries=FineProjectionSummaryRepository(session),
                 prompt_registry=PromptRegistryRepository(session),
                 llm=AzureOpenAIChatClient(
-                    settings=settings,
+                    LLMConfig.from_settings(settings),
                     max_retries=settings.azure_openai_max_attempts,
                     timeout_seconds=settings.azure_openai_timeout_seconds,
                 ),
@@ -124,19 +122,23 @@ def main() -> None:
                 f"stacking={result.stacking_mode:<3} total=${result.total_expected_fine:,.2f}   {parts}"
             )
 
-            if fine_summary_service is None:
+            if fine_projection_summary_service is None:
                 continue
 
             try:
-                job = fine_summary_service.get_or_schedule(order_id, as_of_date=result.projection_date)
+                job = fine_projection_summary_service.get_or_schedule(
+                    order_id, as_of_date=result.projection_date
+                )
                 if job.status == SummaryStatus.PENDING:
                     try:
-                        fine_summary_service.run_generation(job.order_id, job.as_of_date, job.prompt_version)
+                        fine_projection_summary_service.run_generation(
+                            job.order_id, job.as_of_date, job.prompt_version
+                        )
                     except Exception:
                         # run_generation re-raises after persisting a
                         # FAILED ledger row (see
-                        # FineSummaryService.run_generation) so a queue
-                        # worker can classify retry-vs-dead. This
+                        # FineProjectionSummaryService.run_generation) so a
+                        # queue worker can classify retry-vs-dead. This
                         # one-shot CLI has always printed the resulting
                         # status line below regardless of success or
                         # failure -- get_status reads that same ledger
@@ -145,11 +147,13 @@ def main() -> None:
                         # different "[summary skipped]" message reserved
                         # for get_or_schedule failing outright.
                         logger.exception(
-                            "Fine summary generation failed: order_id=%s as_of_date=%s",
+                            "Fine projection summary generation failed: order_id=%s as_of_date=%s",
                             job.order_id,
                             job.as_of_date,
                         )
-                    job = fine_summary_service.get_status(order_id, as_of_date=result.projection_date)
+                    job = fine_projection_summary_service.get_status(
+                        order_id, as_of_date=result.projection_date
+                    )
             except AppError as exc:
                 print(f"    [summary skipped] {order_id}: {exc}")
                 continue

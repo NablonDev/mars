@@ -11,13 +11,15 @@ already ran. Everything in sections 1–4 (local, Docker, config) **has** been
 run and verified.
 
 Related reading:
-- `docs/ASYNC-EXECUTION.md` — *why* the design is what it is (ledger vs.
-  dispatch, sizing arithmetic, backend trade-offs).
 - `docs/JOB-QUEUE-WALKTHROUGH.md` — a code tour of the queue for someone
   seeing it for the first time.
 - `docs/RUNBOOK.md` — the pre-queue API workflows (seeding, projections,
   facts), still current.
 - `docs/DOCKER.md` — image internals and build verification.
+
+**Every curl example below needs `-H "X-Internal-Api-Key: $INTERNAL_API_KEY"`
+except `/health`** — omitted from most commands here for readability, see
+`docs/API.md` "Authentication" for the full contract.
 
 ---
 
@@ -119,7 +121,7 @@ alembic upgrade head
 
 This creates the `fines` schema including the two new tables. If you are
 upgrading an existing database rather than starting fresh, this is the step
-that adds `job_run`, `job_item`, and the fine-summary fingerprint column —
+that adds `job_run`, `job_item`, and the fine-projection-summary fingerprint column —
 **there is no code path that creates them lazily.** An API container started
 against an un-migrated database will start fine and then fail on the first
 `/batches` call.
@@ -215,15 +217,15 @@ On-demand deliberately does **not** wait for a batch. The API enqueues the
 ledger row and then runs it immediately in a `BackgroundTasks` slot, bounded
 by `ON_DEMAND_MAX_CONCURRENT_SUMMARIES`:
 
-The path is `/summary`, not `/fine-summary`, and **the body is required** —
+The path is `/projection-summary` (no domain prefix -- not `/fine-projection-summary` or the old `/summary`), and **the body is required** —
 omit `-d '{}'` and you get a `422`, not a default:
 
 ```bash
-curl -X POST localhost:8000/api/v1/orders/WMT-100234/summary \
+curl -X POST localhost:8000/api/v1/orders/WMT-100234/projection-summary \
   -H 'content-type: application/json' -d '{}'
 # → 200 with a cached summary, or 202 with status PENDING
 
-curl localhost:8000/api/v1/orders/WMT-100234/summary   # poll until READY
+curl localhost:8000/api/v1/orders/WMT-100234/projection-summary   # poll until READY
 ```
 
 Optional body fields: `as_of_date` (defaults to today) and
@@ -284,7 +286,8 @@ database, and disagreeing about `JOB_QUEUE_BACKEND` or
 |---|---|---|---|
 | `DATABASE_URL` | localhost | both | Must use the `postgresql+psycopg://` prefix |
 | `ENVIRONMENT` | `development` | both | Set `production` on Azure |
-| `DOCS_ENABLED` | `true` | api | Set `false` in production — it gates `/docs`, `/redoc`, `/openapi.json` |
+| `DOCS_ENABLED` | `false` | api | Closed by default — it gates `/docs`, `/redoc`, `/openapi.json`. Set `true` explicitly for local dev |
+| `INTERNAL_API_KEY` | — (required, no default) | both | Shared-secret gate on every route except `/api/v1/health` (`X-Internal-Api-Key` header). App startup fails if unset, blank, the `.env.example` placeholder, or under 64 characters — generate with `python -c "import secrets; print(secrets.token_hex(32))"`, see `app/core/config.py` |
 | `LOG_LEVEL` | `INFO` | both | |
 
 ### Azure OpenAI
@@ -649,7 +652,7 @@ response reports.
 Do this when there is a reason — a real inbound connector pushing work, or a
 second service that needs to enqueue without database access. Under today's
 volume (5,000 items/day ≈ 0.06 jobs/sec) the postgres backend is not the
-constraint; Azure OpenAI throughput is. See `docs/ASYNC-EXECUTION.md` §5.
+constraint; Azure OpenAI throughput is.
 
 ### 7.1 Provision
 
@@ -788,16 +791,21 @@ Rules that hold regardless:
 Run these in order the first time. Each one fails distinctly.
 
 ```bash
-# 1. API is up
+# 0. Every call below except /health needs this -- a 401 here means the key
+#    is wrong/missing, not that the thing being tested actually failed:
+AUTH_HEADER="X-Internal-Api-Key: $INTERNAL_API_KEY"
+
+# 1. API is up (no key needed)
 curl -f https://<app-fqdn>/api/v1/health
 
 # 2. Migrations actually ran — this 404s cleanly on a migrated DB and
 #    500s on an un-migrated one
-curl -i https://<app-fqdn>/api/v1/batches/00000000-0000-0000-0000-000000000000
+curl -i https://<app-fqdn>/api/v1/batches/00000000-0000-0000-0000-000000000000 \
+     -H "$AUTH_HEADER"
 
 # 3. Enqueue works
 curl -X POST https://<app-fqdn>/api/v1/batches/run \
-     -H 'content-type: application/json' -d '{}'
+     -H "$AUTH_HEADER" -H 'content-type: application/json' -d '{}'
 
 # 4. The batch job runs
 az containerapp job start -g $RG -n mars-fines-nightly-batch
@@ -808,7 +816,7 @@ az containerapp job logs show -g $RG -n mars-fines-nightly-batch \
    --container mars-fines-nightly-batch --follow
 
 # 6. The run reconciles
-curl https://<app-fqdn>/api/v1/batches/<job_run_id>   # is_complete: true
+curl https://<app-fqdn>/api/v1/batches/<job_run_id> -H "$AUTH_HEADER"   # is_complete: true
 ```
 
 ### Symptom → cause

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Seeds master/reference data and the four worked-example orders via the
 running API -- not by writing to the database directly. This is the
@@ -11,26 +10,41 @@ Usage:
     python scripts/demo/seed_master_data.py       # in another
 
     python scripts/demo/seed_master_data.py --base-url http://localhost:8000
+    python scripts/demo/seed_master_data.py --force   # truncate + reseed from scratch
 """
 
 import argparse
 import sys
 
 import httpx
+from _helpers import _auth_headers
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000/api/v1")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Truncate the seeded tables, then reseed from scratch (default: idempotent skip-if-present).",
+    )
     args = parser.parse_args()
 
-    resp = httpx.post(f"{args.base_url}/admin/seed-master-data", timeout=30)
+    resp = httpx.post(
+        f"{args.base_url}/admin/seed-master-data",
+        params={"force": args.force},
+        headers=_auth_headers(),
+        timeout=30,
+    )
     if resp.status_code != 200:
         print(f"Seeding failed: {resp.status_code} {resp.text}", file=sys.stderr)
         sys.exit(1)
 
     counts = resp.json()
-    print("Master data seeded (idempotent -- 0s mean it was already there):")
+    if args.force:
+        print("Master data truncated and reseeded from scratch:")
+    else:
+        print("Master data seeded (idempotent -- 0s mean it was already there):")
     for key, value in counts.items():
         print(f"  {key:10s}: {value}")
 

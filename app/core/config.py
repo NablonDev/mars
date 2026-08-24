@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,12 +23,20 @@ class JobQueueBackend(StrEnum):
     SERVICE_BUS = "service_bus"
 
 
+_INTERNAL_API_KEY_MIN_LENGTH = 64
+
+
 class Settings(BaseSettings):
     # Application
     project_name: str = "Mars Petcare -- CMIR Resolution System & Projected Fines"
     version: str = "0.1.0"
     environment: str = "development"  # "production" | "staging" | "development"
     docs_enabled: bool = True
+
+    # Security: shared-secret gate on every route except /health. No default --
+    # a missing INTERNAL_API_KEY must fail app startup, never silently accept
+    # unauthenticated requests.
+    internal_api_key: str
 
     # Logging
     log_level: str = "INFO"
@@ -58,10 +67,9 @@ class Settings(BaseSettings):
     cmir_agent_api_base_url: str = "http://127.0.0.1:8000"
     cmir_agent_api_timeout_seconds: int = 30
 
-    # Azure OpenAI -- used by both CMIR extraction and the fines fine-summary feature
+    # Azure OpenAI -- used by both CMIR extraction and the fines fine-projection and mitigation summary
     azure_openai_api_key: str = ""
     azure_openai_endpoint: str = ""
-    azure_openai_api_version: str = "2024-08-01-preview"
     azure_openai_deployment_name: str = ""
     azure_openai_timeout_seconds: float = 90.0
     azure_openai_max_attempts: int = 3
@@ -119,10 +127,27 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @field_validator("internal_api_key")
+    @classmethod
+    def _internal_api_key_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("INTERNAL_API_KEY must not be blank")
+
+        if len(value) < _INTERNAL_API_KEY_MIN_LENGTH:
+            # Length, not entropy: 64 is the width of secrets.token_hex(32), the
+            # generator .env.example documents. A token_urlsafe(32) key carries the
+            # same 256 bits in 43 characters and is rejected here, so say what to
+            # generate rather than leaving the reader to guess at the number.
+            raise ValueError(
+                f"INTERNAL_API_KEY must be at least {_INTERNAL_API_KEY_MIN_LENGTH} characters "
+                '(generate with: python -c "import secrets; print(secrets.token_hex(32))")'
+            )
+        return value
+
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings()  # type: ignore[call-arg]
 
 
 @dataclass(frozen=True)
@@ -152,7 +177,6 @@ class EmailConfig:
 class LLMConfig:
     api_key: str
     endpoint: str
-    api_version: str
     deployment: str
     temperature: float = 0.0
     timeout_seconds: float = 90.0
@@ -163,7 +187,6 @@ class LLMConfig:
         return cls(
             api_key=settings.azure_openai_api_key,
             endpoint=settings.azure_openai_endpoint,
-            api_version=settings.azure_openai_api_version,
             deployment=settings.azure_openai_deployment_name,
             temperature=settings.llm_temperature,
             timeout_seconds=settings.azure_openai_timeout_seconds,

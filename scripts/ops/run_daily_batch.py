@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Nightly batch runner: the concurrent, queue-backed replacement for
 `scripts/ops/run_projection_cli.py --all-open --with-summary` on the
@@ -7,14 +6,14 @@ batch path without modifying or removing it -- `run_projection_cli.py
 --order-id ...` remains the ad-hoc/single-order tool.
 
 Sequence: acquire a Postgres advisory lock -> reclaim stale job_item rows
--> sweep and recover any stranded PENDING fine-summary ledger rows (see
-app.workers.sweep) -> enqueue today's ORDER_RUN items -> drain the queue
+-> sweep and recover any stranded PENDING fine-projection-summary ledger rows (see
+app.workers.fine_projection) -> enqueue today's ORDER_RUN items -> drain the queue
 -> release the lock -> print a summary.
 
-Exit-code semantics: see docs/ASYNC-EXECUTION.md §7 and
-docs/JOB-QUEUE-WALKTHROUGH.md §4.1 -- in short, exit 0 whenever the run
-completed (even with DEAD items, or because a previous run's lock was
-still held), non-zero only on genuine infrastructure failure.
+Exit-code semantics: see docs/JOB-QUEUE-WALKTHROUGH.md §4.1 -- in short,
+exit 0 whenever the run completed (even with DEAD items, or because a
+previous run's lock was still held), non-zero only on genuine
+infrastructure failure.
 `--fail-on-dead` restores the old "exit non-zero if anything died"
 behavior for CI/ad-hoc use.
 
@@ -37,14 +36,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.agents.providers.azure_openai import AzureOpenAIChatClient
-from app.core.config import get_settings
+from app.core.config import LLMConfig, get_settings
 from app.core.logging import configure_logging
 from app.db.session import Database
 from app.queue.factory import build_job_queue
 from app.repositories.job_queue import JobQueueRepository
 from app.repositories.order import OrderRepository
-from app.workers.loop import enqueue_daily_run, process_jobs
-from app.workers.sweep import sweep_stranded_pending_summaries
+from app.workers.fine_mitigation import sweep_stranded_pending_mitigation_summaries
+from app.workers.fine_projection import enqueue_daily_run, sweep_stranded_pending_projection_summaries
+from app.workers.loop import process_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +95,8 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Exit non-zero if any item ended DEAD this run (old default behavior). "
-            "Off by default -- see docs/ASYNC-EXECUTION.md §7 for why a DEAD item "
-            "should not fail/retry the whole Container Apps Job."
+            "Off by default -- a DEAD item should not fail/retry the whole "
+            "Container Apps Job."
         ),
     )
     return parser.parse_args()
@@ -155,15 +155,34 @@ def main() -> int:
 
         # Runs regardless of --enqueue-only/--drain-only: a recovered row
         # becomes an ordinary PENDING job_item, picked up by whichever
-        # phase actually drains (see app.workers.sweep).
-        sweep_result = sweep_stranded_pending_summaries(job_dispatcher, database, settings)
+        # phase actually drains (see app.workers.fine_projection).
+        sweep_result = sweep_stranded_pending_projection_summaries(job_dispatcher, database, settings)
         if sweep_result.recovered_count:
             logger.info(
-                "Recovered %s stranded PENDING fine-summary ledger row(s) (job_run_id=%s).",
+                "Recovered %s stranded PENDING fine-projection-summary ledger row(s) (job_run_id=%s).",
                 sweep_result.recovered_count,
                 sweep_result.job_run_id,
             )
         print(f"Recovery sweep: recovered {sweep_result.recovered_count} stranded PENDING summary row(s).")
+
+        # Same durability gap, mitigation-summary side (see
+        # app.workers.fine_mitigation) -- mitigation itself is on-demand only (no
+        # nightly ORDER_RUN-equivalent for it), so this only ever finds
+        # something if a mitigation-summary request crashed between its
+        # ledger write and its job_item write.
+        mitigation_sweep_result = sweep_stranded_pending_mitigation_summaries(
+            job_dispatcher, database, settings
+        )
+        if mitigation_sweep_result.recovered_count:
+            logger.info(
+                "Recovered %s stranded PENDING fine-mitigation-summary ledger row(s) (job_run_id=%s).",
+                mitigation_sweep_result.recovered_count,
+                mitigation_sweep_result.job_run_id,
+            )
+        print(
+            f"Recovery sweep: recovered {mitigation_sweep_result.recovered_count} stranded "
+            "PENDING mitigation-summary row(s)."
+        )
 
         if not args.drain_only:
             result = enqueue_daily_run(
@@ -183,10 +202,11 @@ def main() -> int:
         if args.enqueue_only:
             return 0
 
+        llm_config = LLMConfig.from_settings(settings)
         llm = AzureOpenAIChatClient(
-            settings=settings,
-            max_retries=settings.azure_openai_max_attempts,
-            timeout_seconds=settings.azure_openai_timeout_seconds,
+            llm_config,
+            max_retries=llm_config.max_retries,
+            timeout_seconds=llm_config.timeout_seconds,
         )
         summary = process_jobs(
             job_source,
@@ -206,7 +226,7 @@ def main() -> int:
         )
 
         if summary.dead_total > 0:
-            # DEAD is terminal (see docs/ASYNC-EXECUTION.md §7) -- a
+            # DEAD is terminal -- a
             # successful run with failures, not a failed run: exit 0
             # unless the caller opted into --fail-on-dead.
             print(
