@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -250,15 +250,19 @@ def register_exception_handlers(app: FastAPI) -> None:
             },
         )
 
+        # `details` may contain client-facing validation information for 4xx errors.
+        # Do not expose it for 5xx errors because call sites may put internal failure
+        # information there.
+        body: dict[str, Any] = {
+            "code": exc.code,
+            "message": exc.message,
+        }
+        if not is_server_error:
+            body["details"] = exc.details
+
         return JSONResponse(
             status_code=exc.status_code,
-            content={
-                "error": {
-                    "code": exc.code,
-                    "message": exc.message,
-                    "details": exc.details,
-                }
-            },
+            content={"error": body},
             headers={REQUEST_ID_HEADER: request_id},
         )
 
