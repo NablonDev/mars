@@ -23,6 +23,9 @@ class Order(Base, TimestampMixin):
     order_date: Mapped[date] = mapped_column(Date)
     requested_delivery_date: Mapped[date] = mapped_column(Date)
     required_ship_date: Mapped[date] = mapped_column(Date)
+    current_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    current_required_ship_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    negotiation_status: Mapped[str] = mapped_column(String(30), default="NONE", index=True)  # NONE / PENDING / ACCEPTED / COUNTERED / REJECTED / EXPIRED
     order_status: Mapped[str] = mapped_column(String(30), default="OPEN")  # OPEN / DELIVERED / CANCELLED
     carrier_id: Mapped[str | None] = mapped_column(
         ForeignKey(f"{FINES_SCHEMA}.carrier.carrier_id"), nullable=True
