@@ -8,17 +8,43 @@ from typing import TypedDict
 
 from app.repositories.fine_master_data import MasterDataRepository
 
-_RETAILERS = [
-    {"retailer_id": "RET-WMT", "retailer_name": "Walmart", "priority_tier": "TIER_1", "stacking_mode": "SUM"},
-    {"retailer_id": "RET-AMZ", "retailer_name": "Amazon", "priority_tier": "TIER_1", "stacking_mode": "SUM"},
+
+class _RetailerSeed(TypedDict):
+    retailer_id: str
+    retailer_name: str
+    priority_tier: str
+    stacking_mode: str
+    extension_min_lead_days: int
+    extension_response_sla_hours: int
+    extension_fine_threshold: float
+
+
+_RETAILERS: list[_RetailerSeed] = [
+    {
+        "retailer_id": "RET-WMT",
+        "retailer_name": "Walmart",
+        "priority_tier": "TIER_1",
+        "stacking_mode": "SUM",
+        "extension_min_lead_days": 2,
+        "extension_response_sla_hours": 48,
+        "extension_fine_threshold": 200.0,
+    },
+    {
+        "retailer_id": "RET-AMZ",
+        "retailer_name": "Amazon",
+        "priority_tier": "TIER_1",
+        "stacking_mode": "SUM",
+        # Amazon's shorter SLA is deliberate -- it's what makes the
+        # AMZ-780112 timeout scenario in the seeding day-loop actually
+        # expire within that order's own scenario window.
+        "extension_min_lead_days": 2,
+        "extension_response_sla_hours": 24,
+        "extension_fine_threshold": 100.0,
+    },
 ]
 _SKUS = [
     {"sku_id": "SKU-PED30", "sku_code": "MAT-100234", "description": "Pedigree Adult Dry Dog Food 30lb"},
-    {
-        "sku_id": "SKU-CES12",
-        "sku_code": "MAT-100511",
-        "description": "Cesar Adult Wet Dog Food Variety Pack 12ct",
-    },
+    {"sku_id": "SKU-CES12", "sku_code": "MAT-100511", "description": "Cesar Adult Wet Dog Food Variety Pack 12ct"},
     {"sku_id": "SKU-WHI20", "sku_code": "MAT-100587", "description": "Whiskas Adult Dry Cat Food 20lb"},
 ]
 _LOCATIONS = [
@@ -48,7 +74,13 @@ def seed(master_data: MasterDataRepository) -> dict[str, int]:
     for r in _RETAILERS:
         if r["retailer_id"] not in existing_retailers:
             master_data.add_retailer(
-                r["retailer_id"], r["retailer_name"], r["priority_tier"], r["stacking_mode"]
+                r["retailer_id"],
+                r["retailer_name"],
+                r["priority_tier"],
+                r["stacking_mode"],
+                r["extension_min_lead_days"],
+                r["extension_response_sla_hours"],
+                r["extension_fine_threshold"],
             )
             counts["retailers"] += 1
 
