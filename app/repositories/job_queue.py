@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, insert, select, text, update
+from sqlalchemy import delete, func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
@@ -510,3 +510,17 @@ class JobQueueRepository:
     def release_advisory_lock(self, key: int) -> None:
         if self._is_postgres():
             self._session.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+
+    # ------------------------------------------------------------------
+    # Seeding
+    # ------------------------------------------------------------------
+
+    def truncate_all(self) -> None:
+        """Deletes every job_item row, then every job_run row (child before
+        parent -- job_item.job_run_id FKs to job_run.id). job_item also FKs
+        to sales_order, so both must be cleared before
+        OrderRepository.truncate_all() clears sales_order itself. See
+        FineSeedingService._truncate_seeded_tables for the full order."""
+        self._session.execute(delete(JobItem))
+        self._session.execute(delete(JobRun))
+        self._session.flush()

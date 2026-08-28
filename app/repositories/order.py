@@ -55,6 +55,14 @@ def _order_to_dict(order: Order) -> dict:
         "order_date": order.order_date,
         "requested_delivery_date": order.requested_delivery_date,
         "required_ship_date": order.required_ship_date,
+        # Raw column values, possibly None -- callers that need the
+        # *effective* date (falling back to requested_delivery_date/
+        # required_ship_date) should COALESCE explicitly, e.g.
+        # PoDeliveryChangeRequestService. build_snapshot below does this for the
+        # projection engine.
+        "current_delivery_date": order.current_delivery_date,
+        "current_required_ship_date": order.current_required_ship_date,
+        "negotiation_status": order.negotiation_status,
         "order_status": order.order_status,
         "carrier_id": order.carrier_id,
     }
@@ -179,6 +187,35 @@ class OrderRepository:
             raise OrderNotFoundError(order_id)
 
         order.order_status = order_status
+        self._session.flush()
+
+    def update_current_dates(
+        self,
+        order_id: str,
+        current_delivery_date: date,
+        current_required_ship_date: date,
+    ) -> None:
+        """Apply an accepted/countered delivery-date change to the order's
+        effective dates. See PoDeliveryChangeRequestService.record_response -- the
+        only caller of this method, since these two columns are otherwise
+        immutable after order creation."""
+        order = self._get_order_row(order_id)
+        if order is None:
+            raise OrderNotFoundError(order_id)
+
+        order.current_delivery_date = current_delivery_date
+        order.current_required_ship_date = current_required_ship_date
+        self._session.flush()
+
+    def update_negotiation_status(self, order_id: str, negotiation_status: str) -> None:
+        """Set `Order.negotiation_status`. SINGLE WRITER: only
+        `PoDeliveryChangeRequestService` may call this -- see the column
+        comment on `Order.negotiation_status` for the full rule."""
+        order = self._get_order_row(order_id)
+        if order is None:
+            raise OrderNotFoundError(order_id)
+
+        order.negotiation_status = negotiation_status
         self._session.flush()
 
     def add_confirmation(
@@ -333,8 +370,8 @@ class OrderRepository:
             projection_date=projection_date,
             order_qty=order.order_qty,
             unit_price=float(order.unit_price),
-            requested_delivery_date=order.requested_delivery_date,
-            required_ship_date=order.required_ship_date,
+            requested_delivery_date=order.current_delivery_date or order.requested_delivery_date,
+            required_ship_date=order.current_required_ship_date or order.required_ship_date,
             confirmed_qty=confirmed_qty,
             production_status=production_status,
             demand_exception_flagged=exception is not None,

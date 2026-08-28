@@ -25,11 +25,13 @@ from app.queue.interfaces import JobDispatcher
 from app.queue.types import ClaimedJob, SweepResult
 from app.repositories.agent_registry import PromptRegistryRepository
 from app.repositories.fine_master_data import MasterDataRepository
+from app.repositories.fine_projection.po_delivery_change_request import PoDeliveryChangeRequestRepository
 from app.repositories.fine_projection.projection import ProjectionRepository
 from app.repositories.fine_projection.summary import FineProjectionSummaryRepository
 from app.repositories.fine_rule import FineRuleRepository
 from app.repositories.job_queue import JobQueueRepository
 from app.repositories.order import OrderRepository, describe_no_open_orders
+from app.services.fine_projection.po_delivery_change import PoDeliveryChangeRequestService
 from app.services.fine_projection.service import FineProjectionService
 from app.services.fine_projection.summary import FineProjectionSummaryService
 
@@ -242,3 +244,39 @@ def sweep_stranded_pending_projection_summaries(
         recovered_count=enqueued_count,
         job_run_id=job_run_id,
     )
+
+
+def sweep_expired_po_delivery_change_requests(
+    database: Database,
+    *,
+    as_of: datetime | None = None,
+) -> SweepResult:
+    """Recover PENDING PO delivery-change requests whose `expires_at` has
+    passed -- transitions each to EXPIRED and re-triggers projection for its
+    order (see PoDeliveryChangeRequestService.expire_stale). Unlike
+    sweep_stranded_pending_projection_summaries, no JobDispatcher is involved:
+    the status flip and the run_for_order re-trigger both happen inline, before
+    commit, since no LLM call is needed for either.
+    """
+    with database.session() as session:
+        master_data = MasterDataRepository(session)
+        service = PoDeliveryChangeRequestService(
+            orders=OrderRepository(session),
+            po_delivery_change_requests=PoDeliveryChangeRequestRepository(session),
+            projection_service=FineProjectionService(
+                orders=OrderRepository(session),
+                rules=FineRuleRepository(session),
+                master_data=master_data,
+                projections=ProjectionRepository(session),
+            ),
+            master_data=master_data,
+        )
+        expired = service.expire_stale(as_of)
+
+    if expired:
+        logger.info(
+            "Recovery sweep: expired %d stale PO delivery-change request(s).",
+            len(expired),
+        )
+
+    return SweepResult(recovered_count=len(expired))
