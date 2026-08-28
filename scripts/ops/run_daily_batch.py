@@ -43,7 +43,11 @@ from app.queue.factory import build_job_queue
 from app.repositories.job_queue import JobQueueRepository
 from app.repositories.order import OrderRepository
 from app.workers.fine_mitigation import sweep_stranded_pending_mitigation_summaries
-from app.workers.fine_projection import enqueue_daily_run, sweep_stranded_pending_projection_summaries
+from app.workers.fine_projection import (
+    enqueue_daily_run,
+    sweep_expired_po_delivery_change_requests,
+    sweep_stranded_pending_projection_summaries,
+)
 from app.workers.loop import process_jobs
 
 logger = logging.getLogger(__name__)
@@ -182,6 +186,22 @@ def main() -> int:
         print(
             f"Recovery sweep: recovered {mitigation_sweep_result.recovered_count} stranded "
             "PENDING mitigation-summary row(s)."
+        )
+
+        # Expire PENDING PO delivery-change requests past their SLA and
+        # re-trigger projection for each affected order (see
+        # app.workers.fine_projection.sweep_expired_po_delivery_change_requests).
+        # No job_dispatcher involved -- the status flip and re-trigger happen
+        # inline, no LLM call needed.
+        po_delivery_change_sweep_result = sweep_expired_po_delivery_change_requests(database)
+        if po_delivery_change_sweep_result.recovered_count:
+            logger.info(
+                "Expired %s stale PO delivery-change request(s).",
+                po_delivery_change_sweep_result.recovered_count,
+            )
+        print(
+            f"Recovery sweep: expired {po_delivery_change_sweep_result.recovered_count} stale "
+            "PO delivery-change request(s)."
         )
 
         if not args.drain_only:
