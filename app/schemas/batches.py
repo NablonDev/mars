@@ -10,7 +10,7 @@ from app.models.enums import JobItemStatus, JobTaskType
 
 
 class BatchRunRequest(BaseModel):
-    """Body for POST /batches/run."""
+    """Body for POST /batches/runs."""
 
     projection_date: date | None = None
     stacking_mode_override: Literal["SUM", "MAX"] | None = None

@@ -23,6 +23,7 @@ from app.repositories.agent_registry import PromptRegistryRepository
 from app.repositories.fine_master_data import MasterDataRepository
 from app.repositories.fine_mitigation.mitigation import MitigationRepository, MitigationResultRepository
 from app.repositories.fine_mitigation.summary import FineMitigationSummaryRepository
+from app.repositories.fine_projection.po_delivery_change_request import PoDeliveryChangeRequestRepository
 from app.repositories.fine_projection.projection import ProjectionRepository
 from app.repositories.fine_projection.summary import FineProjectionSummaryRepository
 from app.repositories.fine_rule import FineRuleRepository
@@ -31,6 +32,7 @@ from app.repositories.order import OrderRepository
 from app.services.cmir_run_service import CMIRRunService
 from app.services.fine_mitigation.service import FineMitigationService
 from app.services.fine_mitigation.summary import FineMitigationSummaryService
+from app.services.fine_projection.po_delivery_change import PoDeliveryChangeRequestService
 from app.services.fine_projection.service import FineProjectionService
 from app.services.fine_projection.summary import FineProjectionSummaryService
 from app.services.po_validation_service import PoValidationService
@@ -111,6 +113,12 @@ def get_projection_repository(
     session: Session = Depends(get_session),
 ) -> ProjectionRepository:
     return ProjectionRepository(session)
+
+
+def get_po_delivery_change_request_repository(
+    session: Session = Depends(get_session),
+) -> PoDeliveryChangeRequestRepository:
+    return PoDeliveryChangeRequestRepository(session)
 
 
 def get_fine_projection_summary_repository(
@@ -263,6 +271,22 @@ def get_fine_projection_service(
     )
 
 
+def get_po_delivery_change_request_service(
+    orders: OrderRepository = Depends(get_order_repository),
+    po_delivery_change_requests: PoDeliveryChangeRequestRepository = Depends(
+        get_po_delivery_change_request_repository
+    ),
+    projection_service: FineProjectionService = Depends(get_fine_projection_service),
+    master_data: MasterDataRepository = Depends(get_master_data_repository),
+) -> PoDeliveryChangeRequestService:
+    return PoDeliveryChangeRequestService(
+        orders=orders,
+        po_delivery_change_requests=po_delivery_change_requests,
+        projection_service=projection_service,
+        master_data=master_data,
+    )
+
+
 def get_fine_mitigation_service(
     orders: OrderRepository = Depends(get_order_repository),
     rules: FineRuleRepository = Depends(get_fine_rule_repository),
@@ -287,6 +311,13 @@ def get_fine_seeding_service(
     orders: OrderRepository = Depends(get_order_repository),
     projection_service: FineProjectionService = Depends(get_fine_projection_service),
     mitigation: MitigationRepository = Depends(get_mitigation_repository),
+    po_delivery_change_service: PoDeliveryChangeRequestService = Depends(
+        get_po_delivery_change_request_service
+    ),
+    po_delivery_change_requests: PoDeliveryChangeRequestRepository = Depends(
+        get_po_delivery_change_request_repository
+    ),
+    job_queue_repository: JobQueueRepository = Depends(get_job_queue_repository),
 ) -> FineSeedingService:
     return FineSeedingService(
         master_data=master_data,
@@ -294,6 +325,9 @@ def get_fine_seeding_service(
         orders=orders,
         projection_service=projection_service,
         mitigation=mitigation,
+        po_delivery_change_service=po_delivery_change_service,
+        po_delivery_change_requests=po_delivery_change_requests,
+        job_queue=job_queue_repository,
     )
 
 
