@@ -62,7 +62,7 @@ server.
 
 ### What did NOT change
 
-- Every pre-existing endpoint behaves the same. `POST /api/v1/projections/run`
+- Every pre-existing endpoint behaves the same. `POST /api/v1/projections/runs`
   is still synchronous and inline.
 - `scripts/ops/run_projection_cli.py` still works for single orders and ad-hoc
   runs. It was not modified.
@@ -181,7 +181,7 @@ that will run in production, with the enqueue coming from a user action rather
 than the schedule:
 
 ```bash
-curl -X POST localhost:8000/api/v1/batches/run \
+curl -X POST localhost:8000/api/v1/batches/runs \
   -H 'content-type: application/json' -d '{}'
 # → 202 { "job_run_id": "...", "requested_item_count": 4,
 #         "dispatch_mode": "postgres",
@@ -640,7 +640,7 @@ az containerapp job start -g $RG -n mars-fines-nightly-batch
 That is safe at any time — the advisory lock makes a concurrent invocation
 exit 0 immediately rather than double-processing.
 
-The API's `POST /api/v1/batches/run` is *not* a substitute under the postgres
+The API's `POST /api/v1/batches/runs` is *not* a substitute under the postgres
 backend: it enqueues but does not drain. Under `service_bus` it does wake a
 consumer. This asymmetry is exactly what the `execution_note` field in the
 response reports.
@@ -804,7 +804,7 @@ curl -i https://<app-fqdn>/api/v1/batches/00000000-0000-0000-0000-000000000000 \
      -H "$AUTH_HEADER"
 
 # 3. Enqueue works
-curl -X POST https://<app-fqdn>/api/v1/batches/run \
+curl -X POST https://<app-fqdn>/api/v1/batches/runs \
      -H "$AUTH_HEADER" -H 'content-type: application/json' -d '{}'
 
 # 4. The batch job runs

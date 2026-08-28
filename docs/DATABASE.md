@@ -229,7 +229,7 @@ full history of every attempt.
 update to an existing one. `OrderRepository.build_snapshot` always
 selects the latest row "as of" the requested projection date from each,
 which is what makes `--date` backfills (via `scripts/ops/run_projection_cli.py`
-or `POST /projections/run`) reflect what was actually known on that day,
+or `POST /projections/runs`) reflect what was actually known on that day,
 not today's current state. `shipment` specifically needed fixing to
 follow this pattern.
 
@@ -367,7 +367,10 @@ file, a new Alembic migration (`alembic/versions/`), this document, and
 SQLite DB via the migration and another via `Base.metadata.create_all()`, then
 diffs them -- a real check that the two never drift apart). A **cmir**-schema
 change touches the model file and a new migration; this document is
-fines-only and doesn't need updating for cmir tables.
+fines-only and doesn't need updating for cmir tables. `po_delivery_change_request`
+(added alongside `sales_order.current_delivery_date`/`current_required_ship_date`/
+`negotiation_status` and `retailer.extension_*`) is a recent worked example of
+all four landing together.
 
 ## Tables (fines schema)
 
@@ -375,13 +378,14 @@ fines-only and doesn't need updating for cmir tables.
 |---|---|---|
 | `agent` | `agent_name` | See "Agent/prompt registry" above |
 | `prompt_version` | `(agent_id, prompt_version)` | See "Agent/prompt registry" above |
-| `retailer` | `retailer_id` | `stacking_mode` (SUM/MAX) is per-retailer, unconfirmed with either mock retailer |
+| `retailer` | `retailer_id` | `stacking_mode` (SUM/MAX) is per-retailer, unconfirmed with either mock retailer; `extension_min_lead_days`/`extension_response_sla_hours`/`extension_fine_threshold` are the per-retailer PO delivery-change-request policy read by `MasterDataRepository.get_extension_policy` -- business data, not `Settings` |
 | `sku` | `sku_id` | |
 | `location` | `location_id` | |
 | `carrier` | `carrier_id` | `historical_reliability_score` drives the delay-model multiplier |
 | `fine_rule` | `rule_id` | `threshold_pct` is a fraction (0.02 = 2%), enforced by `FineRule.__post_init__` |
 | `fine_rule_tier` | `tier_id` | Only populated for `calc_type = TIERED` rules |
-| `sales_order` | `order_id` | |
+| `sales_order` | `order_id` | `current_delivery_date`/`current_required_ship_date` are nullable overrides set only on an `ACCEPTED`/`COUNTERED` PO delivery-change response (fall back to `requested_delivery_date`/`required_ship_date` while null); `negotiation_status` (`NONE`/`PENDING`/`ACCEPTED`/`COUNTERED`/`REJECTED`/`EXPIRED`) is a denormalized mirror of the order's latest `po_delivery_change_request` row, with `PoDeliveryChangeRequestService` as its single writer |
+| `po_delivery_change_request` | `request_id` | Historized/append-only, like `order_confirmation`/`shipment` -- one row per request, never updated in place after resolution; `sales_order.negotiation_status` is a denormalized mirror, not the source of truth, which stays the latest row per `order_id` (`PoDeliveryChangeRequestRepository.find_active_for_order`). `CHECK`s enforce `status IN (PENDING, ACCEPTED, COUNTERED, REJECTED, EXPIRED)` and `reason_code IN (SHORTAGE, DELAY, OTHER)`. Composite index `(order_id, status)` serves `find_active_for_order`'s "is there a PENDING request" lookup (and `list_history`'s `WHERE order_id=?`); composite index `(status, expires_at)` serves `find_expired`'s nightly-sweep query (`sweep_expired_po_delivery_change_requests`) -- same shape as `ix_job_item_claimable` |
 | `order_confirmation` | `confirmation_id` | Historized |
 | `production_schedule` | `production_id` | Historized, keyed by (sku_id, location_id) |
 | `shipment` | `shipment_id` | Historized |
