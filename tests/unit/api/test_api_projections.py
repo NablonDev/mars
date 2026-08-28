@@ -87,16 +87,16 @@ def test_run_projection_for_unknown_order_is_404(seeded_client):
 
 
 def test_run_projection_without_all_open_is_422(seeded_client):
-    resp = seeded_client.post("/api/v1/projections/run", json={})
+    resp = seeded_client.post("/api/v1/projections/runs", json={})
     assert resp.status_code == 422
 
 
 def test_run_projection_with_lone_order_id_is_422_and_points_at_new_route(seeded_client):
-    """The narrowed /projections/run contract: a lone order_id (no
+    """The narrowed /projections/runs contract: a lone order_id (no
     all_open=true) is rejected, pointing the caller at
     POST /orders/{order_id}/projections instead -- no backward-compat
     window, this is a deliberate split."""
-    resp = seeded_client.post("/api/v1/projections/run", json={"order_id": "WMT-100234"})
+    resp = seeded_client.post("/api/v1/projections/runs", json={"order_id": "WMT-100234"})
     assert resp.status_code == 422
     assert "orders/{order_id}/projections" in resp.json()["error"]["message"]
 
@@ -172,7 +172,7 @@ def test_run_projection_with_corrupt_calc_type_is_500(client, db_session):
 
 def test_run_all_open_projects_every_open_order(seeded_client):
     resp = seeded_client.post(
-        "/api/v1/projections/run",
+        "/api/v1/projections/runs",
         json={
             "all_open": True,
             "projection_date": "2026-08-02",
@@ -184,13 +184,13 @@ def test_run_all_open_projects_every_open_order(seeded_client):
 
 
 def test_run_endpoint_runs_projection_then_schedules_summary(seeded_client):
-    """POST /orders/{order_id}/run composes FineProjectionService and
+    """POST /orders/{order_id}/projections/runs composes FineProjectionService and
     FineProjectionSummaryService in the right order -- a summary is never scheduled
     for a day that wasn't actually just projected."""
     seeded_client.app.dependency_overrides[get_llm_client] = lambda: _FakeChatClient()
 
     resp = seeded_client.post(
-        "/api/v1/orders/WMT-100234/run",
+        "/api/v1/orders/WMT-100234/projections/runs",
         json={"projection_date": "2026-08-02"},
     )
 
@@ -212,5 +212,5 @@ def test_run_endpoint_runs_projection_then_schedules_summary(seeded_client):
 
 
 def test_run_endpoint_for_unknown_order_is_404(seeded_client):
-    resp = seeded_client.post("/api/v1/orders/NOPE-999/run", json={})
+    resp = seeded_client.post("/api/v1/orders/NOPE-999/projections/runs", json={})
     assert resp.status_code == 404

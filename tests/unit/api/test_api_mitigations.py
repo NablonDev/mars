@@ -1,5 +1,5 @@
 """Integration tests for the mitigation-options endpoints and the
-mitigation-run combined endpoint (app/api/v1/fine_mitigation/mitigations.py)."""
+"orders/{order_id}/mitigation-options/runs" combined endpoint (app/api/v1/fine_mitigation/mitigations.py)."""
 
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ def test_mitigation_run_computes_options_and_schedules_summary(seeded_client):
     _override_llm_client(seeded_client)
 
     resp = seeded_client.post(
-        "/api/v1/orders/WMT-100234/mitigation-run",
+        "/api/v1/orders/WMT-100234/mitigation-options/runs",
         json={"projection_date": "2026-08-09"},
     )
     assert resp.status_code == 202, resp.text
@@ -107,13 +107,13 @@ def test_mitigation_run_cache_hit_returns_200(seeded_client):
     _override_llm_client(seeded_client)
 
     first = seeded_client.post(
-        "/api/v1/orders/WMT-100234/mitigation-run",
+        "/api/v1/orders/WMT-100234/mitigation-options/runs",
         json={"projection_date": "2026-08-09"},
     )
     assert first.status_code == 202, first.text
 
     second = seeded_client.post(
-        "/api/v1/orders/WMT-100234/mitigation-run",
+        "/api/v1/orders/WMT-100234/mitigation-options/runs",
         json={"projection_date": "2026-08-09"},
     )
     assert second.status_code == 200, second.text

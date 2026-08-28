@@ -155,14 +155,14 @@ def test_background_job_marks_job_item_dead_on_failure(seeded_client, db_session
 
 
 def test_mitigation_run_endpoint_cache_miss_also_creates_a_job_item(seeded_client, db_session):
-    """POST /orders/{order_id}/mitigation-run: mitigation-options stays
+    """POST /orders/{order_id}/mitigation-options/runs: mitigation-options stays
     inline/sync, but the summary half follows the same durable-queue path
     as POST /orders/{order_id}/mitigation-summary."""
     _run_projection(seeded_client)
     _override_llm_client(seeded_client)
 
     resp = seeded_client.post(
-        "/api/v1/orders/WMT-100234/mitigation-run",
+        "/api/v1/orders/WMT-100234/mitigation-options/runs",
         json={"projection_date": "2026-08-09"},
     )
     assert resp.status_code == 202, resp.text
