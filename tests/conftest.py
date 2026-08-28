@@ -44,9 +44,12 @@ from app.queue.factory import build_job_queue
 from app.repositories.agent_registry import PromptRegistryRepository
 from app.repositories.fine_master_data import MasterDataRepository
 from app.repositories.fine_mitigation.mitigation import MitigationRepository
+from app.repositories.fine_projection.po_delivery_change_request import PoDeliveryChangeRequestRepository
 from app.repositories.fine_projection.projection import ProjectionRepository
 from app.repositories.fine_rule import FineRuleRepository
+from app.repositories.job_queue import JobQueueRepository
 from app.repositories.order import OrderRepository
+from app.services.fine_projection.po_delivery_change import PoDeliveryChangeRequestService
 from app.services.fine_projection.service import FineProjectionService
 from app.services.seeding.service import FineSeedingService
 
@@ -151,12 +154,23 @@ def services(db_session):
         master_data=master_data,
         projections=projections,
     )
+    po_delivery_change_requests = PoDeliveryChangeRequestRepository(db_session)
+    po_delivery_change_service = PoDeliveryChangeRequestService(
+        orders=orders,
+        po_delivery_change_requests=po_delivery_change_requests,
+        projection_service=projection_service,
+        master_data=master_data,
+    )
+    job_queue = JobQueueRepository(db_session)
     seeding_service = FineSeedingService(
         master_data=master_data,
         rules=rules,
         orders=orders,
         projection_service=projection_service,
         mitigation=mitigation,
+        po_delivery_change_service=po_delivery_change_service,
+        po_delivery_change_requests=po_delivery_change_requests,
+        job_queue=job_queue,
     )
     return SimpleNamespace(
         master_data=master_data,
@@ -166,6 +180,9 @@ def services(db_session):
         prompt_registry=prompt_registry,
         mitigation=mitigation,
         projection_service=projection_service,
+        po_delivery_change_requests=po_delivery_change_requests,
+        po_delivery_change_service=po_delivery_change_service,
+        job_queue=job_queue,
         seeding_service=seeding_service,
     )
 

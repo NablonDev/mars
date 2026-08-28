@@ -35,7 +35,7 @@ class MitigationOptionsResponse(BaseModel):
 
 
 class MitigationRunRequest(BaseModel):
-    """Body for POST /orders/{order_id}/mitigation-run -- mitigation
+    """Body for POST /orders/{order_id}/mitigation-options/runs -- mitigation
     options, then mitigation summary, for the same projection_date."""
 
     projection_date: date | None = None
@@ -43,7 +43,7 @@ class MitigationRunRequest(BaseModel):
 
 
 class MitigationRunResponse(BaseModel):
-    """Response for POST /orders/{order_id}/mitigation-run."""
+    """Response for POST /orders/{order_id}/mitigation-options/runs."""
 
     mitigation_options: MitigationOptionsResponse
     summary: MitigationSummaryStatusResponse

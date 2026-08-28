@@ -72,7 +72,7 @@ work, drains the queue, and picks its own exit code deliberately (§4.1 and
 
 ### `app/api/v1/batches.py`
 
-Read-only(-ish) observability: `POST /batches/run` (manual full-batch
+Read-only(-ish) observability: `POST /batches/runs` (manual full-batch
 trigger), `GET /batches/{job_run_id}` (status/counts), `GET
 /batches/{job_run_id}/items` (per-item detail, with `last_error` never
 returned raw — only a fixed message built from `last_error_code`).
@@ -197,7 +197,7 @@ sweep will pick it up. The dispatcher is never given the row for Service
 Bus consumption on this path — on-demand deliberately doesn't dispatch
 to a second consumer.
 
-`POST /orders/{order_id}/run` (`app/api/v1/fine_projection/projections.py`) does the same
+`POST /orders/{order_id}/projections/runs` (`app/api/v1/fine_projection/projections.py`) does the same
 thing for its summary half, after running the projection synchronously
 inline first.
 

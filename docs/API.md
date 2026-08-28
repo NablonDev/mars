@@ -277,6 +277,35 @@ what `OrderRepository.build_snapshot` reads back for a projection run.
 | POST | `/orders/{order_id}/actual-fines` | Record a post-delivery actual fine (for calibration) |
 | GET | `/orders/{order_id}/actual-fines` | List actual fines for an order |
 
+### PO delivery-change requests
+
+Router: `app/api/v1/fine_projection/po_delivery_change_requests.py`. Vendor-initiated
+requests asking a retailer for a later delivery date, and the retailer's
+response to each -- the negotiation step ops takes before falling back to
+fine mitigation.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/orders/{order_id}/po-delivery-change-requests` | Create a request (`reason_code`: `SHORTAGE`/`DELAY`/`OTHER`, `proposed_delivery_date`, optional `notes`); `201` |
+| POST | `/po-delivery-change-requests/{request_id}/response` | Record the retailer's decision (`decision`: `ACCEPTED`/`COUNTERED`/`REJECTED`; `COUNTERED` requires `countered_delivery_date`) |
+| GET | `/orders/{order_id}/po-delivery-change-requests` | Full request/response history for an order |
+
+`404` (`ORDER_NOT_FOUND`) for an unknown `order_id` on create/history, and
+(`PO_DELIVERY_CHANGE_REQUEST_NOT_FOUND`) for an unknown `request_id` on
+response. `409` (`ACTIVE_PO_DELIVERY_CHANGE_REQUEST_EXISTS`) if the order
+already has a `PENDING` request -- only one active request per order at a
+time. `422` for `PO_DELIVERY_CHANGE_LEAD_TIME_ERROR` (fewer days remain
+before `current_required_ship_date` than the retailer's
+`extension_min_lead_days` policy allows) and
+`INVALID_PO_DELIVERY_CHANGE_RESPONSE` (responding to a request that isn't
+`PENDING` any more, a missing/misplaced `countered_delivery_date`, or one
+that falls outside `(baseline_delivery_date, proposed_delivery_date)`).
+There's no shadow mitigation tracking here by design: while a request is
+`PENDING`, the existing daily projection/mitigation cycle is itself the
+fallback, and every terminal outcome (`ACCEPTED`/`COUNTERED`/`REJECTED`/
+`EXPIRED`) re-triggers `FineProjectionService.run_for_order` for that order
+immediately instead of waiting for the next batch.
+
 ### Projections
 
 Router: `app/api/v1/fine_projection/projections.py`.
@@ -284,11 +313,11 @@ Router: `app/api/v1/fine_projection/projections.py`.
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/orders/{order_id}/projections` | Run a projection for one order; optional `projection_date`, `stacking_mode_override` |
-| POST | `/projections/run` | Batch controller action: run every open order (`all_open: true` required); optional `projection_date`, `stacking_mode_override` |
+| POST | `/projections/runs` | Batch controller action: run every open order (`all_open: true` required); optional `projection_date`, `stacking_mode_override` |
 | GET | `/orders/{order_id}/projections` | Full dated history (the "trend") |
 | GET | `/orders/{order_id}/exposure` | Latest day's total expected fine |
 
-`POST /projections/run` now only accepts the `all_open: true` fan-out
+`POST /projections/runs` now only accepts the `all_open: true` fan-out
 case -- a lone `order_id` in the body is rejected with `422` and a message
 pointing at `POST /orders/{order_id}/projections` instead (no backward
 compatibility window; this is a deliberate split, not a deprecation).
@@ -349,12 +378,12 @@ an HTTP connection open for.
   the date.
 - `404` if `order_id` doesn't exist.
 - `422` if the order has no projections yet (`NoProjectionExistsError`) --
-  run `POST /projections/run` for it first.
+  run `POST /projections/runs` for it first.
 - `422` if `as_of_date` is out of range for the order (`InvalidAsOfDateError`,
   see above).
 - `500` (`INVALID_FINE_RULE_DATA`) if a stored fine rule's `calc_type`
   doesn't match a known value -- same data-integrity failure mode as
-  `POST /projections/run`.
+  `POST /projections/runs`.
 
 **Reuse disclosure**: when `settings.summary_reuse_enabled` is `true`
 (default `false`) and there's no exact-date cache hit, the service will
@@ -413,7 +442,7 @@ additive, not a replacement.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/orders/{order_id}/run` | Run one order's projection, then run (or reuse a cached) fine projection summary for the same day |
+| POST | `/orders/{order_id}/projections/runs` | Run one order's projection, then run (or reuse a cached) fine projection summary for the same day |
 
 Body: `{projection_date?, stacking_mode_override?, force_regenerate_summary?}`
 -- same fields as `POST /orders/{order_id}/projections`'s body, plus
@@ -441,7 +470,7 @@ no summary job is scheduled at all (no `PENDING` row is left behind to
 poll).
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/run \
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/projections/runs \
   -H "Content-Type: application/json" -d '{}'
 ```
 
@@ -499,14 +528,14 @@ see `app/services/fine_mitigation/summary.py::_compute_content_fingerprint`.
 
 ### Run mitigation options + mitigation summary together
 
-Router: `app/api/v1/fine_mitigation/mitigations.py`. Sibling of `POST /orders/{order_id}/run`
+Router: `app/api/v1/fine_mitigation/mitigations.py`. Sibling of `POST /orders/{order_id}/projections/runs`
 for the mitigation side, not a change to that endpoint's contract: that
 response shape (`{projection, summary}`) has no slot for mitigation, so
 this is a separate, explicit endpoint rather than an overload.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/orders/{order_id}/mitigation-run` | Compute mitigation options for one order, then run (or reuse a cached) mitigation summary for the same day |
+| POST | `/orders/{order_id}/mitigation-options/runs` | Compute mitigation options for one order, then run (or reuse a cached) mitigation summary for the same day |
 
 Body: `{projection_date?, force_regenerate_summary?}`. Response body:
 `{mitigation_options: MitigationOptionsResponse, summary: FineMitigationSummaryStatusResponse}`.
@@ -517,7 +546,63 @@ step's, since it runs first and gates the summary step -- `404`/`422`
 exactly as documented above for `POST /orders/{order_id}/mitigation-options`.
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/mitigation-run \
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/mitigation-options/runs \
+  -H "Content-Type: application/json" -d '{}'
+```
+
+### Run everything together
+
+Router: `app/api/v1/fine_runs.py`. Chains all four steps above for one
+order in a single call: projection -> projection summary -> mitigation
+options -> mitigation summary -- the same sequencing
+`POST /orders/{order_id}/projections/runs` followed by `POST /orders/{order_id}/mitigation-options/runs`
+would give if called by hand in order, collapsed into one request. Neither
+of those two combo endpoints is affected and both still work standalone;
+this is additive, not a replacement.
+
+Its actual value over calling the two combo endpoints back-to-back
+yourself: mitigation is ranked against `projection_result.projection_date`
+-- the exact date this same call's projection step just computed --
+never against `body.projection_date` or "whatever the latest projection
+happens to be". That means `NO_PROJECTION_EXISTS` (`422`) can never
+happen here, unlike `POST /orders/{order_id}/mitigation-options/runs`, which
+requires the caller to have already run a projection for that date
+separately.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/orders/{order_id}/fine-runs` | Run one order's projection, projection summary, mitigation options, and mitigation summary, chained in one call |
+
+Body: `{projection_date?, stacking_mode_override?, force_regenerate_projection_summary?, force_regenerate_mitigation_summary?}`
+-- `projection_date`/`stacking_mode_override` are forwarded to the
+projection step exactly as `POST /orders/{order_id}/projections`'s body
+would; the two `force_regenerate_*` flags are genuinely independent
+caches (projection-summary vs. mitigation-summary) forwarded to their
+respective `get_or_schedule` calls -- reusing one flag for both would
+force-regenerate a cache the caller never asked to touch.
+
+Response body: `{projection: ProjectionResultResponse, projection_summary:
+FineProjectionSummaryStatusResponse, mitigation_options:
+MitigationOptionsResponse, mitigation_summary: FineMitigationSummaryStatusResponse}`
+-- the same four shapes the standalone endpoints already return, nested
+together.
+
+- **`200`**: both summaries were already cached (`READY`) for this
+  order/day -- both `summary` fields are populated, nothing scheduled.
+- **`202`**: either summary was a cache miss (or its `force_regenerate_*`
+  flag was set) -- that summary is scheduled via `BackgroundTasks` just
+  like the standalone endpoints, with `status: "PENDING"`; the other
+  summary can still come back `READY` inline in the same response if it
+  was cached. Poll `GET /orders/{order_id}/projection-summary` and/or
+  `GET /orders/{order_id}/mitigation-summary` for whichever is `PENDING`.
+
+Failure modes are the projection step's for the whole chain -- `404`/`422`/`500`
+exactly as documented above for `POST /orders/{order_id}/projections` --
+since it runs first and gates every step after it. If the projection
+fails, no mitigation is computed and no summary job is scheduled at all.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/fine-runs \
   -H "Content-Type: application/json" -d '{}'
 ```
 
@@ -529,17 +614,17 @@ how to run and deploy it: `docs/DEPLOYMENT.md`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/batches/run` | Enqueue one `ORDER_RUN` job per OPEN order |
+| POST | `/batches/runs` | Enqueue one `ORDER_RUN` job per OPEN order |
 | GET | `/batches/{job_run_id}` | Status counts and completion for one run |
 | GET | `/batches/{job_run_id}/items` | Per-item detail, filterable and paged |
 
-#### `POST /batches/run`
+#### `POST /batches/runs`
 
 **Enqueue-only. It never runs a projection or a summary inline.** Returns
 `202` immediately.
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/batches/run \
+curl -X POST http://127.0.0.1:8000/api/v1/batches/runs \
   -H "Content-Type: application/json" \
   -d '{"projection_date": "2026-08-15", "stacking_mode_override": "MAX"}'
 ```

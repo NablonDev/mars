@@ -16,6 +16,7 @@ from app.models.fine_projection.fulfillment_facts import (
     Shipment,
 )
 from app.models.fine_projection.outcomes import ActualFine, ProjectedFine
+from app.models.fine_projection.po_delivery_change_request import PoDeliveryChangeRequest
 from app.models.fine_projection.summary import ProjectionSummary
 from app.models.fine_rule import FineRule, FineRuleTier
 from app.models.job_queue import JobItem, JobRun
@@ -56,6 +57,7 @@ __all__ = [
     "Order",
     "OrderConfirmation",
     "PendingHumanActionORM",
+    "PoDeliveryChangeRequest",
     "PoLineErrorORM",
     "PoLineORM",
     "ProductionSchedule",

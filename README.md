@@ -62,7 +62,7 @@ Seed fines demo data and try it out:
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/admin/seed-master-data
 curl -X POST http://127.0.0.1:8000/api/v1/admin/simulate-daily-run
-curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/run \
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/projections/runs \
   -H "Content-Type: application/json" -d '{}'
 ```
 
@@ -77,7 +77,7 @@ python scripts/ops/run_daily_batch.py            # enqueue + drain
 python scripts/ops/run_daily_batch.py --dry-run  # count only, writes nothing
 ```
 
-The API can enqueue a batch too (`POST /api/v1/batches/run`), but under the
+The API can enqueue a batch too (`POST /api/v1/batches/runs`), but under the
 default `postgres` backend that only writes the ledger rows — nothing runs
 them until a drain happens. Watch progress with
 `GET /api/v1/batches/{job_run_id}`.

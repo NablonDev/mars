@@ -3,7 +3,7 @@ No-server CLI: runs the projection service directly against the
 configured database (DATABASE_URL / .env), without needing `uvicorn`
 running. Kept for ad-hoc/local use and cron/Airflow-style scheduling
 where standing up an HTTP server just to run a batch job is unnecessary
--- the API (`POST /api/v1/projections/run`) is the equivalent for
+-- the API (`POST /api/v1/projections/runs`) is the equivalent for
 anything that should go through HTTP.
 
 Examples:
@@ -15,7 +15,7 @@ Examples:
 
 --with-summary additionally runs the fine-projection-summary generation
 for each order right after its projection succeeds -- the same
-sequential guarantee as `POST /orders/{order_id}/run`, for this
+sequential guarantee as `POST /orders/{order_id}/projections/runs`, for this
 no-HTTP-server path. Runs inline (no BackgroundTasks needed in a
 one-shot CLI process) and needs AZURE_OPENAI_* configured.
 """

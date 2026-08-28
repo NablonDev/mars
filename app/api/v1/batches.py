@@ -53,7 +53,7 @@ def _execution_note(job_queue_backend: str) -> str:
     )
 
 
-@router.post("/run", response_model=BatchRunResponse, status_code=202)
+@router.post("/runs", response_model=BatchRunResponse, status_code=202)
 def trigger_batch_run(
     body: BatchRunRequest,
     session: Session = Depends(get_session),

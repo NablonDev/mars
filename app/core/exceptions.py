@@ -154,6 +154,42 @@ class InvalidFineRuleDataError(AppError):
     code: ClassVar[str] = "INVALID_FINE_RULE_DATA"
 
 
+class ActivePoDeliveryChangeRequestExistsError(ConflictError):
+    """Raised when creating a PO delivery-change request for an order that already has one PENDING."""
+
+    code: ClassVar[str] = "ACTIVE_PO_DELIVERY_CHANGE_REQUEST_EXISTS"
+
+    def __init__(self, order_id: str, request_id: str) -> None:
+        super().__init__(
+            f"Order {order_id!r} already has an active PO delivery-change request ({request_id!r})"
+        )
+        self.order_id = order_id
+        self.request_id = request_id
+
+
+class PoDeliveryChangeLeadTimeError(ValidationError):
+    """Raised when a requested PO delivery-date change does not meet the minimum lead-time rule."""
+
+    code: ClassVar[str] = "PO_DELIVERY_CHANGE_LEAD_TIME_ERROR"
+
+
+class PoDeliveryChangeRequestNotFoundError(NotFoundError):
+    """Raised when no PO delivery-change request exists for the given request ID."""
+
+    code: ClassVar[str] = "PO_DELIVERY_CHANGE_REQUEST_NOT_FOUND"
+
+    def __init__(self, request_id: str) -> None:
+        super().__init__(f"No PO delivery-change request found with request_id={request_id!r}")
+        self.request_id = request_id
+
+
+class InvalidPoDeliveryChangeResponseError(ValidationError):
+    """Raised when a retailer response to a PO delivery-change request is invalid, e.g. responding
+    to a request that is no longer PENDING, or an inconsistent COUNTERED payload."""
+
+    code: ClassVar[str] = "INVALID_PO_DELIVERY_CHANGE_RESPONSE"
+
+
 class ServiceError(Exception):
     """CMIR/PO-validation application error, mapping to the PRD error contract.
 

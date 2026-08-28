@@ -1,5 +1,5 @@
 """Integration tests for the batch observability endpoints
-(POST /batches/run, GET /batches/{id}, GET /batches/{id}/items).
+(POST /batches/runs, GET /batches/{id}, GET /batches/{id}/items).
 """
 
 from uuid import UUID
@@ -13,7 +13,7 @@ _ALL_FOUR_OPEN_ORDER_IDS = {"WMT-100234", "WMT-100511", "AMZ-778501", "AMZ-78011
 def test_trigger_batch_run_enqueues_one_item_per_open_order_and_executes_nothing_inline(
     seeded_client, db_session
 ):
-    resp = seeded_client.post("/api/v1/batches/run", json={"projection_date": "2026-08-02"})
+    resp = seeded_client.post("/api/v1/batches/runs", json={"projection_date": "2026-08-02"})
 
     assert resp.status_code == 202, resp.text
     body = resp.json()
@@ -35,7 +35,7 @@ def test_trigger_batch_run_enqueues_one_item_per_open_order_and_executes_nothing
 
 
 def test_get_batch_status_counts_and_is_complete(seeded_client, db_session):
-    resp = seeded_client.post("/api/v1/batches/run", json={"projection_date": "2026-08-02"})
+    resp = seeded_client.post("/api/v1/batches/runs", json={"projection_date": "2026-08-02"})
     job_run_id = resp.json()["job_run_id"]
 
     status_resp = seeded_client.get(f"/api/v1/batches/{job_run_id}")
@@ -72,7 +72,7 @@ def test_get_batch_status_404s_for_unknown_run(seeded_client):
 
 
 def test_list_batch_items_filters_by_status(seeded_client, db_session):
-    resp = seeded_client.post("/api/v1/batches/run", json={"projection_date": "2026-08-02"})
+    resp = seeded_client.post("/api/v1/batches/runs", json={"projection_date": "2026-08-02"})
     job_run_id = resp.json()["job_run_id"]
 
     repo = JobQueueRepository(db_session)
@@ -98,7 +98,7 @@ def test_list_batch_items_filters_by_status(seeded_client, db_session):
 
 
 def test_list_batch_items_paginates(seeded_client):
-    resp = seeded_client.post("/api/v1/batches/run", json={"projection_date": "2026-08-02"})
+    resp = seeded_client.post("/api/v1/batches/runs", json={"projection_date": "2026-08-02"})
     job_run_id = resp.json()["job_run_id"]
 
     page1 = seeded_client.get(f"/api/v1/batches/{job_run_id}/items", params={"limit": 2, "offset": 0})
@@ -113,7 +113,7 @@ def test_list_batch_items_paginates(seeded_client):
 
 
 def test_list_batch_items_invalid_status_is_422(seeded_client):
-    resp = seeded_client.post("/api/v1/batches/run", json={"projection_date": "2026-08-02"})
+    resp = seeded_client.post("/api/v1/batches/runs", json={"projection_date": "2026-08-02"})
     job_run_id = resp.json()["job_run_id"]
 
     resp = seeded_client.get(f"/api/v1/batches/{job_run_id}/items", params={"status": "NOT_A_STATUS"})
@@ -121,7 +121,7 @@ def test_list_batch_items_invalid_status_is_422(seeded_client):
 
 
 def test_trigger_batch_run_defaults_projection_date_to_today(seeded_client):
-    resp = seeded_client.post("/api/v1/batches/run", json={})
+    resp = seeded_client.post("/api/v1/batches/runs", json={})
     assert resp.status_code == 202, resp.text
     assert resp.json()["requested_item_count"] == 4
 
@@ -135,10 +135,10 @@ def test_second_batch_run_owns_no_items_while_the_first_is_still_in_flight(seede
     make the second run report 4 items it does not own and never reconcile
     to complete.
     """
-    first = seeded_client.post("/api/v1/batches/run", json={"projection_date": "2026-08-02"})
+    first = seeded_client.post("/api/v1/batches/runs", json={"projection_date": "2026-08-02"})
     assert first.json()["requested_item_count"] == 4
 
-    second = seeded_client.post("/api/v1/batches/run", json={"projection_date": "2026-08-02"})
+    second = seeded_client.post("/api/v1/batches/runs", json={"projection_date": "2026-08-02"})
     assert second.status_code == 202
     assert second.json()["requested_item_count"] == 0
 
@@ -156,7 +156,7 @@ def test_second_batch_run_owns_no_items_while_the_first_is_still_in_flight(seede
 def test_batch_run_completion_reconciles_after_a_partial_re_run(seeded_client, db_session):
     """Re-running after a partial failure enqueues only the orders that are
     no longer in flight, and that run completes on its own item set."""
-    first = seeded_client.post("/api/v1/batches/run", json={"projection_date": "2026-08-02"})
+    first = seeded_client.post("/api/v1/batches/runs", json={"projection_date": "2026-08-02"})
     first_run_id = UUID(first.json()["job_run_id"])
 
     repo = JobQueueRepository(db_session)
@@ -165,7 +165,7 @@ def test_batch_run_completion_reconciles_after_a_partial_re_run(seeded_client, d
     repo.mark_succeeded(items[0]["id"], "worker-1")
     db_session.commit()
 
-    second = seeded_client.post("/api/v1/batches/run", json={"projection_date": "2026-08-02"})
+    second = seeded_client.post("/api/v1/batches/runs", json={"projection_date": "2026-08-02"})
     second_run_id = second.json()["job_run_id"]
     # Only the finished order is re-enqueueable; the other three are still in flight.
     assert second.json()["requested_item_count"] == 1
@@ -189,7 +189,7 @@ def test_trigger_batch_run_reports_postgres_dispatch_mode_and_execution_note(see
     """Default backend (this fixture's job_queue is built with a plain
     Settings(), which defaults job_queue_backend="postgres" -- see
     conftest.py's job_queue fixture)."""
-    resp = seeded_client.post("/api/v1/batches/run", json={"projection_date": "2026-08-02"})
+    resp = seeded_client.post("/api/v1/batches/runs", json={"projection_date": "2026-08-02"})
 
     assert resp.status_code == 202, resp.text
     body = resp.json()
@@ -203,7 +203,7 @@ def test_trigger_batch_run_reports_postgres_dispatch_mode_and_execution_note(see
 def test_trigger_batch_run_reports_service_bus_dispatch_mode_and_execution_note(seeded_client):
     seeded_client.app.dependency_overrides[get_settings] = lambda: Settings(job_queue_backend="service_bus")
     try:
-        resp = seeded_client.post("/api/v1/batches/run", json={"projection_date": "2026-08-02"})
+        resp = seeded_client.post("/api/v1/batches/runs", json={"projection_date": "2026-08-02"})
     finally:
         seeded_client.app.dependency_overrides.pop(get_settings, None)
 

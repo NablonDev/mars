@@ -24,7 +24,7 @@ class OrderProjectionRequest(BaseModel):
 
 
 class OrderRunRequest(BaseModel):
-    """Body for POST /orders/{order_id}/run -- projection, then summary."""
+    """Body for POST /orders/{order_id}/projections/runs -- projection, then summary."""
 
     projection_date: date | None = None
     stacking_mode_override: Literal["SUM", "MAX"] | None = None
@@ -72,7 +72,7 @@ class ExposureResponse(BaseModel):
 
 
 class OrderRunResponse(BaseModel):
-    """Response for POST /orders/{order_id}/run."""
+    """Response for POST /orders/{order_id}/projections/runs."""
 
     projection: ProjectionResultResponse
     summary: ProjectionSummaryStatusResponse

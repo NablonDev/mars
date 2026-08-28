@@ -1,6 +1,6 @@
 """Integration tests for the durable job_item wiring behind the on-demand
 fine-projection-summary endpoints (POST /orders/{order_id}/projection-summary, POST
-/orders/{order_id}/run). TestClient runs BackgroundTasks synchronously
+/orders/{order_id}/projections/runs). TestClient runs BackgroundTasks synchronously
 before returning, so a job_item scheduled by one of these requests is
 already claimed and settled by the time the request completes.
 """
@@ -156,13 +156,13 @@ def test_background_job_marks_job_item_dead_on_failure(seeded_client, db_session
 
 
 def test_run_endpoint_cache_miss_also_creates_a_job_item(seeded_client, db_session):
-    """POST /orders/{order_id}/run: the projection half stays inline/sync,
+    """POST /orders/{order_id}/projections/runs: the projection half stays inline/sync,
     but the summary half follows the same durable-queue path as
     POST /orders/{order_id}/projection-summary."""
     _override_llm_client(seeded_client)
 
     resp = seeded_client.post(
-        "/api/v1/orders/WMT-100234/run",
+        "/api/v1/orders/WMT-100234/projections/runs",
         json={"projection_date": "2026-08-02"},
     )
     assert resp.status_code == 202, resp.text

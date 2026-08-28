@@ -19,7 +19,7 @@ batch job queue -- every OPEN order, scheduled and run as a group -- see
   as the Azure Container Apps Job on a nightly cron (§6.6). It both
   enqueues today's work *and* drains it in the same call -- nothing else
   needs to run.
-- **`POST /api/v1/batches/run` is not a substitute for the schedule.**
+- **`POST /api/v1/batches/runs` is not a substitute for the schedule.**
   Under the default `postgres` backend it only enqueues; nothing processes
   those rows until a drain happens (the same script, or the nightly job).
   It's for triggering a run on demand from outside, not for scheduling
@@ -401,7 +401,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/projections \
   -d '{"projection_date": "2026-08-05"}'
 
 # Every open order, today:
-curl -X POST http://127.0.0.1:8000/api/v1/projections/run \
+curl -X POST http://127.0.0.1:8000/api/v1/projections/runs \
   -H "Content-Type: application/json" -d '{"all_open": true}'
 
 # Override the retailer's stacking policy for this run only:
@@ -414,7 +414,7 @@ curl http://127.0.0.1:8000/api/v1/orders/WMT-100234/exposure      # latest total
 
 # Projection, then (only if it succeeds) the fine projection summary for the same
 # day, in one call -- see docs/API.md "Run projection + summary together":
-curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/run \
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/projections/runs \
   -H "Content-Type: application/json" -d '{}'
 ```
 
@@ -452,7 +452,7 @@ against the same date:
 
 ```bash
 # 1. Project today, every open order:
-curl -X POST http://127.0.0.1:8000/api/v1/projections/run \
+curl -X POST http://127.0.0.1:8000/api/v1/projections/runs \
   -H "Content-Type: application/json" -d '{"all_open": true}'
 
 # 2. Then rank mitigation actions for one of them:
@@ -483,7 +483,7 @@ scripted day, and `run_for_all_open` iterates only `order_status = 'OPEN'`
 `[]`. Project those orders one at a time with
 `POST /orders/{order_id}/projections`, or re-seed without simulating.
 
-`POST /projections/run` is batch-only. `RunProjectionRequest` still carries
+`POST /projections/runs` is batch-only. `RunProjectionRequest` still carries
 an `order_id` field, but the handler rejects any body without
 `all_open: true` and points at the per-order route -- a deliberate `422`
 redirect, not a validation gap. Its other two fields are `projection_date`
@@ -497,13 +497,27 @@ then actually ships. A ranking of mitigation actions priced against
 yesterday's probabilities is the wrong ranking, which is why the engine
 reads one specific day's rows instead of "the latest".
 
-`POST /orders/{order_id}/mitigation-run` does mitigation and its LLM
-summary in one call, the same way `POST /orders/{order_id}/run` does for
+`POST /orders/{order_id}/mitigation-options/runs` does mitigation and its LLM
+summary in one call, the same way `POST /orders/{order_id}/projections/runs` does for
 projections -- it too assumes the projection for that date already exists.
 `200` when the mitigation summary was already cached for that day, `202`
 on a cache miss (poll `GET /orders/{order_id}/mitigation-summary`).
 Endpoint reference: `docs/API.md` "Run mitigation options + mitigation
 summary together".
+
+**`POST /orders/{order_id}/fine-runs` chains all four steps** -- projection,
+projection summary, mitigation options, and mitigation summary -- in one
+call, ranking mitigation against the projection date this same call just
+computed, so `NO_PROJECTION_EXISTS` can never happen here (unlike
+`mitigation-options/runs` above, which needs a projection to already exist for the
+date it's given). `200` only if both summaries were already cached; `202`
+if either was a cache miss. Endpoint reference: `docs/API.md` "Run
+everything together".
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/fine-runs \
+  -H "Content-Type: application/json" -d '{}'
+```
 
 **Without a server:** `scripts/ops/run_mitigation_cli.py` mirrors
 `run_projection_cli.py` for the mitigation side --
@@ -679,8 +693,8 @@ earliest such date or after today, 422) -- specifically so a caller can't
 mint unbounded cache keys -- and therefore unbounded real Azure OpenAI
 calls -- just by varying that one field. That closes the "vary a
 parameter to always miss cache" vector, but there is still no
-request-level rate limiting (per-IP/per-caller) anywhere in this codebase
 (checked `app/main.py`, `app/core/`, `pyproject.toml` -- no `slowapi` or
+request-level rate limiting (per-IP/per-caller) anywhere in this codebase
 equivalent is installed) protecting either endpoint's real per-call cost
 from an authenticated-but-abusive or simply high-volume caller. Adding
 one is deliberately out of scope here -- it's infra-level and belongs
@@ -688,7 +702,104 @@ applied consistently across the app if/when other endpoints need it
 too, not bolted onto either route as a one-off. Needed before either
 endpoint is exposed in production.
 
-## 10. Tests
+## 10. PO delivery-date change requests (negotiation)
+
+This is the retailer-negotiation step ops takes before falling back to
+fine mitigation: ask the retailer for more delivery time rather than
+accepting whatever mitigation costs the projection implies.
+`PoDeliveryChangeRequestService` (`app/services/fine_projection/po_delivery_change.py`)
+records the retailer's decision as a mock/manual entry -- no inbound
+webhook in this pass -- and on every terminal outcome (`ACCEPTED`/
+`COUNTERED`/`REJECTED`/`EXPIRED`) immediately re-triggers
+`FineProjectionService.run_for_order` for that order, so the same-day
+projection reflects the outcome instead of waiting for tomorrow's nightly
+batch. There is no shadow mitigation tracking kept in parallel: while a
+request is `PENDING`, the existing daily projection/mitigation cycle is
+itself the fallback plan.
+
+**Via the API**, using WMT-100234 (one of the four seeded demo orders):
+
+```bash
+# Ask the retailer for a later delivery date:
+curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/po-delivery-change-requests \
+  -H "Content-Type: application/json" \
+  -d '{"reason_code": "SHORTAGE", "proposed_delivery_date": "2026-08-14",
+       "notes": "SAP confirms a real cut to 1,850/2,000; requesting 3 extra days."}'
+
+# Retailer accepts the proposed date outright:
+curl -X POST http://127.0.0.1:8000/api/v1/po-delivery-change-requests/ext_xxxxxxxxxxxx/response \
+  -H "Content-Type: application/json" \
+  -d '{"decision": "ACCEPTED"}'
+
+# Retailer counters with a date strictly between baseline and proposed:
+curl -X POST http://127.0.0.1:8000/api/v1/po-delivery-change-requests/ext_xxxxxxxxxxxx/response \
+  -H "Content-Type: application/json" \
+  -d '{"decision": "COUNTERED", "countered_delivery_date": "2026-08-12"}'
+
+# Retailer rejects outright -- current_delivery_date/current_required_ship_date are left untouched:
+curl -X POST http://127.0.0.1:8000/api/v1/po-delivery-change-requests/ext_xxxxxxxxxxxx/response \
+  -H "Content-Type: application/json" \
+  -d '{"decision": "REJECTED"}'
+
+curl http://127.0.0.1:8000/api/v1/orders/WMT-100234/po-delivery-change-requests   # full history
+```
+
+**Without a server** (`scripts/ops/run_po_delivery_change_cli.py`, same
+no-HTTP-server convention as `run_projection_cli.py`/`run_mitigation_cli.py`):
+
+```bash
+python scripts/ops/run_po_delivery_change_cli.py create --order-id WMT-100234 --reason-code SHORTAGE --proposed-delivery-date 2026-08-20
+python scripts/ops/run_po_delivery_change_cli.py respond --request-id ext_xxxxxxxxxxxx --decision ACCEPTED
+python scripts/ops/run_po_delivery_change_cli.py respond --request-id ext_xxxxxxxxxxxx --decision COUNTERED --countered-delivery-date 2026-08-18
+python scripts/ops/run_po_delivery_change_cli.py history --order-id WMT-100234
+python scripts/ops/run_po_delivery_change_cli.py expire-sweep
+```
+
+`expire-sweep` runs automatically inside the nightly batch
+(`scripts/ops/run_daily_batch.py`, via
+`app.workers.fine_projection.sweep_expired_po_delivery_change_requests`) and
+never needs manual triggering -- there is no HTTP equivalent for it; the CLI
+subcommand above exists purely for ad-hoc/local testing of the sweep.
+
+**Seeding also exercises all four negotiation outcomes now.** §6's
+`simulate-daily-run` fires one PO delivery-change request per seeded order
+and walks each to a different terminal outcome automatically: WMT-100234
+`ACCEPTED`, WMT-100511 `COUNTERED`, AMZ-778501 `REJECTED`, and AMZ-780112
+`EXPIRED` (never responded to; its 24h SLA lapses before the scenario's
+last scripted day, so it's the recovery sweep -- not a `respond` call --
+that resolves it). See `app/services/seeding/fine_projection.py`'s
+`_NEGOTIATION_SCENARIOS` for the exact trigger dates and rationale behind
+each.
+
+### Troubleshooting
+
+#### Create returns `ACTIVE_PO_DELIVERY_CHANGE_REQUEST_EXISTS` (409)
+The order already has a `PENDING` request -- only one active request per
+order at a time. Check `GET /orders/{order_id}/po-delivery-change-requests`
+for the pending row's `request_id`, then either respond to it or wait for
+the nightly sweep (or `expire-sweep --as-of ...` ad hoc) to expire it
+before creating another.
+
+#### Create returns `PO_DELIVERY_CHANGE_LEAD_TIME_ERROR` (422)
+Fewer days remain before the order's `current_required_ship_date` than the
+retailer's `extension_min_lead_days` policy allows (`retailer.extension_min_lead_days`,
+default 2). Check the retailer's policy via `GET /retailers` and the
+order's current required-ship date via `GET /orders/{order_id}`.
+
+#### Response returns `PO_DELIVERY_CHANGE_REQUEST_NOT_FOUND` (404)
+No `po_delivery_change_request` row exists for that `request_id`. Confirm
+the id from the `create` response or the history endpoint -- it's the
+service-generated `ext_...` id, not the order id.
+
+#### Response returns `INVALID_PO_DELIVERY_CHANGE_RESPONSE` (422)
+Either the request is no longer `PENDING` (already responded to, or already
+expired by the nightly sweep), or the `COUNTERED` payload is malformed --
+`countered_delivery_date` missing when `decision=COUNTERED`, present when
+it isn't, or not strictly between `baseline_delivery_date` and
+`proposed_delivery_date`. Check the request's current `status` via history
+first.
+
+## 11. Tests
 
 ```bash
 pytest tests/ -v              # everything: 544 passed, 5 skipped, ~65s, in-memory SQLite
@@ -711,7 +822,7 @@ and diff the printed numbers against `data/samples/mars_fines_mock_seed_data.sql
 -- they should match exactly, same as the verification runs logged in
 `PROGRESS.local.md`.
 
-## 11. Linting and formatting
+## 12. Linting and formatting
 
 ```bash
 ruff check app/ scripts/ tests/ alembic/
@@ -721,7 +832,7 @@ ruff format app/ scripts/ tests/ alembic/
 Both must be clean before a change is done -- see `./CLAUDE.local.md`
 "Engineering Rules."
 
-## 12. Common tasks, quick reference
+## 13. Common tasks, quick reference
 
 | I want to... | Run |
 |---|---|
@@ -730,12 +841,13 @@ Both must be clean before a change is done -- see `./CLAUDE.local.md`
 | Check what rules a retailer has | `curl http://127.0.0.1:8000/api/v1/fine-rules?retailer_id=RET-WMT` |
 | See an order's full projection trend | `curl http://127.0.0.1:8000/api/v1/orders/WMT-100234/projections` |
 | Run one order for a backfilled date | `python scripts/ops/run_projection_cli.py --order-id WMT-100234 --date 2026-08-05` |
-| Run projection + summary together, one call | `curl -X POST .../orders/WMT-100234/run -d '{}'` (or `run_projection_cli.py --with-summary`) |
+| Run projection + summary together, one call | `curl -X POST .../orders/WMT-100234/projections/runs -d '{}'` (or `run_projection_cli.py --with-summary`) |
 | See the whole system, end to end, in one command | `python scripts/demo/run_end_to_end_demo.py` |
 | Get an LLM summary of why an order's fine is what it is | `python scripts/demo/demo_fine_projection_summary.py --order-id WMT-100234` |
 | Rank mitigation actions for an order | Project that date first, then `curl -X POST .../orders/WMT-100234/mitigation-options -d '{}'` (§7) |
 | Get an LLM summary of an order's ranked mitigation options | `python scripts/demo/demo_fine_mitigation_summary.py --order-id WMT-100234` |
-| Rank mitigation actions + summarize them together, one call | `curl -X POST .../orders/WMT-100234/mitigation-run -d '{}'` (or `run_mitigation_cli.py --with-summary`) |
+| Rank mitigation actions + summarize them together, one call | `curl -X POST .../orders/WMT-100234/mitigation-options/runs -d '{}'` (or `run_mitigation_cli.py --with-summary`) |
+| Run projection, projection summary, mitigation options, and mitigation summary together, one call | `curl -X POST .../orders/WMT-100234/fine-runs -d '{}'` |
 | Repair a database stuck on the old migration chain | `python scripts/ops/repair_pre_squash_db.py --dry-run`, then without the flag (§4) |
 | Add a new violation type | Update `SHORTAGE_VIOLATION_TYPES`/`DELAY_VIOLATION_TYPES` in `app/services/fine_projection/types.py` (`./CLAUDE.local.md` "Engineering Rules") |
 | Add a DB column | `app/models/*.py` + `alembic revision --autogenerate` + update `docs/DATABASE.md` + confirm `tests/unit/db/test_migration_parity.py` still passes |
@@ -743,7 +855,7 @@ Both must be clean before a change is done -- see `./CLAUDE.local.md`
 | See why the queue looks stuck | `docs/DEPLOYMENT.md` §3.7 — the SQL to run and what each status means |
 | Deploy to Azure | `docs/DEPLOYMENT.md` §6 |
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 - **`sqlalchemy.exc.OperationalError` / `relation "sales_order" does not
   exist`**: migrations haven't been applied against the `DATABASE_URL`
@@ -786,7 +898,7 @@ Both must be clean before a change is done -- see `./CLAUDE.local.md`
   mid-August 2026 and the endpoint defaults to today. See "Mitigation
   options need a projection for the same date first" in step 7.
 - **`422` `NO_MITIGATION_OPTIONS_EXIST` from `POST`/`GET
-  /orders/{order_id}/mitigation-summary` (or `mitigation-run`)**: no
+  /orders/{order_id}/mitigation-summary` (or `mitigation-options/runs`)**: no
   ranked mitigation options exist for that order yet -- run `POST
   /orders/{order_id}/mitigation-options` (which itself needs a projection
   first, see above) before asking for a summary of them.
@@ -796,11 +908,11 @@ Both must be clean before a change is done -- see `./CLAUDE.local.md`
   first, then poll. Same shape as `NO_PROJECTION_SUMMARY_JOB_EXISTS` for
   the projection-summary side.
 - **`422` from `POST /orders/{order_id}/projections` (or `POST
-  /projections/run` with `all_open: true`)**: the order's retailer has
+  /projections/runs` with `all_open: true`)**: the order's retailer has
   no active fine rules yet. Seed master data (step 6) or add a rule
   (step 8) first.
 - **`404` from `POST /orders/{order_id}/projections`**: the `order_id`
-  doesn't exist. For `POST /projections/run` (`all_open: true`), a `404`
+  doesn't exist. For `POST /projections/runs` (`all_open: true`), a `404`
   isn't order-specific -- check `GET /orders?order_status=OPEN` if
   nothing ran.
 - **`POST /admin/simulate-daily-run` returns `500` / `IntegrityError` /

@@ -24,7 +24,7 @@ Examples:
 
 --with-summary additionally runs the fine-mitigation-summary generation
 for each order right after its mitigation ranking succeeds -- the same
-sequential guarantee as `POST /orders/{order_id}/mitigation-run`, for this
+sequential guarantee as `POST /orders/{order_id}/mitigation-options/runs`, for this
 no-HTTP-server path. Runs inline (no BackgroundTasks needed in a
 one-shot CLI process) and needs AZURE_OPENAI_* configured.
 """

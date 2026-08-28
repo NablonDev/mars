@@ -41,10 +41,10 @@ from app.schemas.fine_projection.summaries import (
 from app.services.fine_projection.service import FineProjectionService
 from app.services.fine_projection.summary import FineProjectionSummaryService
 
-router = APIRouter(tags=["projections"])
+router = APIRouter(tags=["fine-projection"])
 
 
-@router.post("/projections/run", response_model=list[ProjectionResultResponse])
+@router.post("/projections/runs", response_model=list[ProjectionResultResponse])
 def run_projection(
     body: RunProjectionRequest,
     projection_service: FineProjectionService = Depends(get_fine_projection_service),
@@ -110,7 +110,7 @@ def get_exposure(
 
 
 @router.post(
-    "/orders/{order_id}/run",
+    "/orders/{order_id}/projections/runs",
     response_model=OrderRunResponse,
     responses={202: {"model": OrderRunResponse}},
 )
@@ -132,7 +132,7 @@ def run_projection_and_summary(
     settings: Settings = Depends(get_settings),
 ) -> OrderRunResponse:
     # The projection half stays synchronous and inline -- queueing only
-    # earns its keep at batch scale (see POST /batches/run for that path).
+    # earns its keep at batch scale (see POST /batches/runs for that path).
     projection_result = projection_service.run_for_order(
         order_id,
         body.projection_date,

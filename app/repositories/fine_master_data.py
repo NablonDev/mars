@@ -14,6 +14,9 @@ def _retailer_to_dict(r: Retailer) -> dict:
         "retailer_name": r.retailer_name,
         "priority_tier": r.priority_tier,
         "stacking_mode": r.stacking_mode,
+        "extension_min_lead_days": r.extension_min_lead_days,
+        "extension_response_sla_hours": r.extension_response_sla_hours,
+        "extension_fine_threshold": float(r.extension_fine_threshold),
     }
 
 
@@ -38,7 +41,14 @@ class MasterDataRepository:
         self._session = session
 
     def add_retailer(
-        self, retailer_id: str, retailer_name: str, priority_tier: str | None, stacking_mode: str = "SUM"
+        self,
+        retailer_id: str,
+        retailer_name: str,
+        priority_tier: str | None,
+        stacking_mode: str = "SUM",
+        extension_min_lead_days: int = 2,
+        extension_response_sla_hours: int = 48,
+        extension_fine_threshold: float = 0.0,
     ) -> None:
         self._session.add(
             Retailer(
@@ -46,6 +56,9 @@ class MasterDataRepository:
                 retailer_name=retailer_name,
                 priority_tier=priority_tier,
                 stacking_mode=stacking_mode,
+                extension_min_lead_days=extension_min_lead_days,
+                extension_response_sla_hours=extension_response_sla_hours,
+                extension_fine_threshold=extension_fine_threshold,
             )
         )
         self._session.flush()
@@ -60,6 +73,19 @@ class MasterDataRepository:
         # is never actually None here -- the fallback exists only because
         # nothing at the type level proves that to a caller of this method.
         return retailer.stacking_mode if retailer else "SUM"
+
+    def get_extension_policy(self, retailer_id: str) -> dict:
+        retailer = self._session.scalars(select(Retailer).where(Retailer.retailer_id == retailer_id)).first()
+        # retailer_id is a DB-level FK on every caller's table, so `retailer`
+        # is never actually None here -- the fallback exists only because
+        # nothing at the type level proves that to a caller of this method.
+        if retailer is None:
+            return {"min_lead_days": 2, "response_sla_hours": 48, "fine_threshold": 0.0}
+        return {
+            "min_lead_days": retailer.extension_min_lead_days,
+            "response_sla_hours": retailer.extension_response_sla_hours,
+            "fine_threshold": float(retailer.extension_fine_threshold),
+        }
 
     def add_sku(self, sku_id: str, sku_code: str, description: str | None) -> None:
         self._session.add(Sku(sku_id=sku_id, sku_code=sku_code, description=description))

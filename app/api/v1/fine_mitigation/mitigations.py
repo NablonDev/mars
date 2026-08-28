@@ -39,7 +39,7 @@ from app.schemas.fine_mitigation.summaries import (
 from app.services.fine_mitigation.service import FineMitigationService
 from app.services.fine_mitigation.summary import FineMitigationSummaryService
 
-router = APIRouter(tags=["mitigation-options"])
+router = APIRouter(tags=["fine-mitigation"])
 
 
 @router.post(
@@ -79,7 +79,7 @@ def get_order_mitigation_options(
 
 
 @router.post(
-    "/orders/{order_id}/mitigation-run",
+    "/orders/{order_id}/mitigation-options/runs",
     response_model=MitigationRunResponse,
     responses={202: {"model": MitigationRunResponse}},
 )

@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from sqlalchemy import Numeric, String, Text
+from sqlalchemy import Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import FINES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
@@ -18,6 +18,9 @@ class Retailer(Base, TimestampMixin):
     priority_tier: Mapped[str | None] = mapped_column(String(30), nullable=True)
     # SUM or MAX; retailer-specific stacking policy.
     stacking_mode: Mapped[str] = mapped_column(String(30), default="SUM")
+    extension_min_lead_days: Mapped[int] = mapped_column(Integer, default=2)
+    extension_response_sla_hours: Mapped[int] = mapped_column(Integer, default=48)
+    extension_fine_threshold: Mapped[float] = mapped_column(Numeric(10, 2), default=0.0)
 
 
 class Sku(Base, TimestampMixin):
