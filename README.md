@@ -1,4 +1,4 @@
-# Mars Petcare — CMIR Resolution System & Projected Fines
+# Mars Petcare — CMIR Resolution System & Projected Penalties
 
 Two agentic backends in one FastAPI app, separated by Postgres schema:
 
@@ -7,18 +7,24 @@ Two agentic backends in one FastAPI app, separated by Postgres schema:
   for human review, and persists approved records in Postgres. Also runs a
   PO Validation agent against the same email-ingest/HITL infrastructure.
 
-- **Projected Fines** (`fines` schema) — forecasts, ahead of delivery, the
-  retailer chargebacks Mars Petcare is likely to incur on open orders,
+- **Projected Penalties** (`penalties` schema) — forecasts, ahead of delivery, the
+  retailer chargebacks Mars Petcare is likely to incur on open purchase orders,
   driven by production shortfalls and shipment delays. A deterministic
   rules engine computes the projection; an LLM-powered endpoint can explain,
   in plain language, why a given order's number is what it is.
+
+Both domains share a `common` schema (retailers, materials, purchase orders,
+...) and a `process` schema (the job/agent/workflow backbone: `job_run`,
+`job_item`, `workflow_thread`, `agent_run`, ...). `public` holds no domain
+tables; LangGraph's own checkpoint tables live in their own `langgraph`
+schema.
 
 ## Stack
 
 Python 3.12+, FastAPI, PostgreSQL (SQLAlchemy 2.0 + Alembic), LangGraph
 (CMIR/PO-validation workflows, PostgreSQL checkpointer), Azure Service Bus
 (CMIR mail-processing queue), Azure OpenAI (CMIR extraction and the
-fine-projection-summary feature).
+penalty-projection-summary / penalty-mitigation-summary features).
 
 ## Setup
 
@@ -50,55 +56,55 @@ Interactive docs: `http://127.0.0.1:8000/docs`. Health check:
 Start a CMIR email-ingest batch:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/ingest/emails \
+curl -X POST http://127.0.0.1:8000/api/v1/cmir/email-events \
   -H "Content-Type: application/json" \
   -d '{"max_workers":4,"source":"gmail","filters":{"subject_contains":"CMIR","unread_only":true}}'
 ```
 
-List the CMIR reviewer queue: `GET /api/v1/runs?view=threads`.
+List the CMIR reviewer queue: `GET /api/v1/workflow-threads?domain=cmir`.
 
-Seed fines demo data and try it out:
+Seed penalties demo data and try it out:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/admin/seed-master-data
 curl -X POST http://127.0.0.1:8000/api/v1/admin/simulate-daily-run
-curl -X POST http://127.0.0.1:8000/api/v1/orders/WMT-100234/projections/runs \
+curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-projections \
   -H "Content-Type: application/json" -d '{}'
 ```
 
 ### The batch worker
 
-Every OPEN order, projected and summarised concurrently through a durable
-queue. In production this is an Azure Container Apps Job on a nightly cron;
-locally it is the same script:
+Every OPEN purchase order, projected and summarised concurrently through a
+durable queue. In production this is an Azure Container Apps Job on a
+nightly cron; locally it is the same script:
 
 ```bash
 python scripts/ops/run_daily_batch.py            # enqueue + drain
 python scripts/ops/run_daily_batch.py --dry-run  # count only, writes nothing
 ```
 
-The API can enqueue a batch too (`POST /api/v1/batches/runs`), but under the
+The API can enqueue a batch too (`POST /api/v1/job-runs`), but under the
 default `postgres` backend that only writes the ledger rows — nothing runs
 them until a drain happens. Watch progress with
-`GET /api/v1/batches/{job_run_id}`.
+`GET /api/v1/job-runs/{job_run_id}`.
 
-### A single order, no server
+### A single PO, no server
 
 ```bash
-python scripts/ops/run_projection_cli.py --order-id WMT-100234 --date 2026-08-05
+python scripts/ops/run_projection_cli.py --purchase-order-id <uuid> --date 2026-08-05
 python scripts/ops/run_projection_cli.py --all-open
 ```
 
 ## Tests
 
 ```bash
-pytest -v
+pytest tests/unit/ -v
 ```
 
-Runs against an in-memory SQLite database (both `cmir` and `fines` schemas
-translated away for SQLite, see `app/db/session.py`) — no live Postgres
-required. `tests/integration/` exercises a real Postgres connection and
-skips (rather than failing) when one isn't reachable at `DATABASE_URL`.
+Runs against an in-memory SQLite database (every schema translated away for
+SQLite, see `app/db/session.py`) — no live Postgres required.
+`tests/integration/` exercises a real Postgres connection and skips (rather
+than failing) when one isn't reachable at `DATABASE_URL`.
 
 ## Docs
 
@@ -121,15 +127,22 @@ Reference:
 ```
 app/
   main.py                 -- FastAPI app factory
-  api/v1/                   -- routers (cmir + po_validation + fines + batches)
-  core/                       -- config, exceptions, container (CMIR composition root), rate_limit
-  services/                     -- business logic (cmir_run_service, po_validation_service, fine_projection_service, fine_seeding, fine_projection_summary, ...)
-    fine_projection/                -- pure calculation, no SQLAlchemy/FastAPI
-  agents/                            -- LLM/LangGraph layer: providers/ (shared), cmir/, po_validation/, and fine_projection_summary/ (domain-first, one folder per agent)
-  queue/                               -- fines job-queue dispatch backends behind one Protocol, plus the CMIR Service Bus producer
-  workers/                              -- the fines claim/execute/settle loop, plus the CMIR Service Bus consumer
-  models/                                 -- SQLAlchemy ORM + enums (cmir schema + fines schema)
-  repositories/                            -- database access
+  api/v1/                   -- routers: common/, penalties/, cmir.py, po_validation.py,
+                                workflow_threads.py + processing_errors.py (shared), admin.py
+  core/                       -- config/ (nested settings), exceptions.py + envelope.py,
+                                middleware/, rate_limit.py
+  services/                     -- business logic, domain-first: penalties/, cmir/,
+                                     po_validation/, seeding/
+    penalties/projection/         -- pure calculation, no SQLAlchemy/FastAPI
+  agents/                            -- LLM/LangGraph layer: providers/ (shared),
+                                        penalties/{projection,mitigation}/, cmir/, po_validation/
+  queue/                               -- job-queue dispatch backends behind one Protocol
+                                          (shared by both domains), plus the CMIR Service Bus producer
+  workers/                              -- the claim/execute/settle loop (shared), plus the
+                                            CMIR Service Bus consumer
+  models/                                 -- SQLAlchemy ORM + enums, one folder per schema:
+                                             common/, process/ (shared backbone), cmir/, penalties/
+  repositories/                            -- database access, mirrors models/ 1:1
   schemas/                                   -- Pydantic request/response models
 alembic/                -- migrations (single linear history across every schema)
 tests/unit/             -- pytest (in-memory SQLite)
@@ -152,23 +165,22 @@ Main endpoints (base path `/api/v1`):
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/ingest/emails` | Start one email ingest batch. |
-| `GET` | `/runs?view=threads` | Reviewer queue: list workflow threads. |
-| `GET` | `/runs?view=agents` | Ops view: list per-email agent runs. |
-| `GET` | `/runs?view=batches` | Ops view: list batch rollups by `batch_id`. |
-| `GET` | `/threads/{thread_id}/stage` | Get current stage/status for one thread. |
-| `GET` | `/threads/{thread_id}/snapshot` | Get email, CMIR draft, and HITL history. |
-| `POST` | `/threads/{thread_id}/missing-fields` | Submit missing mandatory fields and resume graph. |
-| `POST` | `/threads/{thread_id}/update` | Save reviewer draft edits. |
-| `POST` | `/threads/{thread_id}/decision` | Approve or reject a draft. |
+| `POST` | `/cmir/email-events` | Start one email ingest batch. |
+| `GET` | `/workflow-threads?domain=cmir` | Reviewer queue: list workflow threads. |
+| `GET` | `/job-runs?job_type=CMIR_EMAIL_INGEST` | Ops view: batch/run rollups (shared job-queue resource). |
+| `GET` | `/workflow-threads/{thread_id}` | Get current stage/status for one thread (`?include=snapshot` for the full snapshot). |
+| `POST` | `/workflow-threads/{thread_id}/missing-fields` | Submit missing mandatory fields and resume graph. |
+| `PATCH` | `/workflow-threads/{thread_id}/draft` | Save reviewer draft edits. |
+| `POST` | `/workflow-threads/{thread_id}/decisions` | Approve or reject a draft (`decision_type` discriminator). |
 
-Common error responses (`ServiceError`, see `app/core/exceptions.py`):
+Common error responses (see `app/core/exceptions.py`'s collapsed `AppError`
+hierarchy — `{success, message, data, error}` envelope on every route):
 
 - `THREAD_STALE` — refetch the latest `updated_at` and retry as `expected_updated_at`.
 - `THREAD_NOT_WAITING` — missing-fields requires `waiting_missing_fields`;
-  update/decision require `waiting_approval` (check `workflow_threads.status`).
+  update/decision require `waiting_approval` (check `workflow_thread.status`).
 - `CMIR_VERSION_CONFLICT` (HTTP 409) — another thread's approval already
-  superseded the active `cmir_records` row for this customer/material while
+  superseded the active `cmir_record` row for this customer/material while
   this thread was waiting. The thread closes to `COMPLETED_CONFLICT` and does
   not reopen automatically; fetch the winning thread's snapshot or start a new one.
 

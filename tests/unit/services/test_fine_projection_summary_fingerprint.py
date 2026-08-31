@@ -2,19 +2,19 @@
 DB-free function over the engine's OUTPUTS for the "current" day plus
 material facts, deliberately excluding as_of_date/current_projection_date,
 any generated-at timestamp, and days_to_delivery. See
-app/agents/fine_projection_summary/prompts/v3.py and PROGRESS.local.md for why."""
+app/agents/penalties/projection/prompts/v3.py and PROGRESS.local.md for why."""
 
 from datetime import date
 from typing import Any
 
-from app.agents.fine_projection import (
+from app.agents.penalties.projection import (
     ActiveRule,
     DailyHistoryEntry,
-    FineProjectionSummaryContext,
     OrderContext,
+    PenaltyProjectionSummaryContext,
     ViolationEntry,
 )
-from app.services.fine_projection.summary import _compute_content_fingerprint, _fmt_number
+from app.services.penalties.projection.summary_service import _compute_content_fingerprint, _fmt_number
 
 
 def _order(**overrides: Any) -> OrderContext:
@@ -37,7 +37,7 @@ def _violation(**overrides: Any) -> ViolationEntry:
         "violation_type": "OTIF_LATE",
         "rule_id": "RULE-FP-FLAT",
         "probability": 0.05,
-        "expected_fine": 2.5,
+        "expected_penalty": 2.5,
     }
     fields.update(overrides)
     return ViolationEntry(**fields)
@@ -56,7 +56,7 @@ def _entry(**overrides: Any) -> DailyHistoryEntry:
         "shortage_probability": 0.05,
         "delay_probability": 0.05,
         "violations": [_violation()],
-        "total_expected_fine": 2.5,
+        "total_expected_penalty": 2.5,
     }
     fields.update(overrides)
     return DailyHistoryEntry(**fields)
@@ -80,8 +80,8 @@ def _context(
     active_rules: list[ActiveRule] | None = None,
     order: OrderContext | None = None,
     stacking_mode: str = "SUM",
-) -> FineProjectionSummaryContext:
-    return FineProjectionSummaryContext(
+) -> PenaltyProjectionSummaryContext:
+    return PenaltyProjectionSummaryContext(
         order=order or _order(),
         current_projection_date=current_projection_date,
         stacking_mode=stacking_mode,
@@ -113,10 +113,12 @@ def test_changed_probability_changes_the_hash():
     assert baseline != changed
 
 
-def test_changed_expected_fine_changes_the_hash():
+def test_changed_expected_penalty_changes_the_hash():
     baseline = _compute_content_fingerprint(_context())
     changed = _compute_content_fingerprint(
-        _context(daily_history=[_entry(violations=[_violation(expected_fine=7.5)], total_expected_fine=7.5)])
+        _context(
+            daily_history=[_entry(violations=[_violation(expected_penalty=7.5)], total_expected_penalty=7.5)]
+        )
     )
 
     assert baseline != changed

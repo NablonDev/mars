@@ -11,8 +11,9 @@ you weren't around when this landed.
 
 ## 1. The mental model, in three sentences
 
-A **job** here is one row in the `fines.job_item` Postgres table: "project
-(or re-summarize) order X for date Y." A batch is one `fines.job_run` row
+A **job** here is one row in the `process.job_item` Postgres table --
+shared infrastructure used by both the `penalties` and `cmir`/`po_validation`
+domains, discriminated by `item_type`. A batch is one `process.job_run` row
 plus N `job_item` rows under it.
 
 We use a database table as a queue instead of a message broker because the
@@ -36,32 +37,32 @@ about correctness — only how a worker finds out there's work to do.
 | File | What it's responsible for |
 |---|---|
 | `interfaces.py` | Two `Protocol`s: `JobDispatcher` (the write side — `dispatch`, `close`) and `JobSource` (the read/execute side — `claim_batch`, `heartbeat`, `ack`, `nack`, `dead_letter`, `release`, `reclaim_stale`). Nothing outside `app/queue/` may import a concrete backend class; everything else depends only on these two Protocols. |
-| `types.py` | `ClaimedJob` — a plain dataclass carrying everything a worker needs about one claimed row (`order_id`, `projection_date`, `task_type`, attempt counts, an opaque `receipt` for Service Bus's message handle). No SQLAlchemy or transport-SDK imports, so both backends can share it. Named `types.py`, not `models.py`, because in this repo `models` means SQLAlchemy ORM tables and `schemas` means Pydantic DTOs — `ClaimedJob` is neither. |
+| `types.py` | `ClaimedJob` — a plain dataclass carrying everything a worker needs about one claimed row (`job_item_id`, `job_run_id`, `item_type`, `dedupe_key`, attempt counts, an opaque `receipt` for Service Bus's message handle). The domain-shaped business key it used to carry directly (`order_id`/`projection_date`/`task_type`) is gone -- it moved off `process.job_item` onto each domain's own `job_item_context` extension table; a caller needing those fields looks up the matching context row itself, keyed on `job_item_id`. No SQLAlchemy or transport-SDK imports, so both backends can share it. Named `types.py`, not `models.py`, because in this repo `models` means SQLAlchemy ORM tables and `schemas` means Pydantic DTOs — `ClaimedJob` is neither. |
 | `postgres.py` | `PostgresJobQueue` — implements both Protocols by wrapping `JobQueueRepository` calls in short-lived sessions. `dispatch` here is nearly a no-op (see §3). |
 | `service_bus.py` | `ServiceBusJobQueue` — implements both Protocols by sending/receiving Azure Service Bus messages whose body is just a `job_item_id`, and still calling `JobQueueRepository.claim_batch` for the actual claim. PEEK_LOCK vs RECEIVE_AND_DELETE is a short comment at the top of this file. |
-| `factory.py` | `build_job_queue(settings, database)` — picks `PostgresJobQueue` or `ServiceBusJobQueue` based on `settings.job_queue_backend`. The only place a concrete backend class is named outside `app/queue/` itself. |
+| `factory.py` | `build_job_queue(settings, database)` — picks `PostgresJobQueue` or `ServiceBusJobQueue` based on `settings.job_queue.backend`. The only place a concrete backend class is named outside `app/queue/` itself. |
 
-### `app/repositories/job_queue.py` — the actual SQL
+### `app/repositories/process/job_queue.py` — the actual SQL
 
 One class, `JobQueueRepository`. This is where the "atomic claim" really
 happens (`claim_batch`, using `FOR UPDATE SKIP LOCKED` on Postgres, with a
 single-threaded SQLite fallback for tests — see the file's module docstring
 for the dialect-branching pattern used throughout). Other functions worth
-knowing: `enqueue` / `enqueue_many` (idempotent inserts — a request for an
-order/date/task already in flight returns the existing row instead of a
-duplicate), `mark_succeeded` / `mark_failed` / `mark_dead` (the three
+knowing: `enqueue` / `enqueue_many` (idempotent inserts, keyed on
+`dedupe_key` — a request already in flight returns the existing row
+instead of a duplicate), `mark_succeeded` / `mark_failed` / `mark_dead` (the three
 terminal-or-retry transitions), `reclaim_stale` (the visibility-timeout
 sweep), and `find_stranded_pending_projection_summaries` / `find_stranded_pending_mitigation_summaries`
-(used only by `app/workers/fine_projection.py` / `app/workers/fine_mitigation.py`, see below).
+(used only by `app/workers/penalty_projection.py` / `app/workers/penalty_mitigation.py`, see below).
 
 ### `app/workers/` — claims and runs the work
 
 | File | What it's responsible for |
 |---|---|
 | `loop.py` | `process_jobs` — the concurrent claim/execute/settle loop that powers the nightly batch (§4 walks through it end to end). Domain-agnostic: also `classify_failure`, `compute_backoff_seconds`, and `WorkerLoopSummary`. (`SweepResult`, the shared return type for both domains' sweep functions, lives in `app/queue/types.py` instead — putting it in `loop.py` would create an import cycle, since `loop.py` imports `dispatch.py`, which imports both domain modules.) |
-| `dispatch.py` | `execute_job` — the dispatch table for a single claimed item: routes `ORDER_RUN`/`PROJECTION_SUMMARY_REGEN` to `fine_projection.py` and `MITIGATION_SUMMARY_REGEN` to `fine_mitigation.py`. Everything in `loop.py` exists to call this safely and handle what it raises. |
-| `fine_projection.py` | `run_projection`/`run_summary` (the actual per-item work for `ORDER_RUN`/`PROJECTION_SUMMARY_REGEN`), `enqueue_daily_run` (builds one `job_run` plus one `ORDER_RUN` `job_item` per OPEN order), and `sweep_stranded_pending_projection_summaries` — a narrow recovery job for one specific durability gap (see §4.3), not a general retry mechanism. |
-| `fine_mitigation.py` | `run_mitigation_summary` and `sweep_stranded_pending_mitigation_summaries` — the mitigation-summary mirror of `fine_projection.py`'s per-item work and sweep; mitigation has no nightly-enqueue equivalent (on-demand only). |
+| `dispatch.py` | `execute_job` — the dispatch table for a single claimed item: routes `ORDER_RUN`/`PROJECTION_SUMMARY_REGEN` to `penalty_projection.py` and `MITIGATION_SUMMARY_REGEN` to `penalty_mitigation.py` (was `fine_projection.py`/`fine_mitigation.py`). `ClaimedJob.task_type` was renamed `item_type`, matching `process.job_item.item_type`. Everything in `loop.py` exists to call this safely and handle what it raises. |
+| `penalty_projection.py` | `run_projection`/`run_summary` (the actual per-item work for `ORDER_RUN`/`PROJECTION_SUMMARY_REGEN`), `enqueue_daily_run` (builds one `job_run` plus one `ORDER_RUN` `job_item` per OPEN purchase order), and `sweep_stranded_pending_projection_summaries` — a narrow recovery job for one specific durability gap (see §4.3), not a general retry mechanism. Also `sweep_expired_po_delivery_change_requests` (`docs/RUNBOOK.md` §10). |
+| `penalty_mitigation.py` | `run_mitigation_summary` and `sweep_stranded_pending_mitigation_summaries` — the mitigation-summary mirror of `penalty_projection.py`'s per-item work and sweep; mitigation has no nightly-enqueue equivalent (on-demand only). |
 
 ### `scripts/ops/run_daily_batch.py`
 
@@ -70,12 +71,13 @@ an advisory lock, reclaims stale rows, runs the sweep, enqueues today's
 work, drains the queue, and picks its own exit code deliberately (§4.1 and
 §7).
 
-### `app/api/v1/batches.py`
+### `app/api/v1/penalties/batches.py`
 
-Read-only(-ish) observability: `POST /batches/runs` (manual full-batch
-trigger), `GET /batches/{job_run_id}` (status/counts), `GET
-/batches/{job_run_id}/items` (per-item detail, with `last_error` never
-returned raw — only a fixed message built from `last_error_code`).
+Read-only(-ish) observability, shared by both domains: `POST /api/v1/job-runs` (dispatch a batch job,
+`job_type` selects the domain), `GET /api/v1/job-runs/{job_run_id}`
+(status/counts), `GET /api/v1/job-runs/{job_run_id}/items` (per-item
+detail, with `last_error` never returned raw — only a fixed message built
+from `last_error_code`).
 
 ---
 
@@ -84,7 +86,7 @@ returned raw — only a fixed message built from `last_error_code`).
 | Term | Lives at | Meaning |
 |---|---|---|
 | `create_run` | `JobQueueRepository` | Create one `job_run` row — the "batch" a set of items belongs to. |
-| `enqueue` / `enqueue_many` | `JobQueueRepository` | Insert one (or many) `job_item` rows, PENDING, idempotently — a duplicate request for the same order/date/task reuses the existing in-flight row instead of creating a second one. |
+| `enqueue` / `enqueue_many` | `JobQueueRepository` | Insert one (or many) `job_item` rows, PENDING, idempotently — a duplicate request with the same `dedupe_key` reuses the existing in-flight row instead of creating a second one. |
 | `set_requested_item_count` | `JobQueueRepository` | Correct a run's forecast count after `enqueue`/`enqueue_many` skipped some already-in-flight rows, so "is this run complete" can reconcile later. |
 | `dispatch` | `JobDispatcher` (both backends) | Tell a worker "this item is ready." Nearly a no-op on Postgres (polling finds the row regardless); a real message send on Service Bus. |
 | `claim_batch` | `JobSource` (both backends) | A worker atomically takes ownership of up to N PENDING rows, flipping them to RUNNING. |
@@ -128,7 +130,9 @@ Standard message-queue vocabulary, not invented here: **ack** = succeeded,
 **nack** = failed but worth retrying, **dead_letter** = failed permanently,
 don't retry. `classify_failure` in `app/workers/loop.py` is the function
 that decides which of the three a given exception maps to (domain-agnostic
-— it classifies by exception type, not by which fine sub-domain raised it).
+— it classifies by exception type/category (`NotFoundError`, `ValidationError`,
+`BusinessRuleError` → DEAD_LETTER; everything else → NACK), not by which
+penalty sub-domain raised it).
 
 ---
 
@@ -143,13 +147,13 @@ that decides which of the three a given exception maps to (domain-agnostic
    not an error, just "still draining from before."
 2. `job_source.reclaim_stale(...)` — reset anything left RUNNING by a
    worker that died mid-item.
-3. `sweep_stranded_pending_projection_summaries(...)` (`app/workers/fine_projection.py`) — a
+3. `sweep_stranded_pending_projection_summaries(...)` (`app/workers/penalty_projection.py`) — a
    narrower recovery pass, see §4.3. `sweep_stranded_pending_mitigation_summaries(...)`
-   (`app/workers/fine_mitigation.py`) does the same for the mitigation-summary ledger.
-4. `enqueue_daily_run(...)` (`app/workers/fine_projection.py`) — resolve "today" in
-   `settings.penalty_business_timezone`, create one `job_run`
+   (`app/workers/penalty_mitigation.py`) does the same for the mitigation-summary ledger.
+4. `enqueue_daily_run(...)` (`app/workers/penalty_projection.py`) — resolve "today" in
+   `settings.summary.business_timezone`, create one `job_run`
    (`SCHEDULED_DAILY`), bulk-insert one `ORDER_RUN` `job_item` per OPEN
-   order via `JobQueueRepository.enqueue_many`, then `dispatch()` each new
+   purchase order via `JobQueueRepository.enqueue_many`, then `dispatch()` each new
    item id one at a time.
 5. `process_jobs(...)` (`app/workers/loop.py`) — claims batches, submits
    each to a `ThreadPoolExecutor`, and loops until the queue is empty
@@ -162,56 +166,61 @@ that decides which of the three a given exception maps to (domain-agnostic
 
 Per-item execute path (`dispatch.execute_job`): for `ORDER_RUN`, runs the
 projection (`ProjectionService.run_for_order`) then the summary
-(`FineProjectionSummaryService.get_or_schedule` + `run_generation`), in a fresh DB
+(`ProjectionSummaryService.get_or_schedule` + `run_generation`), in a fresh DB
 session for each phase — never a session held open across the LLM call.
 For `PROJECTION_SUMMARY_REGEN`, only the summary half runs (it assumes a projection
-already exists). Both live in `app/workers/fine_projection.py`; the mirror
-path for `MITIGATION_SUMMARY_REGEN` lives in `app/workers/fine_mitigation.py`.
+already exists). Both live in `app/workers/penalty_projection.py`; the mirror
+path for `MITIGATION_SUMMARY_REGEN` lives in `app/workers/penalty_mitigation.py`.
 
-### 4.2 On-demand summary — `POST /orders/{order_id}/projection-summary`
+### 4.2 On-demand summary — `POST /purchase-orders/{purchase_order_id}/penalty-projections/summary`
 
-`app/api/v1/fine_projection/summaries.py::generate_fine_projection_summary`:
+`app/api/v1/penalties/projections.py::trigger_penalty_projection_summary`,
+via `ProjectionSummaryService.get_or_schedule` (`app/services/penalties/_summary_base.py`,
+shared with the mitigation-summary side):
 
-1. `FineProjectionSummaryService.get_or_schedule(...)` — cache hit? Return the READY
-   summary synchronously (200). Cache miss? It writes a PENDING
-   `projection_summary` ledger row (a *different* table from `job_item` —
-   this one holds the generated narrative, not queue state) and commits.
-2. `enqueue_and_dispatch_summary_job(...)` (`app/api/dependencies.py`) —
-   writes a `PROJECTION_SUMMARY_REGEN` `job_item` row for this same order/date,
-   commits, then dispatches it.
-3. `background_tasks.add_task(run_summary_job, ..., job_item_id)` — hands
-   the actual work to FastAPI's `BackgroundTasks`.
-4. Returns 202 PENDING immediately.
+1. Cache hit (or a reusable prior summary, when `SUMMARY_REUSE_ENABLED`)?
+   Return the READY summary synchronously (200).
+2. Cache miss? Write a PENDING `penalty_summary` ledger row (a *different*
+   table from `job_item` — this one holds the generated narrative, not
+   queue state), then `_enqueue_regeneration_job(...)` creates a
+   `process.job_run`/`job_item` (with a matching `penalty_job_item_context`
+   row in the same transaction) for a worker to later pick up, and commits.
+3. Returns 202 PENDING immediately.
 
-**Why write a `job_item` at all, when `BackgroundTasks` is what actually
-does the work?** Because `BackgroundTasks` has no crash-recovery story of
-its own — if the API process dies mid-generation, the background task
-just vanishes, and without a `job_item`, nothing would ever know that
-order/date needed reprocessing. The `job_item` row is a durable *recovery
-point*, not a work handoff: `get_fine_projection_summary_job_runner`'s returned
-callable (`app/api/dependencies.py`) claims that same row via
-`JobQueueRepository.claim_batch` before doing anything, and settles it
-(`mark_succeeded`/`mark_dead`) when done. If the process dies before that,
-the row sits PENDING/RUNNING, and the next nightly `reclaim_stale` +
-sweep will pick it up. The dispatcher is never given the row for Service
-Bus consumption on this path — on-demand deliberately doesn't dispatch
-to a second consumer.
+**This on-demand path no longer runs the LLM call itself.** Earlier
+versions of this flow handed the actual work to FastAPI's
+`BackgroundTasks` right after enqueuing the `job_item` (`background_tasks.add_task(...)`,
+gated by a process-local semaphore/`RateLimitGate`). That inline-execution
+step, and the semaphore/gate around it, do not exist in the current
+codebase — the route's own comment says so
+(`app/api/v1/penalties/projections.py::trigger_penalty_projection_summary`:
+"No worker in this pass actually drains that queue"). **Practically, a 202
+PENDING here only ever leaves PENDING once a worker actually claims and
+runs that `job_item`** -- today that means `scripts/ops/run_daily_batch.py`
+(or `run_projection_cli.py --with-summary`), not the API process itself.
+`SUMMARY_ON_DEMAND_MAX_CONCURRENT_SUMMARIES`/`SUMMARY_ON_DEMAND_ACQUIRE_TIMEOUT_SECONDS`
+were the same class of dead-config gap flagged for
+`JOB_QUEUE_MAX_ATTEMPTS` previously (declared in `app/core/config/summary.py`
+but read by nothing) — removed rather than left sitting there once this
+was confirmed; `get_or_schedule` has no concurrency-bounded inline path to
+configure at all.
 
-`POST /orders/{order_id}/projections/runs` (`app/api/v1/fine_projection/projections.py`) does the same
-thing for its summary half, after running the projection synchronously
-inline first.
+`POST /purchase-orders/{purchase_order_id}/penalty-mitigations/summary`
+(`app/api/v1/penalties/mitigations.py`) does the same thing for its
+summary half, via `MitigationSummaryService.get_or_schedule`.
 
 ### 4.3 What happens when something fails
 
 Inside `_process_job` (`app/workers/loop.py`), any exception from
 `dispatch.execute_job` goes through `classify_failure`:
 
-- `OrderNotFoundError`, `NoActiveRulesError`, `NoProjectionExistsError`,
-  `InvalidAsOfDateError`, or a bare `ValueError` (bad/unknown `task_type`)
+- `NotFoundError`, `ValidationError`, or `BusinessRuleError` (the collapsed
+  `AppError` categories -- e.g. `PO_NOT_FOUND`, `NO_ACTIVE_RULES`,
+  `NO_PROJECTION_EXISTS`, `INVALID_AS_OF_DATE`), or a bare `ValueError` not
+  wrapped in an `AppError` (bad/unknown `item_type`)
   → **DEAD_LETTER**. Retrying would fail identically every time.
-- Everything else (`ExternalServiceError` incl. `ToolLoopExhaustedError`,
-  `OperationalError`/`DBAPIError`, an exceeded item deadline, or any
-  unclassified exception) → **NACK**.
+- Everything else (`ExternalServiceError`, `OperationalError`/`DBAPIError`,
+  an exceeded item deadline, or any unclassified exception) → **NACK**.
 
 A NACK'd item goes back to PENDING with a delay computed by
 `compute_backoff_seconds` — exponential, capped, with jitter — *unless*
@@ -220,14 +229,14 @@ A NACK'd item goes back to PENDING with a delay computed by
 DEAD instead. A DEAD_LETTER'd item skips that budget entirely and goes DEAD
 on the very first occurrence.
 
-The separate two-commit durability gap that `app/workers/fine_projection.py`'s
-sweep exists for is narrower than ordinary retry: `FineProjectionSummaryService.get_or_schedule`
-writes its PENDING `projection_summary` row and commits *before* the caller
+The separate two-commit durability gap that `app/workers/penalty_projection.py`'s
+sweep exists for is narrower than ordinary retry: `ProjectionSummaryService.get_or_schedule`
+writes its PENDING `penalty_summary` row and commits *before* the caller
 gets a chance to write the matching `job_item` in a second commit. If the
 process dies in that window, the ledger row is stuck PENDING with nothing
 watching it — no `job_item` ever existed to retry or dead-letter. The
-sweep finds exactly that: a PENDING `projection_summary` row with **no**
-`job_item` at all (any status, any task_type), and enqueues one.
+sweep finds exactly that: a PENDING `penalty_summary` row with **no**
+`job_item` at all (any status, any item_type), and enqueues one.
 
 ---
 
@@ -306,10 +315,10 @@ Reorganized, not changed in behavior:
 
 | Symptom | Look here |
 |---|---|
-| A nightly run didn't finish / didn't start | `scripts/ops/run_daily_batch.py` logs (advisory lock message, or an infra-failure exit); `GET /batches/{job_run_id}` for counts; check whether the advisory lock (key `837_401_559`) is stuck held by a dead process. |
-| One order's summary is stuck PENDING | `GET /orders/{order_id}/projection-summary` for the `projection_summary` status; find its `job_item` (query by `order_id`/`projection_date`/`task_type=PROJECTION_SUMMARY_REGEN`) — if there's no `job_item` at all, the next `run_daily_batch.py` sweep will recover it; if there's a stale RUNNING one, `reclaim_stale` recovers it after `job_queue_visibility_timeout_seconds`. |
-| An item keeps failing and won't stop retrying | `GET /batches/{job_run_id}/items?status=DEAD` for `last_error_code`; check `classify_failure` in `app/workers/loop.py` for whether that error type should actually be DEAD_LETTER instead of NACK. |
-| I want to add a new job type | Add a `JobTaskType` member (`app/models/enums.py` — needs a migration, since the CHECK constraint is derived from it), handle it in `dispatch.execute_job` (dispatching to `fine_projection.py`/`fine_mitigation.py` as appropriate), and decide whether `classify_failure` needs a new non-retryable exception type for it. |
-| I want to change how many workers run concurrently | `settings.job_queue_worker_concurrency` (`app/core/config.py`) — but raising this without raising `db_pool_size`/`db_max_overflow` causes a silent stall, not an error. |
+| A nightly run didn't finish / didn't start | `scripts/ops/run_daily_batch.py` logs (advisory lock message, or an infra-failure exit); `GET /api/v1/job-runs/{job_run_id}` for counts; check whether the advisory lock (key `837_401_559`) is stuck held by a dead process. |
+| A PO's summary is stuck PENDING | `GET /purchase-orders/{purchase_order_id}/penalty-projections?include=summary` for the `penalty_summary` status; find its `job_item` via the matching `penalties.penalty_job_item_context` row — if there's no `job_item` at all, the next `run_daily_batch.py` sweep will recover it; if there's a stale RUNNING one, `reclaim_stale` recovers it after `JOB_QUEUE_VISIBILITY_TIMEOUT_SECONDS`. Remember (§4.2): nothing drains this on-demand `job_item` except a batch run today -- it will not resolve on its own from `BackgroundTasks`. |
+| An item keeps failing and won't stop retrying | `GET /api/v1/job-runs/{job_run_id}/items?status=DEAD` for `last_error_code`; check `classify_failure` in `app/workers/loop.py` for whether that error type should actually be DEAD_LETTER instead of NACK. |
+| I want to add a new job type | Add a `JobTaskType` member (`app/models/enums.py` — needs a migration, since the CHECK constraint is derived from it), handle it in `dispatch.execute_job` (dispatching to `penalty_projection.py`/`penalty_mitigation.py` as appropriate), and decide whether `classify_failure` needs a new non-retryable `AppError` category for it. |
+| I want to change how many workers run concurrently | `settings.job_queue.worker_concurrency` (`JOB_QUEUE_WORKER_CONCURRENCY`) — but raising this without raising `settings.database.pool_size`/`max_overflow` causes a silent stall, not an error. |
 | Rate limit (429) errors from Azure OpenAI | `app/core/rate_limit.py` — `RateLimitGate`/`looks_like_rate_limit`; check `summary.rate_limit_hits` in the batch's printed summary line. |
-| I want to switch dispatch backends | `JOB_QUEUE_BACKEND` env var / `settings.job_queue_backend`; see `app/queue/factory.py`. Service Bus is implemented and tested but has never been validated against a live namespace — be careful before flipping this in production. |
+| I want to switch dispatch backends | `JOB_QUEUE_BACKEND` env var / `settings.job_queue.backend`; see `app/queue/factory.py`. Service Bus is implemented and tested but has never been validated against a live namespace — be careful before flipping this in production. |

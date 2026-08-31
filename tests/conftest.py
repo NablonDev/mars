@@ -4,54 +4,74 @@ SQLite database (StaticPool keeps the single in-memory connection alive
 across the whole test), never a real Postgres -- fast, no external
 service required.
 
-No composition-root class to stub here: the FastAPI app builds its own
-`Database` in a `lifespan` handler, and `TestClient(app)` used outside a
-`with` block never runs lifespan -- so `app.state.database` is never
-populated in tests. Both `get_session` (per-request Session) and
-`get_database` (the process-wide engine, used by the health check) are
-overridden to point at the SQLite fixture instead.
+Phase 2 (repositories) of the common/process/cmir/penalties restructure
+(see `/home/kaustubhtrivedi/.claude/plans/snoopy-crafting-kazoo.md`)
+restores the repository-layer fixtures Phase 1 temporarily stripped, at
+their new locations. Phase 3 (services) adds the `penalty_job_item_context`/
+`penalty_job_run_context`/`cmir_job_item_context`/`cmir_job_run_context`
+repository fixtures those tables were deferred to this phase for.
+
+Phase 7a (API surface) restores the `app`/`client`/`seeded_client`
+fixtures, for the `common`/`penalties` domain at least (CMIR/PO-validation
+routes are mounted but not exercised through these fixtures -- `service`/
+`po_service` are fakes, see `_FakeCmirRunService`/`_FakePoValidationService`
+below, so `create_app` never has to build the real Postgres-backed LangGraph
+composition root for a test that only needs `common`/`penalties`).
+
+No composition-root class to stub for the database itself: `app.state.database`
+is set directly to the SQLite `database` fixture (the FastAPI app's own
+`lifespan` handler, which would otherwise build a Postgres `Database`, never
+runs -- `TestClient(app)` used outside a `with` block skips it entirely; see
+`test_main_lifespan.py` for the one place that does use a `with` block).
+`require_internal_api_key`/`get_llm_client`/`get_job_queue` are overridden
+via `dependency_overrides` instead.
 """
 
 import os
 
-# INTERNAL_API_KEY is a required setting (see app/core/config.py) with no
-# default -- Settings() raises without it. setdefault() so a real value in
-# the environment/.env wins, but the suite never depends on one existing:
-# this must run before anything below imports app.* (app.api.dependencies
-# calls get_settings() at import time). Exposed as a constant so
+# APP_INTERNAL_API_KEY is a required setting (see app/core/config/app.py)
+# with no default -- Settings() raises without it. setdefault() so a real
+# value in the environment/.env wins, but the suite never depends on one
+# existing: this must run before anything below imports app.* (app.api.
+# dependencies calls get_settings() at import time). Exposed as a constant so
 # tests/unit/api/test_internal_api_key.py -- which exercises the real
 # dependency instead of the override below -- can assert against it.
 TEST_INTERNAL_API_KEY = "test-internal-api-key-do-not-use-in-prod-000000000000000000000000"
-os.environ.setdefault("INTERNAL_API_KEY", TEST_INTERNAL_API_KEY)
+os.environ.setdefault("APP_INTERNAL_API_KEY", TEST_INTERNAL_API_KEY)
 
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 
-from app.api.dependencies import (
-    get_database,
-    get_job_queue,
-    get_llm_client,
-    get_session,
-    require_internal_api_key,
-)
-from app.core.config import Settings
 from app.db.session import Database
-from app.main import create_app
-from app.queue.factory import build_job_queue
-from app.repositories.agent_registry import PromptRegistryRepository
-from app.repositories.fine_master_data import MasterDataRepository
-from app.repositories.fine_mitigation.mitigation import MitigationRepository
-from app.repositories.fine_projection.po_delivery_change_request import PoDeliveryChangeRequestRepository
-from app.repositories.fine_projection.projection import ProjectionRepository
-from app.repositories.fine_rule import FineRuleRepository
-from app.repositories.job_queue import JobQueueRepository
-from app.repositories.order import OrderRepository
-from app.services.fine_projection.po_delivery_change import PoDeliveryChangeRequestService
-from app.services.fine_projection.service import FineProjectionService
-from app.services.seeding.service import FineSeedingService
+from app.repositories.cmir.action_log import ActionLogRepository
+from app.repositories.cmir.cmir_record import CmirRecordRepository
+from app.repositories.cmir.email import EmailRepository
+from app.repositories.cmir.job_context import CmirJobItemContextRepository, CmirJobRunContextRepository
+from app.repositories.common.fulfillment import FulfillmentRepository
+from app.repositories.common.master_data import MasterDataRepository
+from app.repositories.common.purchase_order import PurchaseOrderRepository
+from app.repositories.penalties.delivery_change_request import PoDeliveryChangeRequestRepository
+from app.repositories.penalties.job_context import (
+    PenaltyJobItemContextRepository,
+    PenaltyJobRunContextRepository,
+)
+from app.repositories.penalties.mitigation import MitigationInputRepository, MitigationOptionRepository
+from app.repositories.penalties.projection import ActualPenaltyRepository, PenaltyProjectionRepository
+from app.repositories.penalties.rule import PenaltyRuleRepository
+from app.repositories.penalties.summary import PenaltySummaryRepository
+from app.repositories.process.agent_registry import (
+    AgentRegistryRepository,
+    AgentRunRepository,
+    AgentTraceRepository,
+)
+from app.repositories.process.job_queue import JobQueueRepository
+from app.repositories.process.workflow import (
+    HumanActionRepository,
+    ProcessingErrorRepository,
+    WorkflowThreadRepository,
+)
 
 
 @pytest.fixture
@@ -66,16 +86,46 @@ def database() -> Database:
 
 
 @pytest.fixture
-def job_queue(database: Database):
-    """The default ("postgres") backend, built against the SQLite test
-    `database` fixture -- `PostgresJobQueue` only ever wraps
-    `JobQueueRepository` calls, which already has a SQLite-compatible
-    fallback for every method (see that module's docstring), so this
-    needs no real Postgres. A plain `Settings()` (not `get_settings()`)
-    is used deliberately so this is never affected by whatever
-    `JOB_QUEUE_BACKEND` happens to be set in the local environment/.env.
-    """
-    return build_job_queue(Settings(), database)
+def db_session(database: Database):
+    with database.session() as session:
+        yield session
+
+
+@pytest.fixture
+def repos(db_session):
+    """A lightweight bundle of repositories sharing one Session, for tests
+    that exercise the repository layer directly rather than through a
+    service or HTTP. Just test plumbing (SimpleNamespace) -- production
+    code wires these per-request via app/api/dependencies.py, not through
+    a bundle. Unlike the pre-restructure `services` fixture this replaces,
+    this bundles repositories only -- no service-layer objects (those are
+    Phase 3, and still keyed on deleted models today)."""
+    return SimpleNamespace(
+        master_data=MasterDataRepository(db_session),
+        purchase_orders=PurchaseOrderRepository(db_session),
+        fulfillment=FulfillmentRepository(db_session),
+        penalty_rules=PenaltyRuleRepository(db_session),
+        penalty_projections=PenaltyProjectionRepository(db_session),
+        actual_penalties=ActualPenaltyRepository(db_session),
+        penalty_summaries=PenaltySummaryRepository(db_session),
+        mitigation_inputs=MitigationInputRepository(db_session),
+        mitigation_options=MitigationOptionRepository(db_session),
+        delivery_change_requests=PoDeliveryChangeRequestRepository(db_session),
+        job_queue=JobQueueRepository(db_session),
+        agent_registry=AgentRegistryRepository(db_session),
+        agent_runs=AgentRunRepository(db_session),
+        agent_traces=AgentTraceRepository(db_session),
+        workflow_threads=WorkflowThreadRepository(db_session),
+        human_actions=HumanActionRepository(db_session),
+        processing_errors=ProcessingErrorRepository(db_session),
+        emails=EmailRepository(db_session),
+        action_log=ActionLogRepository(db_session),
+        cmir_records=CmirRecordRepository(db_session),
+        penalty_job_item_context=PenaltyJobItemContextRepository(db_session),
+        penalty_job_run_context=PenaltyJobRunContextRepository(db_session),
+        cmir_job_item_context=CmirJobItemContextRepository(db_session),
+        cmir_job_run_context=CmirJobRunContextRepository(db_session),
+    )
 
 
 class _UnconfiguredFakeChatClient:
@@ -83,6 +133,10 @@ class _UnconfiguredFakeChatClient:
 
     Any test that actually reaches an LLM-calling code path must provide
     its own richer fake through dependency_overrides[get_llm_client].
+
+    Kept verbatim (unused) during the Phase 1/2 conftest reduction above --
+    it is the guard against live LLM calls in tests and is wired back into
+    the `app` fixture's dependency_overrides once that fixture returns.
     """
 
     model_name = "fake-model"
@@ -95,102 +149,119 @@ class _UnconfiguredFakeChatClient:
         )
 
 
+class _NoOpJobQueue:
+    """Minimal JobDispatcher+JobSource double for the `app`/`client`
+    fixtures below -- no lifespan runs (no `with TestClient(app):` block),
+    so nothing here needs to actually deliver anything; only `dispatch` is
+    ever called by a route in this test configuration (POST /job-runs)."""
+
+    def dispatch(self, job_item_id, *, delay_seconds: int = 0) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def claim_batch(self, worker_id: str, limit: int) -> list:
+        return []
+
+    def heartbeat(self, job, worker_id: str) -> bool:
+        return True
+
+    def ack(self, job, worker_id: str) -> None:
+        pass
+
+    def nack(self, job, worker_id: str, *, error: str, error_code: str, retry_in_seconds: int) -> None:
+        pass
+
+    def dead_letter(self, job, worker_id: str, *, error: str, error_code: str) -> None:
+        pass
+
+    def release(self, job, worker_id: str) -> None:
+        pass
+
+    def reclaim_stale(self, visibility_timeout_seconds: int) -> int:
+        return 0
+
+
+class _FakeCmirRunService:
+    """Stand-in passed to `create_app(service=...)` so lifespan's `if
+    app.state.service is None: build_service()` branch is never reached
+    (these fixtures never run lifespan at all -- no `with TestClient(app):`
+    block -- but `create_app` still needs *some* value for `app.state.service`
+    up front). `build_service()` -> `Container.build()` opens a real
+    Postgres-backed LangGraph checkpointer, which no test using these
+    fixtures should ever need.
+
+    Default value of the `cmir_run_service` fixture below -- a test module
+    that needs the `client`/`app` fixtures to actually exercise cmir routes
+    overrides `cmir_run_service` (same fixture name) with a richer fake; see
+    `tests/unit/api/test_cmir_api.py`/`test_workflow_threads_api.py`."""
+
+
+class _FakePoValidationService:
+    """Same purpose as `_FakeCmirRunService`, for `app.state.po_service` /
+    the `po_validation_service` fixture below."""
+
+
 @pytest.fixture
-def app(database: Database, job_queue):
-    application = create_app()
-
-    def _get_test_db():
-        session = database.new_session()
-        try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
-
-    def _get_test_llm_client():
-        return _UnconfiguredFakeChatClient()
-
-    application.dependency_overrides[get_session] = _get_test_db
-    application.dependency_overrides[get_database] = lambda: database
-    application.dependency_overrides[get_job_queue] = lambda: job_queue
-    application.dependency_overrides[get_llm_client] = _get_test_llm_client
-    # Intentional, visible override: the rest of the suite exercises business
-    # logic, not the auth gate itself -- that gets its own dedicated tests in
-    # tests/unit/api/test_internal_api_key.py, which remove this override.
-    application.dependency_overrides[require_internal_api_key] = lambda: None
-
-    return application
+def cmir_run_service() -> object:
+    """Default fake for `app.state.service` -- override this fixture (same
+    name) in a test module to supply a fake implementing the
+    `CmirRunService` methods your test's routes actually call."""
+    return _FakeCmirRunService()
 
 
 @pytest.fixture
-def client(app) -> TestClient:
+def po_validation_service() -> object:
+    """Default fake for `app.state.po_service` -- override this fixture
+    (same name) in a test module to supply a fake implementing the
+    `PoValidationService` methods your test's routes actually call."""
+    return _FakePoValidationService()
+
+
+@pytest.fixture
+def app(database: Database, cmir_run_service: object, po_validation_service: object):
+    """A real `create_app()` FastAPI app, wired to the SQLite `database`
+    fixture instead of a Postgres-backed lifespan.
+
+    No `with` block is used, so lifespan never runs (see
+    `test_main_lifespan.py`, which uses a real `with` block precisely to
+    exercise it) -- `app.state.database` is set directly instead, `
+    require_internal_api_key`/`get_llm_client`/`get_job_queue` are
+    overridden, and `service`/`po_service` come from the
+    `cmir_run_service`/`po_validation_service` fixtures (trivial stand-ins
+    by default, so `create_app` never has to build the CMIR/PO-validation
+    composition root -- a real Postgres LangGraph checkpointer -- for tests
+    that only exercise `common`/`penalties` routes; overridable per test
+    module for cmir/po_validation/workflow-threads route coverage).
+    """
+    from app.api.dependencies import get_job_queue, get_llm_client, require_internal_api_key
+    from app.main import create_app
+
+    test_app = create_app(service=cmir_run_service, po_service=po_validation_service)
+    test_app.state.database = database
+
+    test_app.dependency_overrides[require_internal_api_key] = lambda: None
+    test_app.dependency_overrides[get_llm_client] = lambda: _UnconfiguredFakeChatClient()
+    test_app.dependency_overrides[get_job_queue] = lambda: (_NoOpJobQueue(), _NoOpJobQueue())
+
+    return test_app
+
+
+@pytest.fixture
+def client(app):
+    from fastapi.testclient import TestClient
+
     return TestClient(app)
 
 
 @pytest.fixture
-def db_session(database: Database):
-    with database.session() as session:
-        yield session
-
-
-@pytest.fixture
-def services(db_session):
-    """A lightweight bundle of repositories/services sharing one Session,
-    for tests that exercise the repository/service layer directly rather
-    than through HTTP. Just test plumbing (SimpleNamespace) -- production
-    code wires these per-request via app/api/dependencies.py, not through a bundle."""
-    master_data = MasterDataRepository(db_session)
-    rules = FineRuleRepository(db_session)
-    orders = OrderRepository(db_session)
-    projections = ProjectionRepository(db_session)
-    prompt_registry = PromptRegistryRepository(db_session)
-    mitigation = MitigationRepository(db_session)
-    projection_service = FineProjectionService(
-        orders=orders,
-        rules=rules,
-        master_data=master_data,
-        projections=projections,
-    )
-    po_delivery_change_requests = PoDeliveryChangeRequestRepository(db_session)
-    po_delivery_change_service = PoDeliveryChangeRequestService(
-        orders=orders,
-        po_delivery_change_requests=po_delivery_change_requests,
-        projection_service=projection_service,
-        master_data=master_data,
-    )
-    job_queue = JobQueueRepository(db_session)
-    seeding_service = FineSeedingService(
-        master_data=master_data,
-        rules=rules,
-        orders=orders,
-        projection_service=projection_service,
-        mitigation=mitigation,
-        po_delivery_change_service=po_delivery_change_service,
-        po_delivery_change_requests=po_delivery_change_requests,
-        job_queue=job_queue,
-    )
-    return SimpleNamespace(
-        master_data=master_data,
-        rules=rules,
-        orders=orders,
-        projections=projections,
-        prompt_registry=prompt_registry,
-        mitigation=mitigation,
-        projection_service=projection_service,
-        po_delivery_change_requests=po_delivery_change_requests,
-        po_delivery_change_service=po_delivery_change_service,
-        job_queue=job_queue,
-        seeding_service=seeding_service,
-    )
-
-
-@pytest.fixture
-def seeded_client(client: TestClient) -> TestClient:
-    """A client with master data + the 4 example orders already seeded,
-    for tests that only care about what happens *after* seeding."""
+def seeded_client(client):
+    """A `client` with the four worked-example master data/orders/rules
+    already seeded and their day-by-day scenario replayed -- see
+    `PenaltySeedingService.seed_master_data`/`simulate_daily_run`."""
     resp = client.post("/api/v1/admin/seed-master-data")
+    assert resp.status_code == 200, resp.text
+    resp = client.post("/api/v1/admin/simulate-daily-run")
     assert resp.status_code == 200, resp.text
     return client

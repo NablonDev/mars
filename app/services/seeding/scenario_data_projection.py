@@ -3,11 +3,11 @@
 from datetime import date
 from typing import TypedDict
 
-from app.services.fine_projection import (
+from app.services.penalties.projection import (
     AppointmentStatus,
     CalcType,
-    FineRule,
     OrderSnapshot,
+    PenaltyRule,
     ProductionStatus,
 )
 
@@ -25,16 +25,16 @@ class _BaseSnapshotFields(TypedDict):
 
 
 WMT_RULES = [
-    FineRule(
+    PenaltyRule(
         "RULE-WMT-SHORT", "SHORT_SHIP", CalcType.PER_UNIT, rate=2.0, threshold_pct=0.02, cap_amount=5000
     ),
-    FineRule("RULE-WMT-OTIF", "OTIF_LATE", CalcType.PERCENT_OF_PO, rate=0.03, cap_amount=5000),
+    PenaltyRule("RULE-WMT-OTIF", "OTIF_LATE", CalcType.PERCENT_OF_PO, rate=0.03, cap_amount=5000),
 ]
 AMZ_RULES = [
-    FineRule(
+    PenaltyRule(
         "RULE-AMZ-FILL", "FILL_RATE", CalcType.PERCENT_OF_PO, rate=0.02, threshold_pct=0.03, cap_amount=3000
     ),
-    FineRule("RULE-AMZ-OTIF", "OTIF_LATE", CalcType.FLAT_FEE, rate=500.0, cap_amount=500),
+    PenaltyRule("RULE-AMZ-OTIF", "OTIF_LATE", CalcType.FLAT_FEE, rate=500.0, cap_amount=500),
 ]
 
 # ---------------------------------------------------------------------

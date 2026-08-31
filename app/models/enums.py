@@ -3,7 +3,7 @@
 JobItemStatus and SummaryStatus intentionally remain separate types even
 where their values overlap. They represent different persistence domains:
 job_item execution state, and the summary-record state shared by both
-fine projection and fine mitigation summaries, respectively.
+penalty projection and penalty mitigation summaries, respectively.
 """
 
 from __future__ import annotations
@@ -21,9 +21,15 @@ class JobItemStatus(StrEnum):
 
 
 class JobTaskType(StrEnum):
+    """`process.job_item.item_type` values -- shared by both the
+    `cmir`/`po_validation` and `penalties` domains now that job_run/
+    job_item live in `process`."""
+
     ORDER_RUN = "ORDER_RUN"
     PROJECTION_SUMMARY_REGEN = "PROJECTION_SUMMARY_REGEN"
     MITIGATION_SUMMARY_REGEN = "MITIGATION_SUMMARY_REGEN"
+    EMAIL_INGEST = "EMAIL_INGEST"
+    PO_VALIDATION = "PO_VALIDATION"
 
 
 class JobRunType(StrEnum):
@@ -33,9 +39,29 @@ class JobRunType(StrEnum):
 
 
 class SummaryStatus(StrEnum):
-    """Persistence state shared by both the fine projection summary and
-    fine mitigation summary records."""
+    """Persistence state shared by both the penalty projection summary and
+    penalty mitigation summary records."""
 
     PENDING = "PENDING"
     READY = "READY"
     FAILED = "FAILED"
+
+
+class SummaryType(StrEnum):
+    """`penalties.penalty_summary.summary_type` discriminator, replacing
+    what were two separate tables (`projection_summary`/
+    `mitigation_summary`)."""
+
+    PROJECTION = "PROJECTION"
+    MITIGATION = "MITIGATION"
+
+
+class AgentDomain(StrEnum):
+    """`process.agent.domain` values -- shared by both the `cmir`/
+    `po_validation` and `penalties` domains now that the agent registry
+    lives in `process`. Lowercase, matching every existing call site
+    (`domain="cmir"` / `domain="penalties"`), unlike this module's other,
+    uppercase enums."""
+
+    CMIR = "cmir"
+    PENALTIES = "penalties"

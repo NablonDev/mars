@@ -1,1 +1,1 @@
-"""Mars Petcare -- Projected Fines System."""
+"""Mars Petcare -- Projected Penalties System."""

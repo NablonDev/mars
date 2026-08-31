@@ -7,12 +7,12 @@ _compute_content_fingerprint docstring for why."""
 from datetime import date
 from typing import Any
 
-from app.agents.fine_mitigation import (
-    FineMitigationSummaryContext,
+from app.agents.penalties.mitigation import (
     MitigationOptionContext,
     OrderContext,
+    PenaltyMitigationSummaryContext,
 )
-from app.services.fine_mitigation.summary import _compute_content_fingerprint, _fmt_number
+from app.services.penalties.mitigation.summary_service import _compute_content_fingerprint, _fmt_number
 
 
 def _order(**overrides: Any) -> OrderContext:
@@ -33,12 +33,12 @@ def _order(**overrides: Any) -> OrderContext:
 def _option(**overrides: Any) -> MitigationOptionContext:
     fields: dict[str, Any] = {
         "action": "ACCEPT",
-        "projected_fine_after": 100.0,
+        "projected_penalty_after": 100.0,
         "action_cost": 0.0,
         "net_saving": 0.0,
         "risk_level": "HIGH",
         "confidence": "CONFIRMED",
-        "rationale": "Pay the projected fine as-is.",
+        "rationale": "Pay the projected penalty as-is.",
     }
     fields.update(overrides)
     return MitigationOptionContext(**fields)
@@ -49,13 +49,13 @@ def _context(
     current_projection_date: date = date(2026, 8, 5),
     mitigation_options: list[MitigationOptionContext] | None = None,
     order: OrderContext | None = None,
-    current_total_expected_fine: float = 100.0,
+    current_total_expected_penalty: float = 100.0,
     stacking_mode: str = "SUM",
-) -> FineMitigationSummaryContext:
-    return FineMitigationSummaryContext(
+) -> PenaltyMitigationSummaryContext:
+    return PenaltyMitigationSummaryContext(
         order=order or _order(),
         current_projection_date=current_projection_date,
-        current_total_expected_fine=current_total_expected_fine,
+        current_total_expected_penalty=current_total_expected_penalty,
         stacking_mode=stacking_mode,
         mitigation_options=mitigation_options if mitigation_options is not None else [_option()],
     )
@@ -96,7 +96,10 @@ def test_added_option_changes_the_hash():
             mitigation_options=[
                 _option(),
                 _option(
-                    action="SPEED_UP_PRODUCTION", net_saving=50.0, action_cost=30.0, projected_fine_after=20.0
+                    action="SPEED_UP_PRODUCTION",
+                    net_saving=50.0,
+                    action_cost=30.0,
+                    projected_penalty_after=20.0,
                 ),
             ]
         )
@@ -110,7 +113,7 @@ def test_option_order_does_not_change_the_hash():
     ranking (by net_saving) is a display concern, not a content-identity
     concern."""
     a = _option(action="ACCEPT")
-    b = _option(action="SPEED_UP_PRODUCTION", net_saving=50.0, action_cost=30.0, projected_fine_after=20.0)
+    b = _option(action="SPEED_UP_PRODUCTION", net_saving=50.0, action_cost=30.0, projected_penalty_after=20.0)
 
     fp1 = _compute_content_fingerprint(_context(mitigation_options=[a, b]))
     fp2 = _compute_content_fingerprint(_context(mitigation_options=[b, a]))
@@ -146,9 +149,9 @@ def test_changed_order_status_changes_the_hash():
     assert baseline != changed
 
 
-def test_changed_current_total_expected_fine_changes_the_hash():
+def test_changed_current_total_expected_penalty_changes_the_hash():
     baseline = _compute_content_fingerprint(_context())
-    changed = _compute_content_fingerprint(_context(current_total_expected_fine=250.0))
+    changed = _compute_content_fingerprint(_context(current_total_expected_penalty=250.0))
 
     assert baseline != changed
 

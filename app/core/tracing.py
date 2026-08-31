@@ -7,7 +7,7 @@ from typing import Any
 
 from langgraph.errors import GraphInterrupt
 
-from app.repositories.observability import PostgresAgentTraceRepository
+from app.repositories.process.agent_registry import AgentTraceRepository
 
 # Deliberately Dict[str, Any], not the CMIR-specific GraphState: LangGraph reads a
 # wrapped node function's parameter annotation to decide which state keys to pass
@@ -17,7 +17,7 @@ from app.repositories.observability import PostgresAgentTraceRepository
 NodeFn = Callable[[dict[str, Any]], dict[str, Any]]
 
 
-def traced(node_name: str, fn: NodeFn, trace_repo: PostgresAgentTraceRepository) -> NodeFn:
+def traced(node_name: str, fn: NodeFn, trace_repo: AgentTraceRepository) -> NodeFn:
     """Wrap a node function so every execution is written to agent_traces.
 
     Three outcomes are logged, distinguished by `status`:
@@ -39,8 +39,6 @@ def traced(node_name: str, fn: NodeFn, trace_repo: PostgresAgentTraceRepository)
 
     def wrapped(state: dict[str, Any]) -> dict[str, Any]:
         run_id = state.get("run_id")
-        batch_id = state.get("batch_id")
-        thread_id = state.get("thread_id")
         started_at = datetime.now(UTC)
         t0 = time.perf_counter()
 
@@ -59,8 +57,6 @@ def traced(node_name: str, fn: NodeFn, trace_repo: PostgresAgentTraceRepository)
                     input_snapshot=state,
                     output_snapshot=None,
                     error=None,
-                    batch_id=batch_id,
-                    thread_id=thread_id,
                 )
             raise
         except Exception as exc:
@@ -76,8 +72,6 @@ def traced(node_name: str, fn: NodeFn, trace_repo: PostgresAgentTraceRepository)
                     input_snapshot=state,
                     output_snapshot=None,
                     error=str(exc),
-                    batch_id=batch_id,
-                    thread_id=thread_id,
                 )
             raise
         else:
@@ -93,8 +87,6 @@ def traced(node_name: str, fn: NodeFn, trace_repo: PostgresAgentTraceRepository)
                     input_snapshot=state,
                     output_snapshot=result,
                     error=None,
-                    batch_id=batch_id,
-                    thread_id=thread_id,
                 )
             return result
 

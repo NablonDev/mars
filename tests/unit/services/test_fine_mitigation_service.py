@@ -1,112 +1,138 @@
-"""Tests for FineMitigationService -- the mitigation-options counterpart
-to FineProjectionService, evaluating against an already-persisted
-projection rather than recomputing one."""
+"""Tests for MitigationService -- the mitigation-options counterpart to
+ProjectionService, evaluating against an already-persisted projection
+rather than recomputing one.
+
+Was against `FineMitigationService`/`MitigationResultRepository` (business-
+string `order_id`); rewritten against `MitigationService` and the new
+`common`/`penalties` repositories, keyed by the UUID surrogate
+`purchase_order_id`.
+"""
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
+from uuid import uuid4
 
 import pytest
 
-from app.core.exceptions import NoMitigationOptionsExistError, NoProjectionExistsError, OrderNotFoundError
-from app.repositories.fine_mitigation.mitigation import MitigationResultRepository
-from app.services.fine_mitigation.service import FineMitigationService
-from app.services.fine_mitigation.types import ShortageCause
+from app.core.exceptions import BusinessRuleError, NotFoundError
+from app.services.penalties.mitigation.service import MitigationService
+from app.services.penalties.mitigation.types import ShortageCause
+from app.services.penalties.projection.service import ProjectionService
 
 
-@pytest.fixture
-def mitigation_result_repo(db_session) -> MitigationResultRepository:
-    return MitigationResultRepository(db_session)
-
-
-def _build_service(services, mitigation_result_repo) -> FineMitigationService:
-    return FineMitigationService(
-        orders=services.orders,
-        rules=services.rules,
-        master_data=services.master_data,
-        projections=services.projections,
-        mitigation_inputs=services.mitigation,
-        mitigation_results=mitigation_result_repo,
+def _build_services(repos) -> tuple[ProjectionService, MitigationService]:
+    projection_service = ProjectionService(
+        purchase_orders=repos.purchase_orders,
+        fulfillment=repos.fulfillment,
+        rules=repos.penalty_rules,
+        master_data=repos.master_data,
+        projections=repos.penalty_projections,
     )
+    mitigation_service = MitigationService(
+        purchase_orders=repos.purchase_orders,
+        rules=repos.penalty_rules,
+        master_data=repos.master_data,
+        projections=repos.penalty_projections,
+        mitigation_inputs=repos.mitigation_inputs,
+        mitigation_options=repos.mitigation_options,
+        projection_service=projection_service,
+    )
+    return projection_service, mitigation_service
 
 
-def _seed_shortage_order(services, order_id: str = "ORD-MIT") -> None:
+def _seed_shortage_order(repos, projection_service, po_number: str = "ORD-MIT"):
     """A shortage-only order (300-unit gap out of 1000) with a per-unit
     rule, no delay rule -- SPEED_UP_PRODUCTION should be structurally
-    eligible once cause/cost data is provided."""
-    services.master_data.add_retailer("RET-MIT", "Retailer Mit", None, "SUM")
-    services.master_data.add_sku("SKU-MIT", "MAT-MIT", None)
-    services.master_data.add_location("LOC-MIT", None, None)
-    services.orders.create_order(
-        order_id=order_id,
-        retailer_id="RET-MIT",
-        sku_id="SKU-MIT",
-        ship_from_location_id="LOC-MIT",
-        order_qty=1000,
-        unit_price=10.0,
+    eligible once cause/cost data is provided. Returns the purchase
+    order's UUID id."""
+    retailer = repos.master_data.add_retailer(f"RET-{po_number}", "Retailer Mit", None, "SUM")
+    material = repos.master_data.add_material(f"MAT-{po_number}", None)
+    plant = repos.master_data.add_plant(f"PLANT-{po_number}", None, None)
+    purchase_order = repos.purchase_orders.create_purchase_order(
+        purchase_order_number=po_number,
+        retailer_id=retailer["id"],
         order_date=date(2026, 8, 1),
         requested_delivery_date=date(2026, 8, 10),
         required_ship_date=date(2026, 8, 8),
     )
-    services.rules.add_rule(
-        rule_id="RULE-MIT-SHORT",
-        retailer_id="RET-MIT",
+    line = repos.purchase_orders.add_line(
+        purchase_order_id=purchase_order["id"],
+        line_number="10",
+        ordered_quantity=1000,
+        unit_price=10.0,
+        material_id=material["id"],
+        plant_id=plant["id"],
+    )
+    repos.penalty_rules.add_rule(
+        rule_code=f"RULE-{po_number}-SHORT",
+        retailer_id=retailer["id"],
         violation_type="SHORT_SHIP",
         calc_type="PER_UNIT",
         rate=4.0,
         threshold_pct=0.0,
     )
-    services.orders.add_confirmation(
-        order_id=order_id,
-        confirmation_id=f"CONF-{order_id}",
-        confirmed_qty=700,
-        confirmation_date=date(2026, 8, 5),
+    confirmation = repos.fulfillment.add_order_confirmation(
+        confirmation_number=f"CONF-{po_number}",
+        purchase_order_id=purchase_order["id"],
+        confirmation_date=datetime(2026, 8, 5, tzinfo=UTC),
     )
-    result = services.projection_service.run_for_order(order_id, date(2026, 8, 5))
-    assert result.total_expected_fine > 0
-    services.mitigation.upsert_inputs(
-        order_id=order_id,
+    repos.fulfillment.add_order_confirmation_line(
+        order_confirmation_id=confirmation["id"],
+        purchase_order_line_id=line["id"],
+        confirmed_quantity=700,
+    )
+    result = projection_service.run_for_purchase_order(purchase_order["id"], date(2026, 8, 5))
+    assert result.total_expected_penalty > 0
+    repos.mitigation_inputs.upsert_inputs(
+        purchase_order_id=purchase_order["id"],
         shortage_cause=ShortageCause.LABOR_CAPACITY.value,
         shortage_cause_confirmed=True,
         capacity_boost_cost_per_unit=3.0,
         capacity_boost_max_units_per_day=200,
         capacity_boost_data_confirmed=True,
     )
+    return purchase_order["id"]
 
 
-def test_order_not_found_raises_order_not_found_error(services, mitigation_result_repo):
-    service = _build_service(services, mitigation_result_repo)
+def test_order_not_found_raises_order_not_found_error(repos):
+    _, mitigation_service = _build_services(repos)
+    missing_id = uuid4()
 
-    with pytest.raises(OrderNotFoundError, match="NOPE"):
-        service.run_for_order("NOPE")
+    with pytest.raises(NotFoundError, match=str(missing_id)):
+        mitigation_service.run_for_purchase_order(missing_id)
 
 
-def test_no_projection_exists_raises(services, mitigation_result_repo):
-    services.master_data.add_retailer("RET-EMPTY", "Retailer Empty", None, "SUM")
-    services.master_data.add_sku("SKU-EMPTY", "MAT-EMPTY", None)
-    services.master_data.add_location("LOC-EMPTY", None, None)
-    services.orders.create_order(
-        order_id="ORD-EMPTY",
-        retailer_id="RET-EMPTY",
-        sku_id="SKU-EMPTY",
-        ship_from_location_id="LOC-EMPTY",
-        order_qty=100,
-        unit_price=5.0,
+def test_no_projection_exists_raises(repos):
+    _, mitigation_service = _build_services(repos)
+    retailer = repos.master_data.add_retailer("RET-EMPTY", "Retailer Empty", None, "SUM")
+    material = repos.master_data.add_material("MAT-EMPTY", None)
+    plant = repos.master_data.add_plant("PLANT-EMPTY", None, None)
+    purchase_order = repos.purchase_orders.create_purchase_order(
+        purchase_order_number="ORD-EMPTY",
+        retailer_id=retailer["id"],
         order_date=date(2026, 8, 1),
         requested_delivery_date=date(2026, 8, 10),
         required_ship_date=date(2026, 8, 8),
     )
-    service = _build_service(services, mitigation_result_repo)
+    repos.purchase_orders.add_line(
+        purchase_order_id=purchase_order["id"],
+        line_number="10",
+        ordered_quantity=100,
+        unit_price=5.0,
+        material_id=material["id"],
+        plant_id=plant["id"],
+    )
 
-    with pytest.raises(NoProjectionExistsError, match="ORD-EMPTY"):
-        service.run_for_order("ORD-EMPTY", date(2026, 8, 5))
+    with pytest.raises(BusinessRuleError, match=str(purchase_order["id"])):
+        mitigation_service.run_for_purchase_order(purchase_order["id"], date(2026, 8, 5))
 
 
-def test_run_for_order_computes_and_persists_ranked_options(services, mitigation_result_repo):
-    _seed_shortage_order(services)
-    service = _build_service(services, mitigation_result_repo)
+def test_run_for_purchase_order_computes_and_persists_ranked_options(repos):
+    projection_service, mitigation_service = _build_services(repos)
+    purchase_order_id = _seed_shortage_order(repos, projection_service)
 
-    projection_date, options = service.run_for_order("ORD-MIT", date(2026, 8, 5))
+    projection_date, options = mitigation_service.run_for_purchase_order(purchase_order_id, date(2026, 8, 5))
 
     assert projection_date == date(2026, 8, 5)
     actions = [o.action for o in options]
@@ -115,136 +141,145 @@ def test_run_for_order_computes_and_persists_ranked_options(services, mitigation
     # Ranked by net_saving, descending.
     assert [o.net_saving for o in options] == sorted((o.net_saving for o in options), reverse=True)
 
-    persisted = mitigation_result_repo.list_for_date("ORD-MIT", date(2026, 8, 5))
+    persisted = repos.mitigation_options.list_for_date(purchase_order_id, date(2026, 8, 5))
     assert {row["action"] for row in persisted} == set(actions)
 
 
-def test_run_for_order_defaults_projection_date_to_the_only_projected_day(services, mitigation_result_repo):
-    _seed_shortage_order(services)
-    service = _build_service(services, mitigation_result_repo)
+def test_run_for_purchase_order_defaults_projection_date_to_the_only_projected_day(repos):
+    projection_service, mitigation_service = _build_services(repos)
+    purchase_order_id = _seed_shortage_order(repos, projection_service)
 
     # today's UTC date almost certainly has no projection row for this
-    # order -- exercising the "no projection for the resolved date" path
+    # PO -- exercising the "no projection for the resolved date" path
     # separately from the explicit-date happy path above.
-    with pytest.raises(NoProjectionExistsError):
-        service.run_for_order("ORD-MIT")
+    with pytest.raises(BusinessRuleError):
+        mitigation_service.run_for_purchase_order(purchase_order_id)
 
 
-def test_run_for_order_is_idempotent_on_repeated_calls(services, mitigation_result_repo):
-    _seed_shortage_order(services)
-    service = _build_service(services, mitigation_result_repo)
+def test_run_for_purchase_order_is_idempotent_on_repeated_calls(repos):
+    projection_service, mitigation_service = _build_services(repos)
+    purchase_order_id = _seed_shortage_order(repos, projection_service)
 
-    _, first = service.run_for_order("ORD-MIT", date(2026, 8, 5))
-    _, second = service.run_for_order("ORD-MIT", date(2026, 8, 5))
+    _, first = mitigation_service.run_for_purchase_order(purchase_order_id, date(2026, 8, 5))
+    _, second = mitigation_service.run_for_purchase_order(purchase_order_id, date(2026, 8, 5))
 
     assert {o.action for o in first} == {o.action for o in second}
-    rows = mitigation_result_repo.list_for_date("ORD-MIT", date(2026, 8, 5))
+    rows = repos.mitigation_options.list_for_date(purchase_order_id, date(2026, 8, 5))
     # One row per action, not duplicated by the second run.
     assert len(rows) == len(first)
 
 
-def test_get_latest_raises_when_nothing_has_been_computed_yet(services, mitigation_result_repo):
-    _seed_shortage_order(services)
-    service = _build_service(services, mitigation_result_repo)
+def test_get_latest_raises_when_nothing_has_been_computed_yet(repos):
+    projection_service, mitigation_service = _build_services(repos)
+    purchase_order_id = _seed_shortage_order(repos, projection_service)
 
-    with pytest.raises(NoMitigationOptionsExistError, match="ORD-MIT"):
-        service.get_latest("ORD-MIT")
+    with pytest.raises(BusinessRuleError, match=str(purchase_order_id)):
+        mitigation_service.get_latest(purchase_order_id)
 
 
-def test_get_latest_returns_the_most_recently_computed_day(services, mitigation_result_repo):
-    _seed_shortage_order(services)
-    service = _build_service(services, mitigation_result_repo)
-    service.run_for_order("ORD-MIT", date(2026, 8, 5))
+def test_get_latest_returns_the_most_recently_computed_day(repos):
+    projection_service, mitigation_service = _build_services(repos)
+    purchase_order_id = _seed_shortage_order(repos, projection_service)
+    mitigation_service.run_for_purchase_order(purchase_order_id, date(2026, 8, 5))
 
-    projection_date, rows = service.get_latest("ORD-MIT")
+    projection_date, rows = mitigation_service.get_latest(purchase_order_id)
 
     assert projection_date == date(2026, 8, 5)
     assert rows
     assert rows == sorted(rows, key=lambda r: r["net_saving"], reverse=True)
 
 
-def test_get_latest_raises_order_not_found_for_unknown_order(services, mitigation_result_repo):
-    service = _build_service(services, mitigation_result_repo)
+def test_get_latest_raises_order_not_found_for_unknown_order(repos):
+    _, mitigation_service = _build_services(repos)
+    missing_id = uuid4()
 
-    with pytest.raises(OrderNotFoundError):
-        service.get_latest("NOPE")
+    with pytest.raises(NotFoundError):
+        mitigation_service.get_latest(missing_id)
 
 
-def test_current_stacking_mode_used_not_a_historical_override(services, mitigation_result_repo):
-    """run_for_order rebuilds the ProjectionResult using the retailer's
-    *current* stacking_mode, matching FineProjectionService's own default
-    (non-override) behavior."""
-    _seed_shortage_order(services)
-    service = _build_service(services, mitigation_result_repo)
+def test_current_stacking_mode_used_not_a_historical_override(repos):
+    """run_for_purchase_order rebuilds the ProjectionResult using the
+    retailer's *current* stacking_mode, matching ProjectionService's own
+    default (non-override) behavior."""
+    projection_service, mitigation_service = _build_services(repos)
+    purchase_order_id = _seed_shortage_order(repos, projection_service)
 
-    _, options = service.run_for_order("ORD-MIT", date(2026, 8, 5))
+    _, options = mitigation_service.run_for_purchase_order(purchase_order_id, date(2026, 8, 5))
     accept = next(o for o in options if o.action == "ACCEPT")
 
-    history = services.projections.list_history("ORD-MIT")
+    history = repos.penalty_projections.list_history(purchase_order_id)
     day_rows = [r for r in history if r["projection_date"] == date(2026, 8, 5)]
-    expected_total = round(sum(r["projected_fine_amount"] for r in day_rows), 2)
-    assert accept.projected_fine_after == expected_total
+    expected_total = round(sum(r["projected_penalty_amount"] for r in day_rows), 2)
+    assert accept.projected_penalty_after == expected_total
 
 
-def test_reconstructed_projection_result_handles_max_stacking(services, mitigation_result_repo):
-    services.master_data.add_retailer("RET-MAX", "Retailer Max", None, "MAX")
-    services.master_data.add_sku("SKU-MAX", "MAT-MAX", None)
-    services.master_data.add_location("LOC-MAX", None, None)
-    services.orders.create_order(
-        order_id="ORD-MAX",
-        retailer_id="RET-MAX",
-        sku_id="SKU-MAX",
-        ship_from_location_id="LOC-MAX",
-        order_qty=1000,
-        unit_price=10.0,
+def test_reconstructed_projection_result_handles_max_stacking(repos):
+    projection_service, mitigation_service = _build_services(repos)
+    retailer = repos.master_data.add_retailer("RET-MAX", "Retailer Max", None, "MAX")
+    material = repos.master_data.add_material("MAT-MAX", None)
+    plant = repos.master_data.add_plant("PLANT-MAX", None, None)
+    purchase_order = repos.purchase_orders.create_purchase_order(
+        purchase_order_number="ORD-MAX",
+        retailer_id=retailer["id"],
         order_date=date(2026, 8, 1),
         requested_delivery_date=date(2026, 8, 10),
         required_ship_date=date(2026, 8, 8),
     )
-    services.rules.add_rule(
-        rule_id="RULE-MAX-SHORT",
-        retailer_id="RET-MAX",
+    line = repos.purchase_orders.add_line(
+        purchase_order_id=purchase_order["id"],
+        line_number="10",
+        ordered_quantity=1000,
+        unit_price=10.0,
+        material_id=material["id"],
+        plant_id=plant["id"],
+    )
+    repos.penalty_rules.add_rule(
+        rule_code="RULE-MAX-SHORT",
+        retailer_id=retailer["id"],
         violation_type="SHORT_SHIP",
         calc_type="PER_UNIT",
         rate=4.0,
     )
-    services.rules.add_rule(
-        rule_id="RULE-MAX-OTIF",
-        retailer_id="RET-MAX",
+    repos.penalty_rules.add_rule(
+        rule_code="RULE-MAX-OTIF",
+        retailer_id=retailer["id"],
         violation_type="OTIF_LATE",
         calc_type="FLAT_FEE",
         rate=500.0,
     )
-    services.orders.add_confirmation(
-        order_id="ORD-MAX",
-        confirmation_id="CONF-ORD-MAX",
-        confirmed_qty=700,
-        confirmation_date=date(2026, 8, 5),
+    confirmation = repos.fulfillment.add_order_confirmation(
+        confirmation_number="CONF-ORD-MAX",
+        purchase_order_id=purchase_order["id"],
+        confirmation_date=datetime(2026, 8, 5, tzinfo=UTC),
     )
-    services.projection_service.run_for_order("ORD-MAX", date(2026, 8, 5))
-    service = _build_service(services, mitigation_result_repo)
+    repos.fulfillment.add_order_confirmation_line(
+        order_confirmation_id=confirmation["id"],
+        purchase_order_line_id=line["id"],
+        confirmed_quantity=700,
+    )
+    projection_service.run_for_purchase_order(purchase_order["id"], date(2026, 8, 5))
 
-    _, options = service.run_for_order("ORD-MAX", date(2026, 8, 5))
+    _, options = mitigation_service.run_for_purchase_order(purchase_order["id"], date(2026, 8, 5))
     accept = next(o for o in options if o.action == "ACCEPT")
 
-    history = services.projections.list_history("ORD-MAX")
+    history = repos.penalty_projections.list_history(purchase_order["id"])
     day_rows = [r for r in history if r["projection_date"] == date(2026, 8, 5)]
-    expected_total = round(max(r["projected_fine_amount"] for r in day_rows), 2)
-    assert accept.projected_fine_after == expected_total
+    expected_total = round(max(r["projected_penalty_amount"] for r in day_rows), 2)
+    assert accept.projected_penalty_after == expected_total
 
 
-def test_raw_material_shortage_cause_excludes_speed_up_production(services, mitigation_result_repo):
-    _seed_shortage_order(services, "ORD-RAWMAT")
-    services.mitigation.upsert_inputs(
-        order_id="ORD-RAWMAT",
+def test_raw_material_shortage_cause_excludes_speed_up_production(repos):
+    projection_service, mitigation_service = _build_services(repos)
+    purchase_order_id = _seed_shortage_order(repos, projection_service, "ORD-RAWMAT")
+    repos.mitigation_inputs.upsert_inputs(
+        purchase_order_id=purchase_order_id,
         shortage_cause=ShortageCause.RAW_MATERIAL.value,
         shortage_cause_confirmed=True,
         capacity_boost_cost_per_unit=3.0,
         capacity_boost_max_units_per_day=200,
         capacity_boost_data_confirmed=True,
     )
-    service = _build_service(services, mitigation_result_repo)
 
-    _, options = service.run_for_order("ORD-RAWMAT", date(2026, 8, 5))
+    _, options = mitigation_service.run_for_purchase_order(purchase_order_id, date(2026, 8, 5))
 
     assert "SPEED_UP_PRODUCTION" not in {o.action for o in options}

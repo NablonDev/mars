@@ -67,12 +67,13 @@ services:
       - "8000:8000"
     environment:
       <<: *app-database
-      ENVIRONMENT: ${ENVIRONMENT:-development}
-      DOCS_ENABLED: ${DOCS_ENABLED:-true}
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+      APP_DOCS_ENABLED: ${APP_DOCS_ENABLED:-true}
       # No default -- Settings fails app startup without a real value (see
-      # app/core/config.py). Compose fails fast here too rather than handing
-      # the container a blank/placeholder value that would only fail later.
-      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?INTERNAL_API_KEY is required}
+      # app/core/config/app.py). Compose fails fast here too rather than
+      # handing the container a blank/placeholder value that would only fail
+      # later.
+      APP_INTERNAL_API_KEY: ${APP_INTERNAL_API_KEY:?APP_INTERNAL_API_KEY is required}
       # Azure OpenAI
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
@@ -82,9 +83,9 @@ services:
       # CMIR: inbound email + Service Bus
       EMAIL_USERNAME: ${EMAIL_USERNAME:-}
       EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
-      IMAP_SERVER: ${IMAP_SERVER:-imap.gmail.com}
-      IMAP_PORT: ${IMAP_PORT:-993}
-      SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE:-}
+      EMAIL_IMAP_SERVER: ${EMAIL_IMAP_SERVER:-imap.gmail.com}
+      EMAIL_IMAP_PORT: ${EMAIL_IMAP_PORT:-993}
+      SERVICE_BUS_NAMESPACE: ${SERVICE_BUS_NAMESPACE:-}
       SERVICE_BUS_CONNECTION_STRING: ${SERVICE_BUS_CONNECTION_STRING:-}
     depends_on:
       postgres:
@@ -97,12 +98,12 @@ services:
     command: python -m app.workers.cmir_service_bus_consumer
     environment:
       <<: *app-database
-      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?INTERNAL_API_KEY is required}
-      SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE: ${SERVICE_BUS_FULLY_QUALIFIED_NAMESPACE:-}
+      APP_INTERNAL_API_KEY: ${APP_INTERNAL_API_KEY:?APP_INTERNAL_API_KEY is required}
+      SERVICE_BUS_NAMESPACE: ${SERVICE_BUS_NAMESPACE:-}
       SERVICE_BUS_CONNECTION_STRING: ${SERVICE_BUS_CONNECTION_STRING:-}
       SERVICE_BUS_QUEUE_NAME: ${SERVICE_BUS_QUEUE_NAME:-}
       SERVICE_BUS_SESSION_ID: ${SERVICE_BUS_SESSION_ID:-}
-      CMIR_AGENT_API_BASE_URL: ${CMIR_AGENT_API_BASE_URL:-http://backend:8000}
+      SERVICE_BUS_AGENT_API_BASE_URL: ${SERVICE_BUS_AGENT_API_BASE_URL:-http://backend:8000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -117,7 +118,7 @@ services:
       - tools
     environment:
       <<: *app-database
-      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?INTERNAL_API_KEY is required}
+      APP_INTERNAL_API_KEY: ${APP_INTERNAL_API_KEY:?APP_INTERNAL_API_KEY is required}
     depends_on:
       postgres:
         condition: service_healthy
@@ -133,12 +134,12 @@ services:
     container_name: mars-fines-projection-worker
     environment:
       <<: *app-database
-      ENVIRONMENT: ${ENVIRONMENT:-development}
-      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?INTERNAL_API_KEY is required}
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+      APP_INTERNAL_API_KEY: ${APP_INTERNAL_API_KEY:?APP_INTERNAL_API_KEY is required}
       JOB_QUEUE_BACKEND: ${JOB_QUEUE_BACKEND:-postgres}
       JOB_QUEUE_WORKER_CONCURRENCY: ${JOB_QUEUE_WORKER_CONCURRENCY:-5}
       # Keep DB pool capacity >= worker concurrency.
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-10}
       # Azure OpenAI
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}

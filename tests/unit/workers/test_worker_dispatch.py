@@ -2,48 +2,50 @@
 entry point.
 
 Runs against the real (SQLite, in-memory) `database` fixture with real
-FineProjectionService/FineProjectionSummaryService, since `execute_job` constructs both
-directly from a fresh session -- only the LLM call is faked
-(`FakeChatClient`, the same duck-typed shape `tests/services/
-test_fine_projection_summary.py`'s fake uses). No live API call anywhere here.
+ProjectionService/ProjectionSummaryService/MitigationSummaryService, since
+`execute_job` constructs them directly from a fresh session -- only the LLM
+call is faked (`FakeChatClient`, the same duck-typed shape
+`tests/unit/services/test_projection_summary_service.py`'s fake uses). No
+live API call anywhere here.
 
-Seeds via `database.session()` directly (auto-committing, like
-`scripts/run_projection_cli.py`'s own test in
-`tests/test_run_projection_cli.py`) rather than the `services`/`db_session`
-fixtures, which hold one long-lived, uncommitted session open for the
-whole test -- `execute_job` opens and closes its own sessions, and on the
-single shared SQLite connection the `database` fixture uses, mixing an
-open uncommitted session with `execute_job`'s own sessions would make
-inserts invisible across sessions.
+Seeds via `database.session()` directly (auto-committing) rather than the
+`repos`/`db_session` fixtures, which hold one long-lived, uncommitted
+session open for the whole test -- `execute_job` opens and closes its own
+sessions, and on the single shared SQLite connection the `database` fixture
+uses, mixing an open uncommitted session with `execute_job`'s own sessions
+would make inserts invisible across sessions.
+
+Was written against the pre-restructure `ClaimedJob` (`order_id`/
+`projection_date`/`task_type`/`stacking_mode_override`/
+`force_regenerate_summary` carried directly on the dataclass) -- rewritten
+against the domain-agnostic `ClaimedJob` (`item_type`/`dedupe_key` only)
+plus the matching `penalties.penalty_job_item_context` row each per-item
+function now looks up itself (see `app.queue.types` and
+`app.workers.penalty_projection`'s module docstrings).
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import date
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
-from app.agents.fine_mitigation.prompts.v1 import PROMPT_VERSION as MITIGATION_PROMPT_VERSION
-from app.agents.fine_projection.prompts.v3 import PROMPT_VERSION
 from app.core.config import Settings
-from app.core.exceptions import (
-    NoActiveRulesError,
-    NoMitigationOptionsExistError,
-    NoProjectionExistsError,
-    OrderNotFoundError,
-)
+from app.core.exceptions import BusinessRuleError, NotFoundError
 from app.db.session import Database
+from app.models.enums import SummaryType
 from app.queue.types import ClaimedJob
-from app.repositories.fine_master_data import MasterDataRepository
-from app.repositories.fine_mitigation.mitigation import MitigationResultRepository
-from app.repositories.fine_mitigation.summary import FineMitigationSummaryRepository
-from app.repositories.fine_projection.projection import ProjectionRepository
-from app.repositories.fine_projection.summary import FineProjectionSummaryRepository
-from app.repositories.fine_rule import FineRuleRepository
-from app.repositories.order import OrderRepository
-from app.services.fine_mitigation.types import MitigationOption
+from app.repositories.common.master_data import MasterDataRepository
+from app.repositories.common.purchase_order import PurchaseOrderRepository
+from app.repositories.penalties.job_context import PenaltyJobItemContextRepository
+from app.repositories.penalties.mitigation import MitigationOptionRepository
+from app.repositories.penalties.projection import PenaltyProjectionRepository
+from app.repositories.penalties.rule import PenaltyRuleRepository
+from app.repositories.penalties.summary import PenaltySummaryRepository
+from app.repositories.process.job_queue import JobQueueRepository
+from app.services.penalties.mitigation.types import MitigationOption
 from app.workers.dispatch import execute_job
 
 
@@ -56,7 +58,8 @@ class _FakeAIMessage:
 class FakeChatClient:
     """Always answers immediately with no tool calls. `model_name`/
     `invoke(messages, *, tools=None)` is the only shape
-    `FineProjectionSummaryService` needs -- no live Azure OpenAI call."""
+    `ProjectionSummaryService`/`MitigationSummaryService` need -- no live
+    Azure OpenAI call."""
 
     model_name = "fake-model"
 
@@ -69,74 +72,102 @@ class FakeChatClient:
         return _FakeAIMessage(content=self.final_content, tool_calls=[])
 
 
-def _make_job(
-    order_id: str,
+def _seed_purchase_order(database: Database, po_number: str, *, with_rules: bool = True) -> UUID:
+    with database.session() as session:
+        master_data = MasterDataRepository(session)
+        rules = PenaltyRuleRepository(session)
+        purchase_orders = PurchaseOrderRepository(session)
+
+        retailer = master_data.add_retailer(f"RET-{po_number}", f"Retailer {po_number}", None, "SUM")
+        material = master_data.add_material(f"MAT-{po_number}", None)
+        plant = master_data.add_plant(f"PLANT-{po_number}", None, None)
+        purchase_order = purchase_orders.create_purchase_order(
+            purchase_order_number=po_number,
+            retailer_id=retailer["id"],
+            order_date=date(2026, 8, 1),
+            requested_delivery_date=date(2026, 8, 10),
+            required_ship_date=date(2026, 8, 8),
+        )
+        purchase_orders.add_line(
+            purchase_order_id=purchase_order["id"],
+            line_number="10",
+            ordered_quantity=100,
+            unit_price=5.0,
+            material_id=material["id"],
+            plant_id=plant["id"],
+        )
+        if with_rules:
+            rules.add_rule(
+                rule_code=f"RULE-{po_number}-FLAT",
+                retailer_id=retailer["id"],
+                violation_type="OTIF_LATE",
+                calc_type="FLAT_FEE",
+                rate=50.0,
+            )
+        return purchase_order["id"]
+
+
+def _make_job_with_context(
+    database: Database,
+    item_type: str,
+    purchase_order_id: UUID,
     projection_date: date,
-    task_type: str,
     *,
     stacking_mode_override: str | None = None,
     force_regenerate_summary: bool = False,
 ) -> ClaimedJob:
+    with database.session() as session:
+        job_queue = JobQueueRepository(session)
+        job_context = PenaltyJobItemContextRepository(session)
+        run = job_queue.create_run(job_type=item_type, trigger_type="ON_DEMAND")
+        dedupe_key = f"{purchase_order_id}:{projection_date.isoformat()}:{item_type}"
+        item = job_queue.enqueue(run["id"], item_type=item_type, dedupe_key=dedupe_key, max_attempts=5)
+        assert item is not None
+        job_context.create(
+            job_item_id=item["id"],
+            purchase_order_id=purchase_order_id,
+            projection_date=projection_date,
+            task_type=item_type,
+            stacking_mode_override=stacking_mode_override,
+            force_regenerate_summary=force_regenerate_summary,
+        )
+        job_item_id = item["id"]
+        job_run_id = run["id"]
+
     return ClaimedJob(
-        job_item_id=uuid4(),
-        job_run_id=uuid4(),
-        order_id=order_id,
-        projection_date=projection_date,
-        task_type=task_type,
-        stacking_mode_override=stacking_mode_override,
-        force_regenerate_summary=force_regenerate_summary,
+        job_item_id=job_item_id,
+        job_run_id=job_run_id,
+        item_type=item_type,
+        dedupe_key=dedupe_key,
         attempt_count=1,
         max_attempts=5,
     )
 
 
-def _seed_order(
-    database: Database,
-    order_id: str = "ORD-WORKER",
-    *,
-    with_rules: bool = True,
-) -> None:
-    with database.session() as session:
-        master_data = MasterDataRepository(session)
-        rules = FineRuleRepository(session)
-        orders = OrderRepository(session)
-
-        retailer_id = f"RET-{order_id}"
-        master_data.add_retailer(retailer_id, f"Retailer {order_id}", None, "SUM")
-        master_data.add_sku(f"SKU-{order_id}", f"MAT-{order_id}", None)
-        master_data.add_location(f"LOC-{order_id}", None, None)
-        orders.create_order(
-            order_id=order_id,
-            retailer_id=retailer_id,
-            sku_id=f"SKU-{order_id}",
-            ship_from_location_id=f"LOC-{order_id}",
-            order_qty=100,
-            unit_price=5.0,
-            order_date=date(2026, 8, 1),
-            requested_delivery_date=date(2026, 8, 10),
-            required_ship_date=date(2026, 8, 8),
-        )
-        if with_rules:
-            rules.add_rule(
-                rule_id=f"RULE-{order_id}-FLAT",
-                retailer_id=retailer_id,
-                violation_type="OTIF_LATE",
-                calc_type="FLAT_FEE",
-                rate=50.0,
-            )
+def _make_bare_job(item_type: str) -> ClaimedJob:
+    """A job with no matching context row -- for the unknown-item-type
+    case, which `execute_job` rejects before ever looking one up."""
+    return ClaimedJob(
+        job_item_id=uuid4(),
+        job_run_id=uuid4(),
+        item_type=item_type,
+        dedupe_key=None,
+        attempt_count=1,
+        max_attempts=5,
+    )
 
 
 def test_order_run_runs_projection_then_schedules_and_generates_summary(database):
-    _seed_order(database, "ORD-A")
+    purchase_order_id = _seed_purchase_order(database, "PO-A")
     llm = FakeChatClient()
-    job = _make_job("ORD-A", date(2026, 8, 5), "ORDER_RUN")
+    job = _make_job_with_context(database, "ORDER_RUN", purchase_order_id, date(2026, 8, 5))
 
     execute_job(job, database, Settings(), llm, heartbeat=None)
 
     with database.session() as session:
-        history = ProjectionRepository(session).get_history("ORD-A")
-        summary_row = FineProjectionSummaryRepository(session).get_by_key(
-            "ORD-A", date(2026, 8, 5), PROMPT_VERSION
+        history = PenaltyProjectionRepository(session).list_history(purchase_order_id)
+        summary_row = PenaltySummaryRepository(session).get_by_key(
+            purchase_order_id, SummaryType.PROJECTION, date(2026, 8, 5)
         )
 
     assert history, "projection should have been persisted"
@@ -147,26 +178,36 @@ def test_order_run_runs_projection_then_schedules_and_generates_summary(database
 
 
 def test_summary_regen_only_generates_summary_no_new_projection(database):
-    _seed_order(database, "ORD-B")
+    purchase_order_id = _seed_purchase_order(database, "PO-B")
     llm = FakeChatClient()
 
     # ORDER_RUN first so a projection exists (PROJECTION_SUMMARY_REGEN's precondition).
-    execute_job(_make_job("ORD-B", date(2026, 8, 5), "ORDER_RUN"), database, Settings(), llm, heartbeat=None)
+    execute_job(
+        _make_job_with_context(database, "ORDER_RUN", purchase_order_id, date(2026, 8, 5)),
+        database,
+        Settings(),
+        llm,
+        heartbeat=None,
+    )
 
     with database.session() as session:
-        history_before = ProjectionRepository(session).get_history("ORD-B")
+        history_before = PenaltyProjectionRepository(session).list_history(purchase_order_id)
 
     # Force regeneration on the same date; PROJECTION_SUMMARY_REGEN must not touch
     # the projection history.
-    regen_job = _make_job(
-        "ORD-B", date(2026, 8, 5), "PROJECTION_SUMMARY_REGEN", force_regenerate_summary=True
+    regen_job = _make_job_with_context(
+        database,
+        "PROJECTION_SUMMARY_REGEN",
+        purchase_order_id,
+        date(2026, 8, 5),
+        force_regenerate_summary=True,
     )
     execute_job(regen_job, database, Settings(), llm, heartbeat=None)
 
     with database.session() as session:
-        history_after = ProjectionRepository(session).get_history("ORD-B")
-        summary_row = FineProjectionSummaryRepository(session).get_by_key(
-            "ORD-B", date(2026, 8, 5), PROMPT_VERSION
+        history_after = PenaltyProjectionRepository(session).list_history(purchase_order_id)
+        summary_row = PenaltySummaryRepository(session).get_by_key(
+            purchase_order_id, SummaryType.PROJECTION, date(2026, 8, 5)
         )
 
     assert history_after == history_before
@@ -178,46 +219,50 @@ def test_summary_regen_only_generates_summary_no_new_projection(database):
 
 
 def test_summary_regen_without_a_projection_raises_no_projection_exists(database):
-    _seed_order(database, "ORD-NOPROJ")
+    purchase_order_id = _seed_purchase_order(database, "PO-NOPROJ")
     llm = FakeChatClient()
-    job = _make_job("ORD-NOPROJ", date(2026, 8, 5), "PROJECTION_SUMMARY_REGEN")
+    job = _make_job_with_context(database, "PROJECTION_SUMMARY_REGEN", purchase_order_id, date(2026, 8, 5))
 
-    with pytest.raises(NoProjectionExistsError):
+    with pytest.raises(BusinessRuleError) as exc_info:
         execute_job(job, database, Settings(), llm, heartbeat=None)
+    assert exc_info.value.code == "NO_PROJECTION_EXISTS"
 
 
-def test_order_run_propagates_order_not_found(database):
+def test_order_run_propagates_purchase_order_not_found(database):
     llm = FakeChatClient()
-    job = _make_job("ORD-DOES-NOT-EXIST", date(2026, 8, 5), "ORDER_RUN")
+    job = _make_job_with_context(database, "ORDER_RUN", uuid4(), date(2026, 8, 5))
 
-    with pytest.raises(OrderNotFoundError):
+    with pytest.raises(NotFoundError) as exc_info:
         execute_job(job, database, Settings(), llm, heartbeat=None)
+    assert exc_info.value.code == "PO_NOT_FOUND"
 
 
 def test_order_run_propagates_no_active_rules(database):
-    _seed_order(database, "ORD-NORULES", with_rules=False)
+    purchase_order_id = _seed_purchase_order(database, "PO-NORULES", with_rules=False)
     llm = FakeChatClient()
-    job = _make_job("ORD-NORULES", date(2026, 8, 5), "ORDER_RUN")
+    job = _make_job_with_context(database, "ORDER_RUN", purchase_order_id, date(2026, 8, 5))
 
-    with pytest.raises(NoActiveRulesError):
+    with pytest.raises(BusinessRuleError) as exc_info:
         execute_job(job, database, Settings(), llm, heartbeat=None)
+    assert exc_info.value.code == "NO_ACTIVE_RULES"
 
 
 def test_unknown_task_type_raises_value_error(database):
-    _seed_order(database, "ORD-C")
     llm = FakeChatClient()
-    job = _make_job("ORD-C", date(2026, 8, 5), "BOGUS_TASK_TYPE")
+    job = _make_bare_job("BOGUS_TASK_TYPE")
 
-    with pytest.raises(ValueError, match="Unknown task_type"):
+    with pytest.raises(ValueError, match="Unknown item_type"):
         execute_job(job, database, Settings(), llm, heartbeat=None)
 
 
 def test_heartbeat_invoked_once_per_tool_round(database):
     """FakeChatClient never returns tool_calls, so the loop breaks after
-    round 1 -- exactly one heartbeat call (see `_run_tool_loop`)."""
-    _seed_order(database, "ORD-D")
+    round 1 -- exactly one heartbeat call per generation, times two
+    generations (projection summary's own get_or_schedule/run_generation
+    pair only runs one generation for ORDER_RUN)."""
+    purchase_order_id = _seed_purchase_order(database, "PO-D")
     llm = FakeChatClient()
-    job = _make_job("ORD-D", date(2026, 8, 5), "ORDER_RUN")
+    job = _make_job_with_context(database, "ORDER_RUN", purchase_order_id, date(2026, 8, 5))
     heartbeat_calls = []
 
     execute_job(job, database, Settings(), llm, heartbeat=lambda: heartbeat_calls.append(1))
@@ -229,7 +274,7 @@ def test_session_is_not_held_across_the_llm_call(database):
     """Regression guard for the documented session-lifetime contract:
     the projection phase and the summary phase must each get their own
     session, never one held open across `llm.invoke`."""
-    _seed_order(database, "ORD-E")
+    purchase_order_id = _seed_purchase_order(database, "PO-E")
     # Strong references to the actual Session objects, not `id(session)` --
     # once a session's `with` block exits it can be garbage-collected, and
     # CPython is free to hand a *new* object the exact same id(), which
@@ -245,10 +290,11 @@ def test_session_is_not_held_across_the_llm_call(database):
             seen_sessions.append(session)
             yield session
 
+    job = _make_job_with_context(database, "ORDER_RUN", purchase_order_id, date(2026, 8, 5))
+
     database.session = _tracking_session  # type: ignore[method-assign]
     try:
         llm = FakeChatClient()
-        job = _make_job("ORD-E", date(2026, 8, 5), "ORDER_RUN")
         execute_job(job, database, Settings(), llm, heartbeat=None)
     finally:
         database.session = real_session_cm  # type: ignore[method-assign]
@@ -259,20 +305,20 @@ def test_session_is_not_held_across_the_llm_call(database):
     assert seen_sessions[0] is not seen_sessions[1]
 
 
-def _seed_mitigation_options(database: Database, order_id: str, projection_date: date) -> None:
+def _seed_mitigation_options(database: Database, purchase_order_id: UUID, projection_date: date) -> None:
     with database.session() as session:
-        MitigationResultRepository(session).save_results(
-            order_id,
+        MitigationOptionRepository(session).save_results(
+            purchase_order_id,
             projection_date,
             [
                 MitigationOption(
                     action="ACCEPT",
-                    projected_fine_after=100.0,
+                    projected_penalty_after=100.0,
                     action_cost=0.0,
                     net_saving=0.0,
                     risk_level="HIGH",
                     confidence="CONFIRMED",
-                    rationale="Pay the projected fine as-is.",
+                    rationale="Pay the projected penalty as-is.",
                 )
             ],
         )
@@ -280,16 +326,16 @@ def _seed_mitigation_options(database: Database, order_id: str, projection_date:
 
 
 def test_mitigation_summary_regen_generates_summary(database):
-    _seed_order(database, "ORD-MIT-WORKER")
-    _seed_mitigation_options(database, "ORD-MIT-WORKER", date(2026, 8, 5))
+    purchase_order_id = _seed_purchase_order(database, "PO-MIT-WORKER")
+    _seed_mitigation_options(database, purchase_order_id, date(2026, 8, 5))
     llm = FakeChatClient()
-    job = _make_job("ORD-MIT-WORKER", date(2026, 8, 5), "MITIGATION_SUMMARY_REGEN")
+    job = _make_job_with_context(database, "MITIGATION_SUMMARY_REGEN", purchase_order_id, date(2026, 8, 5))
 
     execute_job(job, database, Settings(), llm, heartbeat=None)
 
     with database.session() as session:
-        summary_row = FineMitigationSummaryRepository(session).get_by_key(
-            "ORD-MIT-WORKER", date(2026, 8, 5), MITIGATION_PROMPT_VERSION
+        summary_row = PenaltySummaryRepository(session).get_by_key(
+            purchase_order_id, SummaryType.MITIGATION, date(2026, 8, 5)
         )
 
     assert summary_row is not None
@@ -298,9 +344,10 @@ def test_mitigation_summary_regen_generates_summary(database):
 
 
 def test_mitigation_summary_regen_without_options_raises_no_mitigation_options_exist(database):
-    _seed_order(database, "ORD-MIT-NOOPT")
+    purchase_order_id = _seed_purchase_order(database, "PO-MIT-NOOPT")
     llm = FakeChatClient()
-    job = _make_job("ORD-MIT-NOOPT", date(2026, 8, 5), "MITIGATION_SUMMARY_REGEN")
+    job = _make_job_with_context(database, "MITIGATION_SUMMARY_REGEN", purchase_order_id, date(2026, 8, 5))
 
-    with pytest.raises(NoMitigationOptionsExistError):
+    with pytest.raises(BusinessRuleError) as exc_info:
         execute_job(job, database, Settings(), llm, heartbeat=None)
+    assert exc_info.value.code == "NO_MITIGATION_OPTIONS_EXIST"

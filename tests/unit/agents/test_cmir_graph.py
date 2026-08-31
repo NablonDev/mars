@@ -7,9 +7,9 @@ from langgraph.types import Command
 
 from app.agents.cmir.graph import build_graph
 from app.agents.cmir.nodes import WorkflowNodes
-from app.repositories.cmir import CMIRVersionConflict
-from app.schemas.cmir import CMIR
-from app.services.cmir_validation import CMIRValidator
+from app.repositories.cmir.cmir_record import CmirVersionConflict
+from app.schemas.cmir import Cmir
+from app.services.cmir.validation import CmirValidator
 
 INTERRUPT_KEY = "__interrupt__"
 
@@ -31,7 +31,7 @@ class FakeEmailReader:
 
 
 class FakeExtractor:
-    def __init__(self, cmir: CMIR) -> None:
+    def __init__(self, cmir: Cmir) -> None:
         self.cmir = cmir
 
     def extract(self, body):
@@ -43,16 +43,16 @@ class FakeEmailRepository:
         self._next_id = 1
         self.extractions = []
 
-    def save(self, email):
+    def save(self, *, sender, subject, raw_content, source_message_id=None, source_imap_id=None):
         email_id = f"email-{self._next_id}"
         self._next_id += 1
         return email_id
 
-    def update_extraction(self, email_id, cmir):
-        self.extractions.append((email_id, cmir))
+    def update_extraction(self, email_id, extracted_json, missing_fields, status):
+        self.extractions.append((email_id, extracted_json, missing_fields, status))
 
 
-class FakeCMIRRepository:
+class FakeCmirRepository:
     def __init__(self, current=None, conflict: bool = False) -> None:
         self.current = current
         self.conflict = conflict
@@ -76,7 +76,7 @@ class FakeCMIRRepository:
         self, *, customer_identity, target_customer_material_ref, merged, expected_current_id
     ):
         if self.conflict:
-            raise CMIRVersionConflict("simulated concurrent write")
+            raise CmirVersionConflict("simulated concurrent write")
         self.inserted.append(merged)
         return 999
 
@@ -87,14 +87,6 @@ class FakeActionLogRepository:
 
     def log(self, email_id, action, actor, details):
         self.logged.append((email_id, action, actor, details))
-
-
-class FakeWorkflowThreadRepository:
-    def __init__(self) -> None:
-        self.created = []
-
-    def create(self, thread):
-        self.created.append(thread)
 
 
 def _email_payload(**overrides):
@@ -110,21 +102,19 @@ def _email_payload(**overrides):
     return payload
 
 
-class CMIRWorkflowGraphTests(unittest.TestCase):
-    def _build(self, *, current=None, conflict: bool = False, extractor_cmir: CMIR):
+class CmirWorkflowGraphTests(unittest.TestCase):
+    def _build(self, *, current=None, conflict: bool = False, extractor_cmir: Cmir):
         self.email_reader = FakeEmailReader()
         self.email_repository = FakeEmailRepository()
-        self.cmir_repository = FakeCMIRRepository(current=current, conflict=conflict)
+        self.cmir_repository = FakeCmirRepository(current=current, conflict=conflict)
         self.action_log = FakeActionLogRepository()
-        self.workflow_threads = FakeWorkflowThreadRepository()
         nodes = WorkflowNodes(
             email_reader=self.email_reader,
             extractor=FakeExtractor(extractor_cmir),
-            validator=CMIRValidator(),
+            validator=CmirValidator(),
             email_repository=self.email_repository,
             cmir_repository=self.cmir_repository,
             action_log_repository=self.action_log,
-            workflow_thread_repository=self.workflow_threads,
         )
         return build_graph(nodes, MemorySaver(), FakeTraceRepo())
 
@@ -142,7 +132,7 @@ class CMIRWorkflowGraphTests(unittest.TestCase):
         }
 
     def test_create_path_shows_full_diff_from_blank_and_commits_on_approval(self) -> None:
-        complete_cmir = CMIR(
+        complete_cmir = Cmir(
             sender_type="external",
             customer_identity="Acme Manufacturing Ltd",
             material_identity="Polyethylene Resin PE-200",
@@ -166,7 +156,7 @@ class CMIRWorkflowGraphTests(unittest.TestCase):
 
         self.assertNotIn(INTERRUPT_KEY, state)
         self.assertEqual(len(self.cmir_repository.inserted), 1)
-        self.assertEqual(self.cmir_repository.inserted[0].brand, "AcmePlast")
+        self.assertEqual(self.cmir_repository.inserted[0]["brand"], "AcmePlast")
 
     def test_update_path_merges_onto_active_record_and_shows_partial_diff(self) -> None:
         existing = {
@@ -185,7 +175,7 @@ class CMIRWorkflowGraphTests(unittest.TestCase):
         }
         # This email only mentions the identity fields (needed for the lookup) plus a
         # new effective_date -- everything else comes back blank from "extraction."
-        partial_cmir = CMIR(
+        partial_cmir = Cmir(
             customer_identity="Acme Manufacturing Ltd",
             target_customer_material_ref="ACME-PE200-STD",
             effective_date="2026-09-01",
@@ -204,8 +194,8 @@ class CMIRWorkflowGraphTests(unittest.TestCase):
 
         graph.invoke(Command(resume={"decision": "approve"}), config=self._config("t2"))
 
-        self.assertEqual(self.cmir_repository.inserted[0].brand, "AcmePlast")
-        self.assertEqual(self.cmir_repository.inserted[0].effective_date, "2026-09-01")
+        self.assertEqual(self.cmir_repository.inserted[0]["brand"], "AcmePlast")
+        self.assertEqual(self.cmir_repository.inserted[0]["effective_date"], "2026-09-01")
 
     def test_missing_mandatory_field_loops_back_through_identify_existing_cmir(self) -> None:
         # customer_identity and brand (both mandatory) come back blank from
@@ -214,7 +204,7 @@ class CMIRWorkflowGraphTests(unittest.TestCase):
         # whatever identify_existing_cmir finds on the *next* pass (not the original,
         # wrongly-blank lookup) -- that's what should make the merged draft complete
         # enough to reach human_approval without a second missing-fields round trip.
-        incomplete_cmir = CMIR(
+        incomplete_cmir = Cmir(
             sender_type="external",
             material_identity="Polyethylene Resin PE-200",
             intent_phrase="update",
@@ -255,7 +245,7 @@ class CMIRWorkflowGraphTests(unittest.TestCase):
         self.assertEqual(second_payload["cmir"]["brand"], "OldBrand")
 
     def test_version_conflict_routes_to_handle_version_conflict_without_crashing(self) -> None:
-        complete_cmir = CMIR(
+        complete_cmir = Cmir(
             sender_type="external",
             customer_identity="Acme Manufacturing Ltd",
             material_identity="Polyethylene Resin PE-200",
@@ -277,7 +267,7 @@ class CMIRWorkflowGraphTests(unittest.TestCase):
         self.assertIn("imap-1", self.email_reader.marked_read)
 
     def test_rejected_decision_still_marks_email_read(self) -> None:
-        complete_cmir = CMIR(
+        complete_cmir = Cmir(
             sender_type="external",
             customer_identity="Acme Manufacturing Ltd",
             material_identity="Polyethylene Resin PE-200",

@@ -29,9 +29,8 @@ class AzureOpenAIChatClient:
     ) -> None:
         if not (config.api_key and config.endpoint and config.deployment):
             raise AzureOpenAIConfigError(
-                "Azure OpenAI is not configured -- set "
-                "AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and "
-                "AZURE_OPENAI_DEPLOYMENT_NAME."
+                "Azure OpenAI is not configured -- set AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, "
+                "and AZURE_OPENAI_DEPLOYMENT_NAME."
             )
 
         if timeout_seconds is None:

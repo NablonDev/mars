@@ -1,36 +1,55 @@
-"""Master/reference data (retailers, SKUs, locations, carriers) shared by
-both fine_projection and fine_mitigation seeding -- not exclusive to
-either sub-domain, so it stays out of their seeding modules."""
+"""Master/reference data (retailers, materials/SKUs, plants, carriers)
+shared by both penalty-projection and penalty-mitigation seeding -- not
+exclusive to either sub-domain, so it stays out of their seeding modules.
+
+Was `app/services/seeding/master_data.py` against the old flat
+`sku`/`location` model. Rewritten against the ERP-normalized `common`
+schema (Phase 3 -- services move/folder-split):
+
+- The old flat `sku` row (`sku_id`, `sku_code` -- which was actually a
+  material-like code, e.g. "MAT-100234") is now two rows: a `material`
+  (plant-agnostic identity, `material_code` = the old `sku_code`) and a
+  `sku` (`sku_code` = the old `sku_id`, `material_id` FK to the new
+  `material` row). `material_master` (the per-plant stock/logistics
+  extension) is NOT seeded here -- none of the four worked-example
+  scenarios' projection/mitigation math reads it; only PO-validation's
+  quantity check does, and that domain seeds its own fixtures separately
+  (out of scope for this seed set).
+- The old `location` row (one flat table for both a manufacturing plant and
+  a distribution center) is now a `plant` row for each -- `warehouse` is a
+  distinct concept in the new schema (a `delivery.ship_from_warehouse_id`
+  target) that neither worked example's seed data or engine inputs need.
+"""
 
 from __future__ import annotations
 
 from typing import TypedDict
 
-from app.repositories.fine_master_data import MasterDataRepository
+from app.repositories.common.master_data import MasterDataRepository
 
 
 class _RetailerSeed(TypedDict):
-    retailer_id: str
+    retailer_code: str
     retailer_name: str
     priority_tier: str
     stacking_mode: str
     extension_min_lead_days: int
     extension_response_sla_hours: int
-    extension_fine_threshold: float
+    extension_penalty_threshold: float
 
 
 _RETAILERS: list[_RetailerSeed] = [
     {
-        "retailer_id": "RET-WMT",
+        "retailer_code": "RET-WMT",
         "retailer_name": "Walmart",
         "priority_tier": "TIER_1",
         "stacking_mode": "SUM",
         "extension_min_lead_days": 2,
         "extension_response_sla_hours": 48,
-        "extension_fine_threshold": 200.0,
+        "extension_penalty_threshold": 200.0,
     },
     {
-        "retailer_id": "RET-AMZ",
+        "retailer_code": "RET-AMZ",
         "retailer_name": "Amazon",
         "priority_tier": "TIER_1",
         "stacking_mode": "SUM",
@@ -39,67 +58,84 @@ _RETAILERS: list[_RetailerSeed] = [
         # expire within that order's own scenario window.
         "extension_min_lead_days": 2,
         "extension_response_sla_hours": 24,
-        "extension_fine_threshold": 100.0,
+        "extension_penalty_threshold": 100.0,
     },
 ]
-_SKUS = [
-    {"sku_id": "SKU-PED30", "sku_code": "MAT-100234", "description": "Pedigree Adult Dry Dog Food 30lb"},
-    {"sku_id": "SKU-CES12", "sku_code": "MAT-100511", "description": "Cesar Adult Wet Dog Food Variety Pack 12ct"},
-    {"sku_id": "SKU-WHI20", "sku_code": "MAT-100587", "description": "Whiskas Adult Dry Cat Food 20lb"},
+
+# (material_code, sku_code, description) -- material_code was the old
+# scenario data's "sku_code" (e.g. "MAT-100234"); sku_code was the old
+# "sku_id" (e.g. "SKU-PED30").
+_MATERIALS_AND_SKUS = [
+    ("MAT-100234", "SKU-PED30", "Pedigree Adult Dry Dog Food 30lb"),
+    ("MAT-100511", "SKU-CES12", "Cesar Adult Wet Dog Food Variety Pack 12ct"),
+    ("MAT-100587", "SKU-WHI20", "Whiskas Adult Dry Cat Food 20lb"),
 ]
-_LOCATIONS = [
-    {"location_id": "LOC-COL", "location_name": "Mars Petcare Plant - Columbia MO", "location_type": "PLANT"},
-    {"location_id": "LOC-ATL", "location_name": "Mars DC - Atlanta GA", "location_type": "DC"},
+
+# (plant_code, plant_name) -- was `_LOCATIONS`; both the manufacturing
+# plant and the distribution center become `plant` rows (see module
+# docstring).
+_PLANTS = [
+    ("LOC-COL", "Mars Petcare Plant - Columbia MO"),
+    ("LOC-ATL", "Mars DC - Atlanta GA"),
 ]
 
 
 class _CarrierSeed(TypedDict):
-    carrier_id: str
+    carrier_code: str
     carrier_name: str
     historical_reliability_score: float
 
 
 _CARRIERS: list[_CarrierSeed] = [
-    {"carrier_id": "CAR-SWIFT", "carrier_name": "Swift Transportation", "historical_reliability_score": 92.0},
-    {"carrier_id": "CAR-JBHUNT", "carrier_name": "JB Hunt", "historical_reliability_score": 78.0},
+    {
+        "carrier_code": "CAR-SWIFT",
+        "carrier_name": "Swift Transportation",
+        "historical_reliability_score": 92.0,
+    },
+    {"carrier_code": "CAR-JBHUNT", "carrier_name": "JB Hunt", "historical_reliability_score": 78.0},
 ]
 
 
 def seed(master_data: MasterDataRepository) -> dict[str, int]:
     """Idempotent: safe to call repeatedly. Skips anything that already
     exists rather than erroring on a duplicate key."""
-    counts = {"retailers": 0, "skus": 0, "locations": 0, "carriers": 0}
+    counts = {"retailers": 0, "materials": 0, "skus": 0, "plants": 0, "carriers": 0}
 
-    existing_retailers = {r["retailer_id"] for r in master_data.list_retailers()}
+    existing_retailers = {r["retailer_code"] for r in master_data.list_retailers()}
     for r in _RETAILERS:
-        if r["retailer_id"] not in existing_retailers:
+        if r["retailer_code"] not in existing_retailers:
             master_data.add_retailer(
-                r["retailer_id"],
+                r["retailer_code"],
                 r["retailer_name"],
                 r["priority_tier"],
                 r["stacking_mode"],
+                None,
                 r["extension_min_lead_days"],
                 r["extension_response_sla_hours"],
-                r["extension_fine_threshold"],
+                r["extension_penalty_threshold"],
             )
             counts["retailers"] += 1
 
-    existing_skus = {s["sku_id"] for s in master_data.list_skus()}
-    for s in _SKUS:
-        if s["sku_id"] not in existing_skus:
-            master_data.add_sku(s["sku_id"], s["sku_code"], s["description"])
+    existing_skus = {s["sku_code"] for s in master_data.list_skus()}
+    for material_code, sku_code, description in _MATERIALS_AND_SKUS:
+        material = master_data.get_material_by_code(material_code)
+        if material is None:
+            material = master_data.add_material(material_code, description)
+            counts["materials"] += 1
+        if sku_code not in existing_skus:
+            master_data.add_sku(sku_code, description, material["id"])
             counts["skus"] += 1
 
-    existing_locations = {loc["location_id"] for loc in master_data.list_locations()}
-    for loc in _LOCATIONS:
-        if loc["location_id"] not in existing_locations:
-            master_data.add_location(loc["location_id"], loc["location_name"], loc["location_type"])
-            counts["locations"] += 1
+    existing_plants = {p["plant_code"] for p in master_data.list_plants()}
+    for plant_code, plant_name in _PLANTS:
+        if plant_code not in existing_plants:
+            master_data.add_plant(plant_code, plant_name)
+            counts["plants"] += 1
 
-    existing_carriers = {c["carrier_id"] for c in master_data.list_carriers()}
+    existing_carriers = {c["carrier_code"] for c in master_data.list_carriers()}
     for c in _CARRIERS:
-        if c["carrier_id"] not in existing_carriers:
-            master_data.add_carrier(c["carrier_id"], c["carrier_name"], c["historical_reliability_score"])
+        if c["carrier_code"] not in existing_carriers:
+            master_data.add_carrier(c["carrier_code"], c["carrier_name"], c["historical_reliability_score"])
             counts["carriers"] += 1
 
     return counts

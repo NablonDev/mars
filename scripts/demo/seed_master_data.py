@@ -1,9 +1,13 @@
 """
-Seeds master/reference data and the four worked-example orders via the
-running API -- not by writing to the database directly. This is the
-"seed via API" requirement: the only thing this script knows is an HTTP
-base URL, exactly what a real ETL job or a teammate with no DB access
+Seeds master/reference data and the four worked-example purchase orders
+via the running API -- not by writing to the database directly. This is
+the "seed via API" requirement: the only thing this script knows is an
+HTTP base URL, exactly what a real ETL job or a teammate with no DB access
 would use.
+
+Every response now comes wrapped in the `{success, message, data, error}`
+envelope (`app/core/envelope.py`) -- see
+`app.schemas.penalties.admin.SeedDataResponse`.
 
 Usage:
     uvicorn app.main:app --reload &        # in one terminal
@@ -40,7 +44,7 @@ def main() -> None:
         print(f"Seeding failed: {resp.status_code} {resp.text}", file=sys.stderr)
         sys.exit(1)
 
-    counts = resp.json()
+    counts = resp.json()["data"]
     if args.force:
         print("Master data truncated and reseeded from scratch:")
     else:

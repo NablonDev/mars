@@ -1,16 +1,28 @@
-"""Application exception types and FastAPI handlers for consistent HTTP error responses."""
+"""Application exception types and FastAPI handlers for consistent HTTP error responses.
+
+Collapsed (Phase 6) from 14 leaf `AppError` subclasses plus a separate
+`ServiceError` type into 6 high-level categories matching HTTP semantics,
+each parametrized by a required `code: str` at construction rather than a
+dedicated subclass per failure case -- see the phase report for the full
+old-code -> new-category/`code=` mapping table. `ServiceError` (previously
+used ad hoc by cmir/po_validation) is gone; its one extra capability -- an
+optional `details: dict | None` -- is now a field on `AppError` itself, and
+every one of its string codes (`THREAD_NOT_FOUND`, `CMIR_VERSION_CONFLICT`,
+`MATERIAL_NOT_FOUND`, ...) carries over unchanged into whichever category
+matches its old `status_code`.
+"""
 
 from __future__ import annotations
 
 import logging
-from datetime import date
-from typing import Any, ClassVar
+from typing import ClassVar
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.core.envelope import error_envelope
 from app.core.logging import REQUEST_ID_HEADER, get_request_id
-from app.schemas.common import ErrorBody, ErrorResponse
 
 logger = logging.getLogger(__name__)
 
@@ -18,205 +30,74 @@ GENERIC_500_MESSAGE = "Internal server error"
 
 
 class AppError(Exception):
-    """Base exception for expected application errors. ``code``/``status_code``
-    are class-level (subclasses declare their contract once); ``message``/``detail``
-    are per-instance."""
+    """Base for every expected application error.
 
-    code: ClassVar[str] = "INTERNAL_ERROR"
-    status_code: ClassVar[int] = 500
+    `status_code` is class-level (each of the 6 direct subclasses below
+    declares its contract once); `code`/`message`/`details` are supplied at
+    each raise site. `message` is the only thing serialized into the API
+    response body; `details` is additionally exposed for 4xx responses
+    (matching the old `ServiceError` contract) but withheld for 5xx ones,
+    since call sites may put internal failure information there -- see
+    `register_exception_handlers`.
+    """
 
-    def __init__(self, message: str, *, detail: str | None = None) -> None:
-        # Keep both message and detail available in logs and tracebacks,
-        # while only exposing the client-safe message in API responses.
-        super().__init__(message if detail is None else f"{message} :: {detail}")
+    status_code: ClassVar[int]
+
+    def __init__(self, code: str, message: str, details: dict | None = None) -> None:
+        super().__init__(message if details is None else f"{message} :: {details}")
+        self.code = code
         self.message = message
-        self.detail = detail
+        self.details = details
 
 
 class NotFoundError(AppError):
-    code: ClassVar[str] = "NOT_FOUND"
+    """HTTP 404 -- e.g. ``code="PO_NOT_FOUND"``, ``"NO_PROJECTION_SUMMARY_JOB_EXISTS"``,
+    ``"PO_DELIVERY_CHANGE_REQUEST_NOT_FOUND"``, ``"THREAD_NOT_FOUND"``, ``"EMAIL_NOT_FOUND"``."""
+
     status_code: ClassVar[int] = 404
 
 
-class ValidationError(AppError):
-    """Expected application-state validation failure, returned as HTTP 422."""
-
-    code: ClassVar[str] = "VALIDATION_ERROR"
-    status_code: ClassVar[int] = 422
-
-
-class ExternalServiceError(AppError):
-    code: ClassVar[str] = "EXTERNAL_SERVICE_ERROR"
-    status_code: ClassVar[int] = 502
-
-
-class OrderNotFoundError(NotFoundError):
-    """Raised when no order exists for the requested order ID."""
-
-    code: ClassVar[str] = "ORDER_NOT_FOUND"
-
-    def __init__(self, order_id: str, *, hint: str | None = None) -> None:
-        message = f"No order found with order_id={order_id!r}"
-        if hint:
-            message = f"{message}. {hint}"
-        super().__init__(message)
-        self.order_id = order_id
-
-
-class NoActiveRulesError(ValidationError):
-    """Raised when a retailer has no active fine rules."""
-
-    code: ClassVar[str] = "NO_ACTIVE_RULES"
-
-
-class NoProjectionExistsError(ValidationError):
-    """Raised when an order has no projection results."""
-
-    code: ClassVar[str] = "NO_PROJECTION_EXISTS"
-
-
-class InvalidAsOfDateError(ValidationError):
-    """Raised when an as-of date is outside the allowed projection range."""
-
-    code: ClassVar[str] = "INVALID_AS_OF_DATE"
-
-
-class NoSummaryJobExistsError(NotFoundError):
-    """Raised when no fine-projection/mitigation-summary job exists for the requested
-    parameters. One class for both domains -- same shape, same lifecycle, only the
-    domain-specific code/message/endpoint hint differ (see ``domain``)."""
-
-    _CODES: ClassVar[dict[str, str]] = {
-        "projection": "NO_PROJECTION_SUMMARY_JOB_EXISTS",
-        "mitigation": "NO_MITIGATION_SUMMARY_JOB_EXISTS",
-    }
-    _ENDPOINTS: ClassVar[dict[str, str]] = {
-        "projection": "projection-summary",
-        "mitigation": "mitigation-summary",
-    }
-
-    def __init__(self, order_id: str, as_of_date: date, *, domain: str) -> None:
-        endpoint = self._ENDPOINTS[domain]
-        super().__init__(
-            f"No fine-{domain}-summary job found for order_id={order_id!r}, "
-            f"as_of_date={as_of_date.isoformat()!r} -- POST /orders/{{order_id}}/{endpoint} first."
-        )
-        self.order_id = order_id
-        self.as_of_date = as_of_date
-        self.domain = domain
-
-    @property
-    def code(self) -> str:  # type: ignore[override]
-        return self._CODES[self.domain]
-
-
-class ToolLoopExhaustedError(ExternalServiceError):
-    """Raised when a summary upstream tool loop cannot produce a usable result. One
-    class for both the projection and mitigation summary features -- same shape,
-    only the domain-specific code differs (see ``domain``)."""
-
-    _CODES: ClassVar[dict[str, str]] = {
-        "projection": "FINE_PROJECTION_SUMMARY_UPSTREAM_FAILED",
-        "mitigation": "FINE_MITIGATION_SUMMARY_UPSTREAM_FAILED",
-    }
-
-    def __init__(self, message: str, *, domain: str, detail: str | None = None) -> None:
-        super().__init__(message, detail=detail)
-        self.domain = domain
-
-    @property
-    def code(self) -> str:  # type: ignore[override]
-        return self._CODES[self.domain]
-
-
-class NoMitigationOptionsExistError(ValidationError):
-    """Raised when an order has no persisted mitigation-options results."""
-
-    code: ClassVar[str] = "NO_MITIGATION_OPTIONS_EXIST"
-
-
 class ConflictError(AppError):
-    code: ClassVar[str] = "CONFLICT"
+    """HTTP 409 -- e.g. ``code="PO_ALREADY_EXISTS"``,
+    ``"ACTIVE_PO_DELIVERY_CHANGE_REQUEST_EXISTS"``, ``"CMIR_VERSION_CONFLICT"``,
+    ``"THREAD_STALE"``, ``"THREAD_NOT_WAITING"``."""
+
     status_code: ClassVar[int] = 409
 
 
-class OrderAlreadyExistsError(ConflictError):
-    code: ClassVar[str] = "ORDER_ALREADY_EXISTS"
+class ValidationError(AppError):
+    """HTTP 422 -- e.g. ``code="INVALID_PENALTY_RULE_DATA"``, ``"INVALID_AS_OF_DATE"``,
+    ``"INVALID_PO_DELIVERY_CHANGE_RESPONSE"``, ``"VALIDATION_ERROR"``, ``"MATERIAL_NOT_FOUND"``,
+    ``"VIEW_NOT_SUPPORTED"``."""
 
-    def __init__(self, order_id: str) -> None:
-        super().__init__(f"Order {order_id!r} already exists")
-        self.order_id = order_id
-
-
-class InvalidFineRuleDataError(AppError):
-    """Raised when stored fine-rule reference data is internally inconsistent."""
-
-    code: ClassVar[str] = "INVALID_FINE_RULE_DATA"
+    status_code: ClassVar[int] = 422
 
 
-class ActivePoDeliveryChangeRequestExistsError(ConflictError):
-    """Raised when creating a PO delivery-change request for an order that already has one PENDING."""
+class BusinessRuleError(AppError):
+    """HTTP 409 -- expected-state/domain-rule violations, distinct from
+    `ConflictError`'s concurrent-write/duplicate-resource conflicts. E.g.
+    ``code="NO_MITIGATION_OPTIONS_EXIST"``, ``"NO_ACTIVE_RULES"``,
+    ``"NO_PROJECTION_EXISTS"``, ``"PO_DELIVERY_CHANGE_LEAD_TIME_ERROR"``."""
 
-    code: ClassVar[str] = "ACTIVE_PO_DELIVERY_CHANGE_REQUEST_EXISTS"
-
-    def __init__(self, order_id: str, request_id: str) -> None:
-        super().__init__(
-            f"Order {order_id!r} already has an active PO delivery-change request ({request_id!r})"
-        )
-        self.order_id = order_id
-        self.request_id = request_id
+    status_code: ClassVar[int] = 409
 
 
-class PoDeliveryChangeLeadTimeError(ValidationError):
-    """Raised when a requested PO delivery-date change does not meet the minimum lead-time rule."""
+class ExternalServiceError(AppError):
+    """HTTP 502 -- unexpected failure of an upstream/downstream dependency
+    (Azure OpenAI, a bounded LLM tool loop, LangGraph invoke/resume). E.g.
+    ``code="PENALTY_PROJECTION_SUMMARY_UPSTREAM_FAILED"``,
+    ``"PENALTY_MITIGATION_SUMMARY_UPSTREAM_FAILED"``, ``"WORKFLOW_RESUME_FAILED"``,
+    ``"WORKFLOW_STATE_CORRUPT"``, ``"QUEUE_NOT_CONFIGURED"``."""
 
-    code: ClassVar[str] = "PO_DELIVERY_CHANGE_LEAD_TIME_ERROR"
-
-
-class PoDeliveryChangeRequestNotFoundError(NotFoundError):
-    """Raised when no PO delivery-change request exists for the given request ID."""
-
-    code: ClassVar[str] = "PO_DELIVERY_CHANGE_REQUEST_NOT_FOUND"
-
-    def __init__(self, request_id: str) -> None:
-        super().__init__(f"No PO delivery-change request found with request_id={request_id!r}")
-        self.request_id = request_id
+    status_code: ClassVar[int] = 502
 
 
-class InvalidPoDeliveryChangeResponseError(ValidationError):
-    """Raised when a retailer response to a PO delivery-change request is invalid, e.g. responding
-    to a request that is no longer PENDING, or an inconsistent COUNTERED payload."""
+class NotAuthenticatedError(AppError):
+    """HTTP 401 -- unifies the bare FastAPI ``HTTPException(401)`` raised by
+    ``require_internal_api_key`` (``app/api/dependencies.py``, not touched
+    this phase -- see the generic `HTTPException` handler below)."""
 
-    code: ClassVar[str] = "INVALID_PO_DELIVERY_CHANGE_RESPONSE"
-
-
-class ServiceError(Exception):
-    """CMIR/PO-validation application error, mapping to the PRD error contract.
-
-    Kept as its own exception type (not an ``AppError`` subclass) since it
-    carries a ``details`` dict rather than a single ``detail`` string, and
-    changing that shape would touch every ``raise ServiceError(...)`` call
-    site across the cmir/po_validation services. Routed through the same
-    ``register_exception_handlers`` entry point as ``AppError`` below.
-    """
-
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        *,
-        status_code: int,
-        details: dict | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.status_code = status_code
-        self.details = details or {}
-
-
-def _error_body(code: str, message: str) -> dict:
-    return ErrorResponse(error=ErrorBody(code=code, message=message)).model_dump()
+    status_code: ClassVar[int] = 401
 
 
 def _resolve_request_id(request: Request) -> str:
@@ -225,7 +106,13 @@ def _resolve_request_id(request: Request) -> str:
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    """Register handlers for expected application and unexpected exceptions."""
+    """Register handlers for expected application and unexpected exceptions.
+
+    Every path below -- `AppError`, FastAPI's native `RequestValidationError`,
+    a bare `HTTPException`, and the unhandled-exception catch-all -- produces
+    the same `{success, message, data, error}` shape via `error_envelope`
+    (`data` is always `None` on an error path).
+    """
 
     @app.exception_handler(AppError)
     async def _app_error_handler(
@@ -243,7 +130,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             exc.status_code,
             exc.code,
             exc.message,
-            f" | detail={exc.detail}" if exc.detail else "",
+            f" | details={exc.details}" if exc.details else "",
             exc_info=exc if is_server_error else None,
             extra={
                 "request_id": request_id,
@@ -254,52 +141,88 @@ def register_exception_handlers(app: FastAPI) -> None:
             },
         )
 
+        # `details` may contain client-facing validation information for 4xx
+        # errors. Do not expose it for 5xx errors, since call sites may put
+        # internal failure information there.
+        envelope = error_envelope(
+            exc.code,
+            exc.message,
+            details=exc.details if not is_server_error else None,
+        )
         return JSONResponse(
             status_code=exc.status_code,
-            content=_error_body(exc.code, exc.message),
+            content=envelope.model_dump(),
             headers={REQUEST_ID_HEADER: request_id},
         )
 
-    @app.exception_handler(ServiceError)
-    async def _service_error_handler(
+    @app.exception_handler(RequestValidationError)
+    async def _request_validation_error_handler(
         request: Request,
-        exc: ServiceError,
+        exc: RequestValidationError,
     ) -> JSONResponse:
+        request_id = _resolve_request_id(request)
+
+        logger.warning(
+            "%s %s -> 422 REQUEST_VALIDATION_ERROR: %s",
+            request.method,
+            request.url.path,
+            exc.errors(),
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status": 422,
+                "error_code": "REQUEST_VALIDATION_ERROR",
+            },
+        )
+
+        envelope = error_envelope(
+            "REQUEST_VALIDATION_ERROR",
+            "Request validation failed.",
+            details={"errors": exc.errors()},
+        )
+        return JSONResponse(
+            status_code=422,
+            content=envelope.model_dump(),
+            headers={REQUEST_ID_HEADER: request_id},
+        )
+
+    @app.exception_handler(HTTPException)
+    async def _http_exception_handler(
+        request: Request,
+        exc: HTTPException,
+    ) -> JSONResponse:
+        # Reshapes FastAPI/Starlette's own bare `HTTPException`s (e.g. the
+        # 401 today's `require_internal_api_key` raises directly, since
+        # `app/api/dependencies.py` is out of scope this phase) into the
+        # same envelope shape as `AppError`, so Phase 7's route handlers
+        # don't have to solve this from scratch.
         request_id = _resolve_request_id(request)
         is_server_error = exc.status_code >= 500
 
         logger.log(
             logging.ERROR if is_server_error else logging.WARNING,
-            "%s %s -> %s %s: %s",
+            "%s %s -> %s HTTP_%s: %s",
             request.method,
             request.url.path,
             exc.status_code,
-            exc.code,
-            exc.message,
+            exc.status_code,
+            exc.detail,
             exc_info=exc if is_server_error else None,
             extra={
                 "request_id": request_id,
                 "method": request.method,
                 "path": request.url.path,
                 "status": exc.status_code,
-                "error_code": exc.code,
+                "error_code": f"HTTP_{exc.status_code}",
             },
         )
 
-        # `details` may contain client-facing validation information for 4xx errors.
-        # Do not expose it for 5xx errors because call sites may put internal failure
-        # information there.
-        body: dict[str, Any] = {
-            "code": exc.code,
-            "message": exc.message,
-        }
-        if not is_server_error:
-            body["details"] = exc.details
-
+        envelope = error_envelope(f"HTTP_{exc.status_code}", str(exc.detail))
         return JSONResponse(
             status_code=exc.status_code,
-            content={"error": body},
-            headers={REQUEST_ID_HEADER: request_id},
+            content=envelope.model_dump(),
+            headers={REQUEST_ID_HEADER: request_id, **(exc.headers or {})},
         )
 
     @app.exception_handler(Exception)
@@ -320,12 +243,13 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "method": request.method,
                 "path": request.url.path,
                 "status": 500,
-                "error_code": AppError.code,
+                "error_code": "INTERNAL_ERROR",
             },
         )
 
+        envelope = error_envelope("INTERNAL_ERROR", GENERIC_500_MESSAGE)
         return JSONResponse(
             status_code=500,
-            content=_error_body(AppError.code, GENERIC_500_MESSAGE),
+            content=envelope.model_dump(),
             headers={REQUEST_ID_HEADER: request_id},
         )

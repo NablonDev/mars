@@ -6,13 +6,13 @@ from langgraph.graph import END, StateGraph
 from app.agents.cmir.nodes import WorkflowNodes
 from app.agents.cmir.state import GraphState
 from app.core.tracing import traced
-from app.repositories.observability import PostgresAgentTraceRepository
+from app.repositories.process.agent_registry import AgentTraceRepository
 
 
 def build_graph(
     nodes: WorkflowNodes,
     checkpointer: BaseCheckpointSaver,
-    trace_repo: PostgresAgentTraceRepository,
+    trace_repo: AgentTraceRepository,
 ):
     """Wires the node functions into the CMIR resolution graph (SCD2-aware).
 

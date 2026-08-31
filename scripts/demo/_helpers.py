@@ -1,14 +1,24 @@
-"""Shared polling/error-formatting helpers for the httpx-based demo scripts.
+"""Shared auth/error-formatting helpers for the httpx-based demo scripts.
 
-Extracted from `demo_fine_projection_summary.py` and `run_end_to_end_demo.py`, which
-both defined `_error_message`/`_poll_until_ready` and the
-`POLL_INTERVAL_SECONDS`/`POLL_TIMEOUT_SECONDS` constants verbatim -- kept
-here once so the two scripts stop carrying duplicate copies.
+Was shared by `demo_fine_projection_summary.py` and `run_end_to_end_demo.py`,
+which both defined `_error_message`/`_poll_until_ready` verbatim -- kept here
+once so the two scripts stop carrying duplicate copies.
+
+The shared `_poll_until_ready` helper is gone: the pre-restructure API had
+one shape for both fine-projection-summary and fine-mitigation-summary
+polling (`GET /orders/{id}/{summary_path}?as_of_date=...`), so one function
+covered both. The new API has no equivalent per-(purchase_order,date)
+summary-poll endpoint for either domain -- `?include=summary` is a pure
+read, nested under a different resource shape per domain
+(`GET /purchase-orders/{id}/penalty-projections?include=summary` for
+projection, `GET /penalty-mitigations?projection_id={id}&include=summary`
+for mitigation, keyed by a projection's own surrogate id, not a date) -- so
+each demo script now owns its own poll loop against its own shape. See
+`demo_penalty_projection_summary.py`/`demo_penalty_mitigation_summary.py`.
 """
 
 import os
 import sys
-import time
 
 import httpx
 
@@ -23,10 +33,10 @@ def _auth_headers() -> dict[str, str]:
     raw env var rather than app.core.config.Settings (which they
     deliberately don't import -- they only need httpx).
     """
-    key = os.environ.get("INTERNAL_API_KEY")
+    key = os.environ.get("APP_INTERNAL_API_KEY")
     if not key:
         print(
-            "INTERNAL_API_KEY is not set in this shell -- export the same value "
+            "APP_INTERNAL_API_KEY is not set in this shell -- export the same value "
             "the running server was started with.",
             file=sys.stderr,
         )
@@ -35,49 +45,16 @@ def _auth_headers() -> dict[str, str]:
 
 
 def _error_message(resp: httpx.Response) -> str:
-    """Handles both this app's `{"error": {"message": ...}}` envelope
-    (app/core/exceptions.py) and the plain `{"detail": ...}` shape a few
-    not-yet-migrated routes still raise via bare `HTTPException` --
-    see the reviewer's carried-over note in PROGRESS.local.md."""
+    """Reads this app's `{success, message, data, error}` envelope
+    (app/core/envelope.py) -- every error response (`AppError`, FastAPI's
+    own `RequestValidationError`/`HTTPException`, and the unhandled-
+    exception catch-all) is shaped through it (app/core/exceptions.py)."""
     try:
         body = resp.json()
     except ValueError:
         return resp.text
-    if isinstance(body, dict) and "error" in body:
-        return body["error"].get("message", resp.text)
-    if isinstance(body, dict) and "detail" in body:
-        return str(body["detail"])
+    if isinstance(body, dict) and body.get("error"):
+        return body["error"].get("details") or body.get("message", resp.text)
+    if isinstance(body, dict) and "message" in body:
+        return str(body["message"])
     return resp.text
-
-
-def _poll_until_ready(
-    base_url: str,
-    order_id: str,
-    as_of_date: str,
-    summary_path: str = "projection-summary",
-) -> dict | None:
-    """Polls `GET .../{summary_path}` until the job leaves PENDING, or gives
-    up after POLL_TIMEOUT_SECONDS. Returns the job body (status READY or
-    FAILED) or None on timeout.
-
-    `summary_path` defaults to the fine-projection-summary endpoint the two
-    original callers use; `demo_fine_mitigation_summary.py` passes
-    "mitigation-summary" instead. Both endpoints return the same
-    status/summary/error_message envelope (ProjectionSummaryStatusResponse
-    and MitigationSummaryStatusResponse are field-for-field identical), so
-    one poller covers both."""
-    deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
-    headers = _auth_headers()
-    while time.monotonic() < deadline:
-        resp = httpx.get(
-            f"{base_url}/orders/{order_id}/{summary_path}",
-            params={"as_of_date": as_of_date},
-            headers=headers,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        job = resp.json()
-        if job["status"] != "PENDING":
-            return job
-        time.sleep(POLL_INTERVAL_SECONDS)
-    return None

@@ -6,7 +6,12 @@ the job-queue backend, the LLM client, `process_jobs`,
 `main()`'s control flow / exit-code decisions -- each underlying
 component already has its own dedicated test module (worker loop:
 test_worker_loop.py; repository: test_job_queue_repository.py; recovery
-sweep: test_worker_fine_projection.py).
+sweep: test_worker_penalty_projection.py).
+
+Was written against the pre-restructure `app.repositories.job_queue`/
+`app.workers.fine_projection` -- rewritten against
+`app.repositories.process.job_queue`/`app.workers.penalty_projection`
+(the `fine`/`fines` -> `penalty`/`penalties` rename).
 """
 
 from __future__ import annotations
@@ -18,9 +23,9 @@ from sqlalchemy.exc import OperationalError
 
 import scripts.ops.run_daily_batch as batch_script
 from app.queue.types import SweepResult
-from app.repositories.job_queue import JobQueueRepository
-from app.workers.fine_projection import EnqueueResult
+from app.repositories.process.job_queue import JobQueueRepository
 from app.workers.loop import WorkerLoopSummary
+from app.workers.penalty_projection import EnqueueResult
 
 
 def _invoke_main() -> int:
@@ -53,7 +58,7 @@ class _FakeSource(_FakeDispatcher):
 
 
 def _fake_enqueue_daily_run(*args, **kwargs) -> EnqueueResult:
-    return EnqueueResult(job_run_id=uuid4(), order_count=0, enqueued_count=0)
+    return EnqueueResult(job_run_id=uuid4(), purchase_order_count=0, enqueued_count=0)
 
 
 def _fake_sweep(*args, **kwargs) -> SweepResult:
@@ -75,6 +80,10 @@ def _mock_common(monkeypatch, database):
     )
     monkeypatch.setattr(batch_script, "AzureOpenAIChatClient", lambda *a, **k: object())
     monkeypatch.setattr(batch_script, "sweep_stranded_pending_projection_summaries", _fake_sweep)
+    monkeypatch.setattr(batch_script, "sweep_stranded_pending_mitigation_summaries", _fake_sweep)
+    monkeypatch.setattr(
+        batch_script, "sweep_expired_po_delivery_change_requests", lambda *a, **k: _fake_sweep()
+    )
     monkeypatch.setattr(batch_script, "enqueue_daily_run", _fake_enqueue_daily_run)
     monkeypatch.setattr("sys.argv", ["run_daily_batch.py"])
 

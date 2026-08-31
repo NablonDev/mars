@@ -1,27 +1,34 @@
-"""Repository-layer tests for the batch job queue, run against in-memory
-SQLite (see conftest.py). Covers row-shape, filter, and state-machine
-logic; the concurrency guarantees the Postgres-only claim/enqueue paths
-actually provide are proven separately against a real Postgres in
-tests/integration/test_job_queue_postgres.py.
+"""Repository-layer tests for the shared batch job queue
+(`process.job_run`/`process.job_item`), run against in-memory SQLite (see
+conftest.py). Was tests/unit/repositories/test_job_queue_repository.py
+against the old order_id/projection_date/task_type-keyed JobItem --
+relocated onto the generic item_type/dedupe_key shape (see
+app/repositories/process/job_queue.py's module docstring). Covers
+row-shape, filter, and state-machine logic; the concurrency guarantees the
+Postgres-only claim/enqueue paths actually provide are proven separately
+against a real Postgres in tests/integration/test_job_queue_postgres.py.
+
+The stranded-pending-summary recovery-sweep tests that used to live here
+moved to test_penalty_summary_repository.py, alongside
+`PenaltySummaryRepository.find_stranded_pending` (see that repository
+module's docstring for why).
 """
 
-from datetime import date, timedelta
-from uuid import uuid4
+from datetime import timedelta
 
-from app.repositories.fine_projection.summary import FineProjectionSummaryRepository
-from app.repositories.job_queue import JobQueueRepository, _utcnow
+from app.repositories.process.job_queue import JobQueueRepository, _utcnow
 
 
-def _make_run(repo: JobQueueRepository, projection_date: date = date(2026, 8, 13)):
-    return repo.create_run(run_type="MANUAL_BATCH", projection_date=projection_date)
+def _make_run(repo: JobQueueRepository):
+    return repo.create_run(job_type="PENALTY_PROJECTION_BATCH", trigger_type="MANUAL_BATCH")
 
 
-def test_enqueue_is_idempotent_for_the_same_key(db_session):
+def test_enqueue_is_idempotent_for_the_same_dedupe_key(db_session):
     repo = JobQueueRepository(db_session)
     run = _make_run(repo)
 
-    first = repo.enqueue(run["id"], "ORD-1", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
-    second = repo.enqueue(run["id"], "ORD-1", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
+    first = repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-1:2026-08-13", max_attempts=5)
+    second = repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-1:2026-08-13", max_attempts=5)
 
     assert first is not None
     assert second is not None
@@ -31,24 +38,31 @@ def test_enqueue_is_idempotent_for_the_same_key(db_session):
     assert len(items) == 1
 
 
+def test_enqueue_without_dedupe_key_never_dedupes(db_session):
+    repo = JobQueueRepository(db_session)
+    run = _make_run(repo)
+
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key=None, max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key=None, max_attempts=5)
+
+    items = repo.list_run_items(run["id"])
+    assert len(items) == 2
+
+
 def test_enqueue_many_is_idempotent_and_bulk(db_session):
     repo = JobQueueRepository(db_session)
     run = _make_run(repo)
 
     # ORD-1 enqueued individually first...
-    repo.enqueue(run["id"], "ORD-1", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-1:2026-08-13", max_attempts=5)
 
     inserted = repo.enqueue_many(
         run["id"],
         [
-            {"order_id": "ORD-1", "projection_date": date(2026, 8, 13), "task_type": "ORDER_RUN"},  # dup
-            {"order_id": "ORD-2", "projection_date": date(2026, 8, 13), "task_type": "ORDER_RUN"},
-            {"order_id": "ORD-3", "projection_date": date(2026, 8, 13), "task_type": "ORDER_RUN"},
-            {
-                "order_id": "ORD-3",
-                "projection_date": date(2026, 8, 13),
-                "task_type": "ORDER_RUN",
-            },  # dup w/in batch
+            {"item_type": "ORDER_RUN", "dedupe_key": "ORD-1:2026-08-13"},  # dup
+            {"item_type": "ORDER_RUN", "dedupe_key": "ORD-2:2026-08-13"},
+            {"item_type": "ORDER_RUN", "dedupe_key": "ORD-3:2026-08-13"},
+            {"item_type": "ORDER_RUN", "dedupe_key": "ORD-3:2026-08-13"},  # dup w/in batch
         ],
         max_attempts=5,
     )
@@ -61,7 +75,7 @@ def test_enqueue_many_is_idempotent_and_bulk(db_session):
 def test_claim_batch_excludes_future_available_at(db_session):
     repo = JobQueueRepository(db_session)
     run = _make_run(repo)
-    repo.enqueue(run["id"], "ORD-FUTURE", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-FUTURE", max_attempts=5)
 
     # push the row's availability into the future directly
     item = repo.list_run_items(run["id"])[0]
@@ -78,8 +92,8 @@ def test_claim_batch_excludes_future_available_at(db_session):
 def test_claim_batch_excludes_terminal_rows(db_session):
     repo = JobQueueRepository(db_session)
     run = _make_run(repo)
-    repo.enqueue(run["id"], "ORD-A", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
-    repo.enqueue(run["id"], "ORD-B", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-A", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-B", max_attempts=5)
 
     claimed = repo.claim_batch("worker-1", limit=10)
     assert len(claimed) == 2
@@ -94,7 +108,7 @@ def test_claim_batch_excludes_terminal_rows(db_session):
 def test_claim_batch_increments_attempt_count(db_session):
     repo = JobQueueRepository(db_session)
     run = _make_run(repo)
-    repo.enqueue(run["id"], "ORD-A", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-A", max_attempts=5)
 
     claimed = repo.claim_batch("worker-1", limit=10)
     assert len(claimed) == 1
@@ -106,7 +120,7 @@ def test_claim_batch_increments_attempt_count(db_session):
 def test_mark_failed_retries_then_goes_dead(db_session):
     repo = JobQueueRepository(db_session)
     run = _make_run(repo)
-    enqueued = repo.enqueue(run["id"], "ORD-A", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
+    enqueued = repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-A", max_attempts=5)
 
     from app.models import JobItem
 
@@ -132,7 +146,7 @@ def test_mark_failed_retries_then_goes_dead(db_session):
 def test_mark_dead_is_terminal_immediately(db_session):
     repo = JobQueueRepository(db_session)
     run = _make_run(repo)
-    repo.enqueue(run["id"], "ORD-A", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-A", max_attempts=5)
 
     claimed = repo.claim_batch("worker-1", limit=10)[0]
     assert claimed["attempt_count"] == 1  # nowhere near max_attempts (default 5)
@@ -144,7 +158,7 @@ def test_mark_dead_is_terminal_immediately(db_session):
 def test_heartbeat_returns_false_after_ownership_loss(db_session):
     repo = JobQueueRepository(db_session)
     run = _make_run(repo)
-    repo.enqueue(run["id"], "ORD-A", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-A", max_attempts=5)
 
     claimed = repo.claim_batch("worker-1", limit=10)[0]
     assert repo.heartbeat(claimed["id"], "worker-1") is True
@@ -162,7 +176,7 @@ def test_heartbeat_returns_false_after_ownership_loss(db_session):
 def test_release_does_not_consume_an_attempt(db_session):
     repo = JobQueueRepository(db_session)
     run = _make_run(repo)
-    repo.enqueue(run["id"], "ORD-A", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-A", max_attempts=5)
 
     claimed = repo.claim_batch("worker-1", limit=10)[0]
     assert claimed["attempt_count"] == 1
@@ -179,12 +193,12 @@ def test_release_does_not_consume_an_attempt(db_session):
 def test_reclaim_stale_resets_stale_running_row_and_leaves_fresh_one_alone(db_session):
     repo = JobQueueRepository(db_session)
     run = _make_run(repo)
-    repo.enqueue(run["id"], "ORD-STALE", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
-    repo.enqueue(run["id"], "ORD-FRESH", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-STALE", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-FRESH", max_attempts=5)
 
     claimed = repo.claim_batch("worker-1", limit=10)
-    stale_id = next(c["id"] for c in claimed if c["order_id"] == "ORD-STALE")
-    fresh_id = next(c["id"] for c in claimed if c["order_id"] == "ORD-FRESH")
+    stale_id = next(c["id"] for c in claimed if c["dedupe_key"] == "ORD-STALE")
+    fresh_id = next(c["id"] for c in claimed if c["dedupe_key"] == "ORD-FRESH")
 
     from app.models import JobItem
 
@@ -205,7 +219,7 @@ def test_reclaim_stale_resets_stale_running_row_and_leaves_fresh_one_alone(db_se
 def test_reclaim_stale_also_resets_running_rows_with_no_heartbeat_ever_recorded(db_session):
     repo = JobQueueRepository(db_session)
     run = _make_run(repo)
-    repo.enqueue(run["id"], "ORD-A", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-A", max_attempts=5)
     claimed = repo.claim_batch("worker-1", limit=10)[0]
 
     from app.models import JobItem
@@ -222,11 +236,13 @@ def test_reclaim_stale_also_resets_running_rows_with_no_heartbeat_ever_recorded(
 
 def test_get_run_summary_counts_correctly(db_session):
     repo = JobQueueRepository(db_session)
-    run = repo.create_run(run_type="MANUAL_BATCH", projection_date=date(2026, 8, 13), requested_item_count=4)
-    repo.enqueue(run["id"], "ORD-A", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
-    repo.enqueue(run["id"], "ORD-B", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
-    repo.enqueue(run["id"], "ORD-C", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
-    repo.enqueue(run["id"], "ORD-D", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
+    run = repo.create_run(
+        job_type="PENALTY_PROJECTION_BATCH", trigger_type="MANUAL_BATCH", requested_item_count=4
+    )
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-A", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-B", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-C", max_attempts=5)
+    repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-D", max_attempts=5)
 
     claimed = repo.claim_batch("worker-1", limit=10)
     repo.mark_succeeded(claimed[0]["id"], "worker-1")
@@ -242,118 +258,11 @@ def test_get_run_summary_counts_correctly(db_session):
     assert summary["total_items"] == 4
 
 
-# ---------------------------------------------------------------------
-# find_stranded_pending_projection_summaries (recovery sweep, see app.workers.fine_projection)
-# ---------------------------------------------------------------------
-
-_AGENT_ID = uuid4()
-_PROMPT_VERSION = "v-test"
-
-
-def _make_pending_summary(db_session, order_id: str, as_of_date: date) -> None:
-    FineProjectionSummaryRepository(db_session).create_pending(
-        order_id=order_id,
-        as_of_date=as_of_date,
-        agent_id=_AGENT_ID,
-        prompt_version=_PROMPT_VERSION,
-        context_hash="deadbeef",
-    )
-    db_session.commit()
-
-
-def test_find_stranded_pending_projection_summaries_finds_a_row_with_no_job_item(db_session):
-    _make_pending_summary(db_session, "ORD-STRANDED", date(2026, 8, 13))
-
-    repo = JobQueueRepository(db_session)
-    stranded = repo.find_stranded_pending_projection_summaries(date(2026, 8, 10), date(2026, 8, 14))
-
-    assert stranded == [{"order_id": "ORD-STRANDED", "as_of_date": date(2026, 8, 13)}]
-
-
-def test_find_stranded_pending_projection_summaries_excludes_a_row_with_a_job_item(db_session):
-    _make_pending_summary(db_session, "ORD-COVERED", date(2026, 8, 13))
-
-    repo = JobQueueRepository(db_session)
-    run = repo.create_run(run_type="ON_DEMAND", projection_date=date(2026, 8, 13))
-    repo.enqueue(run["id"], "ORD-COVERED", date(2026, 8, 13), "PROJECTION_SUMMARY_REGEN", max_attempts=5)
-    db_session.commit()
-
-    stranded = repo.find_stranded_pending_projection_summaries(date(2026, 8, 10), date(2026, 8, 14))
-
-    assert stranded == []
-
-
-def test_find_stranded_pending_projection_summaries_excludes_a_row_whose_job_item_is_terminal(db_session):
-    _make_pending_summary(db_session, "ORD-DEAD-COVERED", date(2026, 8, 13))
-
-    repo = JobQueueRepository(db_session)
-    run = repo.create_run(run_type="ON_DEMAND", projection_date=date(2026, 8, 13))
-    item = repo.enqueue(
-        run["id"], "ORD-DEAD-COVERED", date(2026, 8, 13), "PROJECTION_SUMMARY_REGEN", max_attempts=5
-    )
-    repo.claim_batch("worker-1", limit=1, job_item_ids=[item["id"]])
-    repo.mark_dead(item["id"], "worker-1", "boom", "SOME_FAILURE")
-    db_session.commit()
-
-    stranded = repo.find_stranded_pending_projection_summaries(date(2026, 8, 10), date(2026, 8, 14))
-
-    assert stranded == []
-
-
-def test_find_stranded_pending_projection_summaries_excludes_a_row_outside_the_date_window(db_session):
-    _make_pending_summary(db_session, "ORD-TOO-OLD", date(2026, 8, 1))
-
-    repo = JobQueueRepository(db_session)
-    stranded = repo.find_stranded_pending_projection_summaries(date(2026, 8, 10), date(2026, 8, 14))
-
-    assert stranded == []
-
-
-def test_find_stranded_pending_projection_summaries_excludes_ready_and_failed_rows(db_session):
-    repo = JobQueueRepository(db_session)
-    summaries = FineProjectionSummaryRepository(db_session)
-
-    summaries.create_pending(
-        order_id="ORD-READY",
-        as_of_date=date(2026, 8, 13),
-        agent_id=_AGENT_ID,
-        prompt_version=_PROMPT_VERSION,
-        context_hash="hash1",
-    )
-    summaries.mark_ready(
-        order_id="ORD-READY",
-        as_of_date=date(2026, 8, 13),
-        agent_id=_AGENT_ID,
-        prompt_version=_PROMPT_VERSION,
-        model_name="gpt-test",
-        summary="All clear.",
-    )
-    summaries.create_pending(
-        order_id="ORD-FAILED",
-        as_of_date=date(2026, 8, 13),
-        agent_id=_AGENT_ID,
-        prompt_version=_PROMPT_VERSION,
-        context_hash="hash2",
-    )
-    summaries.mark_failed(
-        order_id="ORD-FAILED",
-        as_of_date=date(2026, 8, 13),
-        agent_id=_AGENT_ID,
-        prompt_version=_PROMPT_VERSION,
-        error_message="boom",
-    )
-    db_session.commit()
-
-    stranded = repo.find_stranded_pending_projection_summaries(date(2026, 8, 10), date(2026, 8, 14))
-
-    assert stranded == []
-
-
 def test_enqueue_persists_the_passed_max_attempts(db_session):
     repo = JobQueueRepository(db_session)
     run = _make_run(repo)
 
-    item = repo.enqueue(run["id"], "ORD-MAX-ATTEMPTS", date(2026, 8, 13), "ORDER_RUN", max_attempts=10)
+    item = repo.enqueue(run["id"], "ORDER_RUN", dedupe_key="ORD-MAX-ATTEMPTS", max_attempts=10)
 
     assert item is not None
     assert item["max_attempts"] == 10
@@ -365,38 +274,9 @@ def test_enqueue_many_persists_the_passed_max_attempts(db_session):
 
     repo.enqueue_many(
         run["id"],
-        [
-            {
-                "order_id": "ORD-MAX-ATTEMPTS-BULK",
-                "projection_date": date(2026, 8, 13),
-                "task_type": "ORDER_RUN",
-            }
-        ],
+        [{"item_type": "ORDER_RUN", "dedupe_key": "ORD-MAX-ATTEMPTS-BULK"}],
         max_attempts=10,
     )
 
     items = repo.list_run_items(run["id"])
     assert items[0]["max_attempts"] == 10
-
-
-def test_find_stranded_pending_projection_summaries_excludes_a_row_covered_by_an_order_run(db_session):
-    """An ORDER_RUN item produces the summary for the same (order, date), so
-    the ledger row is NOT stranded -- even though no PROJECTION_SUMMARY_REGEN exists.
-
-    Matching the anti-join on task_type='PROJECTION_SUMMARY_REGEN' would report this
-    row as stranded and let the sweep enqueue a second item alongside the
-    live ORDER_RUN. Both would then generate the same narrative, and
-    nothing at the DB level would stop it: uq_job_item_inflight is scoped
-    per task_type, so the two do not collide. Correct data, double the
-    LLM spend.
-    """
-    _make_pending_summary(db_session, "ORD-BATCH-COVERED", date(2026, 8, 13))
-
-    repo = JobQueueRepository(db_session)
-    run = repo.create_run(run_type="SCHEDULED_DAILY", projection_date=date(2026, 8, 13))
-    repo.enqueue(run["id"], "ORD-BATCH-COVERED", date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
-    db_session.commit()
-
-    stranded = repo.find_stranded_pending_projection_summaries(date(2026, 8, 10), date(2026, 8, 14))
-
-    assert stranded == []

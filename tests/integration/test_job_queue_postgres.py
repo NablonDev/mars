@@ -1,10 +1,11 @@
 """Integration tests for the job queue against a real Postgres instance.
 
-Covers exactly what the SQLite unit suite (tests/test_job_queue_repository.py)
-cannot: real cross-connection concurrency (`FOR UPDATE SKIP LOCKED` actually
-preventing two workers from claiming the same row) and the migration-only
-partial unique index (`uq_job_item_inflight`) actually being enforced at
-the DB level, not just by the repository's own application-level pre-check.
+Covers exactly what the SQLite unit suite
+(tests/unit/repositories/test_job_queue_repository.py) cannot: real
+cross-connection concurrency (`FOR UPDATE SKIP LOCKED` actually preventing
+two workers from claiming the same row) and the migration-only partial
+unique index (`uq_job_item_inflight`) actually being enforced at the DB
+level, not just by the repository's own application-level pre-check.
 
 Skips cleanly (not an error) when `DATABASE_URL` isn't pointed at a
 reachable Postgres instance -- this suite must never fail CI/local runs
@@ -15,7 +16,6 @@ from __future__ import annotations
 
 import threading
 import uuid
-from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -23,20 +23,15 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.core.config import get_settings
 from app.db.session import Database
-from app.repositories.job_queue import JobQueueRepository
-
-# One of the four seeded example orders (see FineSeedingService)
-# -- used only to satisfy the FK on job_item.order_id, which Postgres (unlike
-# the SQLite test DB) actually enforces. Never mutated by this suite.
-_SEED_ORDER_ID = "WMT-100234"
+from app.repositories.process.job_queue import JobQueueRepository
 
 
 def _connect_or_none() -> Database | None:
     settings = get_settings()
-    if not settings.database_url.startswith("postgresql"):
+    if not settings.database.url.startswith("postgresql"):
         return None
 
-    db = Database(settings.database_url)
+    db = Database(settings.database.url)
     try:
         with db.engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -62,15 +57,15 @@ def job_run(pg_database: Database):
     """A fresh job_run for one test, deleted (with its job_items) afterward."""
     session = pg_database.new_session()
     repo = JobQueueRepository(session)
-    run = repo.create_run(run_type="MANUAL_BATCH", projection_date=date(2026, 8, 13))
+    run = repo.create_run(job_type="PENALTY_PROJECTION_BATCH", trigger_type="MANUAL_BATCH")
     session.commit()
     session.close()
 
     yield run
 
     cleanup = pg_database.new_session()
-    cleanup.execute(text("DELETE FROM fines.job_item WHERE job_run_id = :id"), {"id": run["id"]})
-    cleanup.execute(text("DELETE FROM fines.job_run WHERE id = :id"), {"id": run["id"]})
+    cleanup.execute(text("DELETE FROM process.job_item WHERE job_run_id = :id"), {"id": run["id"]})
+    cleanup.execute(text("DELETE FROM process.job_run WHERE id = :id"), {"id": run["id"]})
     cleanup.commit()
     cleanup.close()
 
@@ -85,9 +80,8 @@ def test_claim_batch_concurrent_workers_never_claim_overlapping_rows(pg_database
     for i in range(n_items):
         result = repo.enqueue(
             job_run["id"],
-            _SEED_ORDER_ID,
-            date(2020, 1, 1) + timedelta(days=i),
             "PROJECTION_SUMMARY_REGEN",
+            dedupe_key=f"CONCURRENCY-TEST-{i}",
             max_attempts=5,
         )
         assert result is not None
@@ -140,11 +134,11 @@ def test_partial_unique_index_rejects_second_inflight_row_but_allows_after_termi
     pg_database: Database, job_run: dict
 ):
     session = pg_database.new_session()
-    order_id, projection_date, task_type = _SEED_ORDER_ID, date(2031, 5, 5), "ORDER_RUN"
+    item_type, dedupe_key = "ORDER_RUN", "INFLIGHT-DEDUPE-TEST"
 
     try:
         first = JobQueueRepository(session).enqueue(
-            job_run["id"], order_id, projection_date, task_type, max_attempts=5
+            job_run["id"], item_type, dedupe_key=dedupe_key, max_attempts=5
         )
         session.commit()
         assert first is not None
@@ -152,20 +146,19 @@ def test_partial_unique_index_rejects_second_inflight_row_but_allows_after_termi
         # Raw insert, deliberately bypassing the repository's own
         # application-level pre-check, to prove the DB-level partial
         # unique index (`uq_job_item_inflight`) itself is what rejects a
-        # second in-flight row for the same key.
+        # second in-flight row for the same (item_type, dedupe_key).
         with pytest.raises(IntegrityError):
             session.execute(
                 text(
-                    "INSERT INTO fines.job_item "
-                    "(id, job_run_id, order_id, projection_date, task_type, status) "
-                    "VALUES (:id, :run_id, :order_id, :projection_date, :task_type, 'PENDING')"
+                    "INSERT INTO process.job_item "
+                    "(id, job_run_id, item_type, dedupe_key, status) "
+                    "VALUES (:id, :run_id, :item_type, :dedupe_key, 'PENDING')"
                 ),
                 {
                     "id": uuid.uuid4(),
                     "run_id": job_run["id"],
-                    "order_id": order_id,
-                    "projection_date": projection_date,
-                    "task_type": task_type,
+                    "item_type": item_type,
+                    "dedupe_key": dedupe_key,
                 },
             )
         session.rollback()
@@ -173,13 +166,15 @@ def test_partial_unique_index_rejects_second_inflight_row_but_allows_after_termi
         # Move the first row to a terminal state directly via raw SQL --
         # not through mark_dead, which requires locked_by to match a
         # worker_id, irrelevant to what this test is proving.
-        session.execute(text("UPDATE fines.job_item SET status = 'DEAD' WHERE id = :id"), {"id": first["id"]})
+        session.execute(
+            text("UPDATE process.job_item SET status = 'DEAD' WHERE id = :id"), {"id": first["id"]}
+        )
         session.commit()
 
         # Now that the only prior row for this key is terminal, a second
         # in-flight row for the same key is permitted.
         second = JobQueueRepository(session).enqueue(
-            job_run["id"], order_id, projection_date, task_type, max_attempts=5
+            job_run["id"], item_type, dedupe_key=dedupe_key, max_attempts=5
         )
         session.commit()
         assert second is not None

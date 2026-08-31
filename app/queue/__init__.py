@@ -20,9 +20,4 @@ from app.queue.factory import build_job_queue
 from app.queue.interfaces import JobDispatcher, JobSource
 from app.queue.types import ClaimedJob
 
-__all__ = [
-    "ClaimedJob",
-    "JobDispatcher",
-    "JobSource",
-    "build_job_queue"
-]
+__all__ = ["ClaimedJob", "JobDispatcher", "JobSource", "build_job_queue"]

@@ -1,26 +1,27 @@
-"""Tests for FineMitigationSummaryService, mirroring
+"""Tests for MitigationSummaryService, mirroring
 tests/unit/services/test_fine_projection_summary.py's structure for the
-mitigation-summary feature."""
+mitigation-summary feature.
+
+Was against `FineMitigationSummaryService`/`MitigationResultRepository`/
+`FineMitigationSummaryRepository` (business-string `order_id`, separate
+`mitigation_summary` table); rewritten against `MitigationSummaryService`
+and the merged `penalties.penalty_summary` table.
+"""
 
 from __future__ import annotations
 
 from contextlib import suppress
 from datetime import date
+from uuid import uuid4
 
 import pytest
 
-from app.agents.fine_mitigation.prompts.v1 import PROMPT_VERSION
-from app.core.exceptions import (
-    InvalidAsOfDateError,
-    NoMitigationOptionsExistError,
-    NoSummaryJobExistsError,
-    OrderNotFoundError,
-    ToolLoopExhaustedError,
-)
-from app.repositories.fine_mitigation.mitigation import MitigationResultRepository
-from app.repositories.fine_mitigation.summary import FineMitigationSummaryRepository
-from app.services.fine_mitigation.summary import FineMitigationSummaryJob, FineMitigationSummaryService
-from app.services.fine_mitigation.types import MitigationOption
+from app.agents.penalties.mitigation.prompts.v1 import PROMPT_VERSION
+from app.core.exceptions import BusinessRuleError, ExternalServiceError, NotFoundError, ValidationError
+from app.models.enums import SummaryType
+from app.services.penalties.mitigation.summary_service import MitigationSummaryService
+from app.services.penalties.mitigation.types import MitigationOption
+from app.services.penalties.projection.service import ProjectionService
 
 
 class _FakeAIMessage:
@@ -35,7 +36,7 @@ class FakeChatClient:
     def __init__(
         self,
         tool_call_plan: list[list[dict]] | None = None,
-        final_content: str | None = "Accepting the fine is currently the best option.",
+        final_content: str | None = "Accepting the penalty is currently the best option.",
         fail_invoke_on_round: int | None = None,
     ):
         self.tool_call_plan = tool_call_plan or []
@@ -62,40 +63,45 @@ class FakeChatClient:
         return _FakeAIMessage(content=None, tool_calls=calls)
 
 
-def _seed_order(services, order_id: str = "ORD-MITSUM") -> None:
-    services.master_data.add_retailer("RET-MITSUM", "Retailer MitSum", None, "SUM")
-    services.master_data.add_sku("SKU-MITSUM", "MAT-MITSUM", None)
-    services.master_data.add_location("LOC-MITSUM", None, None)
-    services.orders.create_order(
-        order_id=order_id,
-        retailer_id="RET-MITSUM",
-        sku_id="SKU-MITSUM",
-        ship_from_location_id="LOC-MITSUM",
-        order_qty=1000,
-        unit_price=10.0,
+def _seed_order(repos, po_number: str = "ORD-MITSUM"):
+    retailer = repos.master_data.add_retailer(f"RET-{po_number}", "Retailer MitSum", None, "SUM")
+    material = repos.master_data.add_material(f"MAT-{po_number}", None)
+    plant = repos.master_data.add_plant(f"PLANT-{po_number}", None, None)
+    purchase_order = repos.purchase_orders.create_purchase_order(
+        purchase_order_number=po_number,
+        retailer_id=retailer["id"],
         order_date=date(2026, 8, 1),
         requested_delivery_date=date(2026, 8, 10),
         required_ship_date=date(2026, 8, 8),
     )
+    repos.purchase_orders.add_line(
+        purchase_order_id=purchase_order["id"],
+        line_number="10",
+        ordered_quantity=1000,
+        unit_price=10.0,
+        material_id=material["id"],
+        plant_id=plant["id"],
+    )
+    return purchase_order["id"]
 
 
-def _seed_options(mitigation_result_repo, order_id: str, projection_date: date) -> None:
-    mitigation_result_repo.save_results(
-        order_id,
+def _seed_options(repos, purchase_order_id, projection_date: date) -> None:
+    repos.mitigation_options.save_results(
+        purchase_order_id,
         projection_date,
         [
             MitigationOption(
                 action="ACCEPT",
-                projected_fine_after=100.0,
+                projected_penalty_after=100.0,
                 action_cost=0.0,
                 net_saving=0.0,
                 risk_level="HIGH",
                 confidence="CONFIRMED",
-                rationale="Pay the projected fine as-is.",
+                rationale="Pay the projected penalty as-is.",
             ),
             MitigationOption(
                 action="SPEED_UP_PRODUCTION",
-                projected_fine_after=20.0,
+                projected_penalty_after=20.0,
                 action_cost=30.0,
                 net_saving=50.0,
                 risk_level="LOW",
@@ -106,83 +112,83 @@ def _seed_options(mitigation_result_repo, order_id: str, projection_date: date) 
     )
 
 
-@pytest.fixture
-def mitigation_result_repo(db_session) -> MitigationResultRepository:
-    return MitigationResultRepository(db_session)
-
-
-@pytest.fixture
-def mitigation_summary_repo(db_session) -> FineMitigationSummaryRepository:
-    return FineMitigationSummaryRepository(db_session)
-
-
-def _build_service(services, mitigation_result_repo, mitigation_summary_repo, fake_llm):
-    return FineMitigationSummaryService(
-        orders=services.orders,
-        master_data=services.master_data,
-        mitigation_results=mitigation_result_repo,
-        summaries=mitigation_summary_repo,
-        prompt_registry=services.prompt_registry,
+def _build_service(repos, fake_llm) -> MitigationSummaryService:
+    projection_service = ProjectionService(
+        purchase_orders=repos.purchase_orders,
+        fulfillment=repos.fulfillment,
+        rules=repos.penalty_rules,
+        master_data=repos.master_data,
+        projections=repos.penalty_projections,
+    )
+    return MitigationSummaryService(
+        purchase_orders=repos.purchase_orders,
+        summaries=repos.penalty_summaries,
+        agent_registry=repos.agent_registry,
+        job_queue=repos.job_queue,
+        job_context=repos.penalty_job_item_context,
         llm=fake_llm,
+        master_data=repos.master_data,
+        mitigation_options=repos.mitigation_options,
+        actual_penalties=repos.actual_penalties,
+        projection_service=projection_service,
     )
 
 
 def _schedule_and_run(
-    service: FineMitigationSummaryService,
-    order_id: str,
+    service: MitigationSummaryService,
+    purchase_order_id,
     as_of_date: date | None = None,
     force_regenerate: bool = False,
-) -> FineMitigationSummaryJob:
-    job = service.get_or_schedule(order_id, as_of_date=as_of_date, force_regenerate=force_regenerate)
+):
+    job = service.get_or_schedule(purchase_order_id, as_of_date=as_of_date, force_regenerate=force_regenerate)
     if job.status != "PENDING":
         return job
     with suppress(Exception):
-        service.run_generation(job.order_id, job.as_of_date, job.prompt_version)
-    return service.get_status(job.order_id, as_of_date=job.as_of_date)
+        service.run_generation(job.purchase_order_id, job.as_of_date)
+    return service.get_status(job.purchase_order_id, as_of_date=job.as_of_date)
 
 
-def test_order_not_found_raises_order_not_found_error(
-    services, mitigation_result_repo, mitigation_summary_repo
-):
+def test_order_not_found_raises_order_not_found_error(repos):
     fake_llm = FakeChatClient()
-    service = _build_service(services, mitigation_result_repo, mitigation_summary_repo, fake_llm)
+    service = _build_service(repos, fake_llm)
+    missing_id = uuid4()
 
-    with pytest.raises(OrderNotFoundError, match="NOPE"):
-        service.get_or_schedule("NOPE")
+    with pytest.raises(NotFoundError, match=str(missing_id)):
+        service.get_or_schedule(missing_id)
 
 
-def test_no_mitigation_options_exist_error(services, mitigation_result_repo, mitigation_summary_repo):
-    _seed_order(services)
+def test_no_mitigation_options_exist_error(repos):
+    purchase_order_id = _seed_order(repos)
     fake_llm = FakeChatClient()
-    service = _build_service(services, mitigation_result_repo, mitigation_summary_repo, fake_llm)
+    service = _build_service(repos, fake_llm)
 
-    with pytest.raises(NoMitigationOptionsExistError, match="ORD-MITSUM"):
-        service.get_or_schedule("ORD-MITSUM")
+    with pytest.raises(BusinessRuleError, match=str(purchase_order_id)):
+        service.get_or_schedule(purchase_order_id)
 
 
-def test_get_or_schedule_returns_pending_on_cache_miss(
-    services, mitigation_result_repo, mitigation_summary_repo
-):
-    _seed_order(services)
-    _seed_options(mitigation_result_repo, "ORD-MITSUM", date(2026, 8, 5))
+def test_get_or_schedule_returns_pending_on_cache_miss(repos):
+    purchase_order_id = _seed_order(repos)
+    _seed_options(repos, purchase_order_id, date(2026, 8, 5))
     fake_llm = FakeChatClient()
-    service = _build_service(services, mitigation_result_repo, mitigation_summary_repo, fake_llm)
+    service = _build_service(repos, fake_llm)
 
-    job = service.get_or_schedule("ORD-MITSUM", as_of_date=date(2026, 8, 5))
+    job = service.get_or_schedule(purchase_order_id, as_of_date=date(2026, 8, 5))
 
     assert job.status == "PENDING"
     assert fake_llm.invocations == []
-    persisted = mitigation_summary_repo.get_by_key("ORD-MITSUM", date(2026, 8, 5), PROMPT_VERSION)
+    persisted = repos.penalty_summaries.get_by_key(
+        purchase_order_id, SummaryType.MITIGATION, date(2026, 8, 5)
+    )
     assert persisted["status"] == "PENDING"
 
 
-def test_mandatory_context_contains_ranked_options(services, mitigation_result_repo, mitigation_summary_repo):
-    _seed_order(services)
-    _seed_options(mitigation_result_repo, "ORD-MITSUM", date(2026, 8, 5))
+def test_mandatory_context_contains_ranked_options(repos):
+    purchase_order_id = _seed_order(repos)
+    _seed_options(repos, purchase_order_id, date(2026, 8, 5))
     fake_llm = FakeChatClient()
-    service = _build_service(services, mitigation_result_repo, mitigation_summary_repo, fake_llm)
+    service = _build_service(repos, fake_llm)
 
-    job = _schedule_and_run(service, "ORD-MITSUM", as_of_date=date(2026, 8, 5))
+    job = _schedule_and_run(service, purchase_order_id, as_of_date=date(2026, 8, 5))
 
     assert job.status == "READY"
     content = fake_llm.invocations[0]["messages"][1].content
@@ -190,7 +196,7 @@ def test_mandatory_context_contains_ranked_options(services, mitigation_result_r
     for expected_key in (
         "order",
         "current_projection_date",
-        "current_total_expected_fine",
+        "current_total_expected_penalty",
         "stacking_mode",
         "mitigation_options",
     ):
@@ -198,91 +204,101 @@ def test_mandatory_context_contains_ranked_options(services, mitigation_result_r
     assert '"SPEED_UP_PRODUCTION"' in content
 
 
-def test_cache_hit_skips_llm(services, mitigation_result_repo, mitigation_summary_repo):
-    _seed_order(services)
-    _seed_options(mitigation_result_repo, "ORD-MITSUM", date(2026, 8, 5))
+def test_cache_hit_skips_llm(repos):
+    purchase_order_id = _seed_order(repos)
+    _seed_options(repos, purchase_order_id, date(2026, 8, 5))
     fake_llm = FakeChatClient()
-    service = _build_service(services, mitigation_result_repo, mitigation_summary_repo, fake_llm)
+    service = _build_service(repos, fake_llm)
 
-    first = _schedule_and_run(service, "ORD-MITSUM", as_of_date=date(2026, 8, 5))
+    first = _schedule_and_run(service, purchase_order_id, as_of_date=date(2026, 8, 5))
     assert first.status == "READY"
     assert len(fake_llm.invocations) == 2
 
-    second = service.get_or_schedule("ORD-MITSUM", as_of_date=date(2026, 8, 5))
+    second = service.get_or_schedule(purchase_order_id, as_of_date=date(2026, 8, 5))
     assert second.status == "READY"
     assert len(fake_llm.invocations) == 2
     assert second.output == first.output
 
 
-def test_force_regenerate_replaces_the_row_in_place(
-    services, mitigation_result_repo, mitigation_summary_repo
-):
-    _seed_order(services)
-    _seed_options(mitigation_result_repo, "ORD-MITSUM", date(2026, 8, 5))
+def test_force_regenerate_replaces_the_row_in_place(repos):
+    purchase_order_id = _seed_order(repos)
+    _seed_options(repos, purchase_order_id, date(2026, 8, 5))
     fake_llm = FakeChatClient(final_content="First narrative.")
-    service = _build_service(services, mitigation_result_repo, mitigation_summary_repo, fake_llm)
+    service = _build_service(repos, fake_llm)
 
-    first = _schedule_and_run(service, "ORD-MITSUM", as_of_date=date(2026, 8, 5))
+    first = _schedule_and_run(service, purchase_order_id, as_of_date=date(2026, 8, 5))
     assert first.status == "READY"
 
     fake_llm.final_content = "Regenerated narrative."
-    second = _schedule_and_run(service, "ORD-MITSUM", as_of_date=date(2026, 8, 5), force_regenerate=True)
+    second = _schedule_and_run(service, purchase_order_id, as_of_date=date(2026, 8, 5), force_regenerate=True)
 
     assert second.status == "READY"
     assert second.output.summary == "Regenerated narrative."
     assert second.output.summary != first.output.summary
 
 
-def test_run_generation_persists_failed_status_and_reraises_on_tool_loop_exhaustion(
-    services, mitigation_result_repo, mitigation_summary_repo
-):
-    _seed_order(services)
-    _seed_options(mitigation_result_repo, "ORD-MITSUM", date(2026, 8, 5))
+def test_run_generation_persists_failed_status_and_reraises_on_tool_loop_exhaustion(repos):
+    purchase_order_id = _seed_order(repos)
+    _seed_options(repos, purchase_order_id, date(2026, 8, 5))
     fake_llm = FakeChatClient(fail_invoke_on_round=0)
-    service = _build_service(services, mitigation_result_repo, mitigation_summary_repo, fake_llm)
+    service = _build_service(repos, fake_llm)
 
-    job = service.get_or_schedule("ORD-MITSUM", as_of_date=date(2026, 8, 5))
+    job = service.get_or_schedule(purchase_order_id, as_of_date=date(2026, 8, 5))
     assert job.status == "PENDING"
 
-    with pytest.raises(ToolLoopExhaustedError):
-        service.run_generation(job.order_id, job.as_of_date, job.prompt_version)
+    with pytest.raises(ExternalServiceError):
+        service.run_generation(job.purchase_order_id, job.as_of_date)
 
-    row = mitigation_summary_repo.get_by_key("ORD-MITSUM", date(2026, 8, 5), PROMPT_VERSION)
+    row = repos.penalty_summaries.get_by_key(purchase_order_id, SummaryType.MITIGATION, date(2026, 8, 5))
     assert row["status"] == "FAILED"
-    assert row["error_message"] == "Fine mitigation summary generation failed upstream"
+    assert row["error_message"] == "Penalty mitigation summary generation failed upstream"
 
 
-def test_get_status_raises_no_mitigation_summary_job_exists_when_never_posted(
-    services, mitigation_result_repo, mitigation_summary_repo
-):
-    _seed_order(services)
-    _seed_options(mitigation_result_repo, "ORD-MITSUM", date(2026, 8, 5))
+def test_get_status_raises_no_mitigation_summary_job_exists_when_never_posted(repos):
+    purchase_order_id = _seed_order(repos)
+    _seed_options(repos, purchase_order_id, date(2026, 8, 5))
     fake_llm = FakeChatClient()
-    service = _build_service(services, mitigation_result_repo, mitigation_summary_repo, fake_llm)
+    service = _build_service(repos, fake_llm)
 
-    with pytest.raises(NoSummaryJobExistsError):
-        service.get_status("ORD-MITSUM", as_of_date=date(2026, 8, 5))
+    with pytest.raises(NotFoundError):
+        service.get_status(purchase_order_id, as_of_date=date(2026, 8, 5))
 
 
-def test_as_of_date_in_the_future_raises_invalid_as_of_date(
-    services, mitigation_result_repo, mitigation_summary_repo
-):
-    _seed_order(services)
-    _seed_options(mitigation_result_repo, "ORD-MITSUM", date(2026, 8, 5))
+def test_as_of_date_in_the_future_raises_invalid_as_of_date(repos):
+    purchase_order_id = _seed_order(repos)
+    _seed_options(repos, purchase_order_id, date(2026, 8, 5))
     fake_llm = FakeChatClient()
-    service = _build_service(services, mitigation_result_repo, mitigation_summary_repo, fake_llm)
+    service = _build_service(repos, fake_llm)
 
-    with pytest.raises(InvalidAsOfDateError):
-        service.get_or_schedule("ORD-MITSUM", as_of_date=date(2099, 1, 1))
+    with pytest.raises(ValidationError):
+        service.get_or_schedule(purchase_order_id, as_of_date=date(2099, 1, 1))
 
 
-def test_as_of_date_before_earliest_options_date_raises_invalid_as_of_date(
-    services, mitigation_result_repo, mitigation_summary_repo
-):
-    _seed_order(services)
-    _seed_options(mitigation_result_repo, "ORD-MITSUM", date(2026, 8, 5))
+def test_as_of_date_before_earliest_options_date_raises_invalid_as_of_date(repos):
+    purchase_order_id = _seed_order(repos)
+    _seed_options(repos, purchase_order_id, date(2026, 8, 5))
     fake_llm = FakeChatClient()
-    service = _build_service(services, mitigation_result_repo, mitigation_summary_repo, fake_llm)
+    service = _build_service(repos, fake_llm)
 
-    with pytest.raises(InvalidAsOfDateError):
-        service.get_or_schedule("ORD-MITSUM", as_of_date=date(2000, 1, 1))
+    with pytest.raises(ValidationError):
+        service.get_or_schedule(purchase_order_id, as_of_date=date(2000, 1, 1))
+
+
+def test_v1_prompt_version_is_registered_on_first_use(repos):
+    """Mirrors
+    test_fine_projection_summary.py::test_v3_prompt_version_is_registered_on_first_use
+    for this feature's own agent/prompt identity."""
+    purchase_order_id = _seed_order(repos)
+    _seed_options(repos, purchase_order_id, date(2026, 8, 5))
+    fake_llm = FakeChatClient()
+    service = _build_service(repos, fake_llm)
+
+    assert PROMPT_VERSION == "v1"
+
+    job = _schedule_and_run(service, purchase_order_id, as_of_date=date(2026, 8, 5))
+
+    assert job.status == "READY"
+    assert job.output.prompt_version == "v1"
+    registered = repos.agent_registry.get_active("penalty_mitigation_summary")
+    assert registered is not None
+    assert registered["prompt_version"] == "v1"

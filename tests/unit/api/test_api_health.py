@@ -72,4 +72,4 @@ def test_health_returns_its_connection_to_the_pool(client):
     for _ in range(5):
         assert client.get("/api/v1/health").status_code == 200
 
-    assert client.get("/api/v1/orders").status_code == 200
+    assert client.get("/api/v1/purchase-orders").status_code == 200

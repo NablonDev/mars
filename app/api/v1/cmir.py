@@ -1,147 +1,82 @@
+"""API endpoints for `cmir.email_event` ingestion.
+
+Was `app/api/v1/cmir.py`'s `create_router()` factory (stale imports --
+`app.core.exceptions.ServiceError`/dataclass-shaped schemas that no longer
+exist post-restructure). Rewritten per the approved plan §6: module-level
+`router = APIRouter(...)` (Phase 7a's convention), `Envelope[T]` on every
+route, the collapsed `AppError` hierarchy.
+
+| Old | New |
+|---|---|
+| `POST /ingest/emails` | `POST /api/v1/cmir/email-events` |
+| `GET /runs?view=threads\\|agents\\|batches` | `GET /api/v1/job-runs?job_type=CMIR_EMAIL_INGEST` (`app/api/v1/job_runs.py`) + `GET /api/v1/workflow-threads?domain=cmir` (`app/api/v1/workflow_threads.py`) |
+| `GET /threads/{id}/stage`, `GET /threads/{id}/snapshot` | `GET /api/v1/workflow-threads/{thread_id}?include=snapshot` (`app/api/v1/workflow_threads.py`) |
+| `POST /threads/{id}/missing-fields` | `POST /api/v1/workflow-threads/{thread_id}/missing-fields` (`app/api/v1/workflow_threads.py`) |
+| `POST /threads/{id}/update` | `PATCH /api/v1/workflow-threads/{thread_id}/draft` (`app/api/v1/workflow_threads.py`) |
+| `POST /threads/{id}/decision` | `POST /api/v1/workflow-threads/{thread_id}/decisions` (`app/api/v1/workflow_threads.py`) |
+
+`POST /internal/process-email` is not a PRD-facing route (the Service Bus
+consumer's own internal call) and is not part of the plan's naming table --
+kept at its existing path, just repaired against the current schemas/
+exceptions/envelope.
+"""
+
 from __future__ import annotations
 
-from uuid import UUID
+from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 
-from app.api.dependencies import get_po_service, get_service
-from app.core.exceptions import ServiceError
-from app.schemas.cmir import (
-    DecisionRequest,
-    FieldsRequest,
-    IngestEmailsRequest,
-    IngestEmailsResponse,
+from app.api.dependencies import get_service
+from app.core.envelope import Envelope, success_envelope
+from app.core.exceptions import ValidationError
+from app.schemas.cmir.email_events import (
+    IngestEmailEventsRequest,
+    IngestEmailEventsResponse,
     ProcessQueuedEmailRequest,
-    RunsResponse,
-    ThreadStageResponse,
-    UpdateDraftResponse,
 )
-from app.services.cmir_run_service import CMIRRunService
-from app.services.po_validation_service import PoValidationService
+from app.services.cmir.run_service import CmirRunService
+
+router = APIRouter(tags=["cmir"])
 
 
-def create_router() -> APIRouter:
-    """Build the CMIR routes (PRD API contract)."""
-    # No prefix here: app/main.py mounts the aggregated v1 router under /api/v1 once.
-    router = APIRouter(tags=["cmir"])
-
-    @router.post("/ingest/emails", response_model=IngestEmailsResponse, status_code=202)
-    def ingest_emails(
-        request_body: IngestEmailsRequest,
-        run_service: CMIRRunService = Depends(get_service),
-    ):
-        if request_body.source != "gmail":
-            raise ServiceError(
-                "VALIDATION_ERROR",
-                "Only gmail source is currently configured.",
-                status_code=422,
-                details={"source": request_body.source},
-            )
-        return run_service.start_email_ingest(
-            max_workers=request_body.max_workers,
-            subject_contains=request_body.filters.subject_contains,
-            unread_only=request_body.filters.unread_only,
+@router.post(
+    "/cmir/email-events",
+    response_model=Envelope[IngestEmailEventsResponse],
+    status_code=202,
+)
+def create_email_events(
+    body: IngestEmailEventsRequest,
+    run_service: CmirRunService = Depends(get_service),
+) -> Envelope[IngestEmailEventsResponse]:
+    if body.source != "gmail":
+        raise ValidationError(
+            code="VALIDATION_ERROR",
+            message="Only gmail source is currently configured.",
+            details={"source": body.source},
         )
+    result = run_service.start_email_ingest(
+        max_workers=body.max_workers,
+        subject_contains=body.filters.subject_contains,
+        unread_only=body.filters.unread_only,
+    )
+    return success_envelope(IngestEmailEventsResponse.model_validate(result), message="Email ingest started.")
 
-    @router.get("/runs", response_model=RunsResponse)
-    def list_runs(
-        view: str = Query(default="threads"),
-        batch_id: str | None = None,
-        agent_run_id: UUID | None = None,
-        status: str | None = None,
-        stage: str | None = None,
-        sender: str | None = None,
-        limit: int = Query(default=50, ge=1, le=200),
-        cursor: str | None = None,
-        run_service: CMIRRunService = Depends(get_service),
-    ):
-        return run_service.list_runs(
-            view=view,
-            batch_id=batch_id,
-            agent_run_id=agent_run_id,
-            status=status,
-            stage=stage,
-            sender=sender,
-            limit=limit,
-            cursor=cursor,
-        )
 
-    @router.post("/internal/process-email", response_model=ThreadStageResponse)
-    def process_queued_email(
-        request_body: ProcessQueuedEmailRequest,
-        run_service: CMIRRunService = Depends(get_service),
-    ):
-        return run_service.process_queued_email(
-            batch_id=request_body.batch_id,
-            email=request_body.email,
-            queue_message_id=request_body.queue_message_id,
-            email_id=request_body.email_id,
-        )
-
-    @router.get("/threads/{thread_id}/stage", response_model=ThreadStageResponse)
-    def get_thread_stage(
-        thread_id: str,
-        run_service: CMIRRunService = Depends(get_service),
-    ):
-        return run_service.get_stage(thread_id)
-
-    @router.get("/threads/{thread_id}/snapshot", response_model=None)
-    def get_thread_snapshot(
-        thread_id: str,
-        run_service: CMIRRunService = Depends(get_service),
-        po_run_service: PoValidationService = Depends(get_po_service),
-    ):
-        # workflow_threads is shared across both agents. PoValidationService.get_snapshot
-        # raises THREAD_NOT_FOUND both for an unknown thread_id and for a thread that
-        # belongs to the CMIR agent (po_line_id is None there), so trying PO first and
-        # falling back to CMIR correctly dispatches without any direct Container access
-        # here. CMIR and PO Validation snapshots have different shapes (PRD §10.4 vs
-        # §11.3), so this route intentionally has no single fixed response_model.
-        try:
-            return po_run_service.get_snapshot(thread_id)
-        except ServiceError as exc:
-            if exc.code != "THREAD_NOT_FOUND":
-                raise
-        return run_service.get_snapshot(thread_id)
-
-    @router.post("/threads/{thread_id}/missing-fields", response_model=ThreadStageResponse)
-    def submit_missing_fields(
-        thread_id: str,
-        request_body: FieldsRequest,
-        run_service: CMIRRunService = Depends(get_service),
-    ):
-        return run_service.submit_missing_fields(
-            thread_id,
-            actor=request_body.actor,
-            fields=request_body.fields,
-            expected_updated_at=request_body.expected_updated_at,
-        )
-
-    @router.post("/threads/{thread_id}/update", response_model=UpdateDraftResponse)
-    def update_draft(
-        thread_id: str,
-        request_body: FieldsRequest,
-        run_service: CMIRRunService = Depends(get_service),
-    ):
-        return run_service.update_draft(
-            thread_id,
-            actor=request_body.actor,
-            fields=request_body.fields,
-            expected_updated_at=request_body.expected_updated_at,
-        )
-
-    @router.post("/threads/{thread_id}/decision", response_model=ThreadStageResponse)
-    def submit_decision(
-        thread_id: str,
-        request_body: DecisionRequest,
-        run_service: CMIRRunService = Depends(get_service),
-    ):
-        return run_service.submit_decision(
-            thread_id,
-            actor=request_body.actor,
-            decision=request_body.decision,
-            reason=request_body.reason,
-            expected_updated_at=request_body.expected_updated_at,
-        )
-
-    return router
+@router.post("/internal/process-email", response_model=Envelope[dict[str, Any]])
+def process_queued_email(
+    body: ProcessQueuedEmailRequest,
+    run_service: CmirRunService = Depends(get_service),
+) -> Envelope[dict[str, Any]]:
+    """Internal Service Bus consumer call, not a PRD-facing route -- the
+    result shape is polymorphic (a fresh graph run's thread-stage dict, the
+    touchless-path literal, or an already-processed/failed summary; see
+    `CmirRunService.process_queued_email`), so this stays untyped rather than
+    forcing a single response model onto genuinely different shapes."""
+    result = run_service.process_queued_email(
+        batch_id=body.batch_id,
+        email=body.email,
+        queue_message_id=body.queue_message_id,
+        email_id=body.email_id,
+    )
+    return success_envelope(result)

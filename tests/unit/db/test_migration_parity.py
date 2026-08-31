@@ -1,18 +1,28 @@
 """
-Proves the hand-authored Alembic migrations (alembic/versions/e803d9470f31_*.py
-for the fines schema, alembic/versions/43d8ced96170_*.py for the cmir schema)
-actually match app/models/, rather than just asserting it in a
-docstring. Builds one SQLite DB via `alembic upgrade head` (walks the whole
-chain) and another via `Base.metadata.create_all()`, then diffs table and
-column names.
+Proves the hand-authored Alembic migrations (the 5-revision chain in
+alembic/versions/: 0824321a02a4_common_schema.py, ff53dabe6e4c_process_schema.py,
+374aa902b053_cmir_schema.py, 4b41f6bcb2f3_penalties_schema.py, and
+a5b39c6e2181_langgraph_schema.py) actually match app/models/, rather than
+just asserting it in a docstring. Builds one SQLite DB via
+`alembic upgrade head` (walks the whole chain) and another via
+`Base.metadata.create_all()`, then diffs table and column names.
 
-No live Postgres needed -- this only checks structural parity between
-the migrations and the ORM, not Postgres-specific DDL correctness. Both
-engines go through `apply_sqlite_schema_translation` because
-`Base.metadata` has tables bound to the `fines` and `cmir` schemas
-(app/db/base.py), which SQLite cannot express -- the same translation
-app/db/session.py and alembic/env.py apply, so the tables land unqualified
-on both sides and stay comparable.
+This test compares table and column names ONLY -- no indexes, no
+constraints, no types, no nullability. It cannot catch drift in any of
+those (e.g. the partial unique index on cmir_record, or the
+`num_nonnulls` CHECK on workflow_thread_subject/cmir_job_item_context) --
+those must be verified against a real Postgres database instead.
+
+No live Postgres needed for this test itself -- it only checks structural
+parity between the migrations and the ORM, not Postgres-specific DDL
+correctness. Both engines go through `apply_sqlite_schema_translation`
+because `Base.metadata` has tables bound to the `common`, `process`,
+`cmir`, and `penalties` schemas (app/db/base.py), which SQLite cannot
+express -- the same translation app/db/session.py and alembic/env.py
+apply, so the tables land unqualified on both sides and stay comparable.
+`langgraph` is not part of this comparison: it has no ORM model and its
+migration creates no tables (Postgres-only `CREATE SCHEMA`, a no-op on
+SQLite).
 """
 
 from pathlib import Path

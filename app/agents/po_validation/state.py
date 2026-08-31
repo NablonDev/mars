@@ -5,7 +5,7 @@ from uuid import UUID
 
 
 class POGraphState(TypedDict, total=False):
-    po_line_id: str
+    po_line_id: UUID  # common.purchase_order_line.id
     po_line: dict[str, Any]  # PoLine, as a dict (po_number, customer_id, plant, order_quantity, ...)
     batch_id: str
     run_id: UUID

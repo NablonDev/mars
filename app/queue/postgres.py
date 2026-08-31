@@ -16,7 +16,7 @@ from app.db.session import Database
 from app.models import JobItem
 from app.queue.interfaces import JobDispatcher, JobSource
 from app.queue.types import ClaimedJob, claimed_job_from_row
-from app.repositories.job_queue import JobQueueRepository
+from app.repositories.process.job_queue import JobQueueRepository
 
 logger = logging.getLogger(__name__)
 

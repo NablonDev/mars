@@ -16,7 +16,7 @@ from __future__ import annotations
 import threading
 import time
 
-from app.core.exceptions import OrderNotFoundError, ToolLoopExhaustedError
+from app.core.exceptions import ExternalServiceError, NotFoundError
 from app.core.rate_limit import RateLimitGate, looks_like_rate_limit
 
 
@@ -31,14 +31,16 @@ def test_looks_like_rate_limit_walks_the_cause_chain():
         try:
             raise RuntimeError("429 Too Many Requests")
         except RuntimeError as inner:
-            raise ToolLoopExhaustedError("upstream failed", domain="projection") from inner
-    except ToolLoopExhaustedError as outer:
+            raise ExternalServiceError(
+                code="PENALTY_PROJECTION_SUMMARY_UPSTREAM_FAILED", message="upstream failed"
+            ) from inner
+    except ExternalServiceError as outer:
         assert looks_like_rate_limit(outer) is True
 
 
 def test_looks_like_rate_limit_false_for_unrelated_errors():
     assert looks_like_rate_limit(RuntimeError("connection reset by peer")) is False
-    assert looks_like_rate_limit(OrderNotFoundError("ORD-1")) is False
+    assert looks_like_rate_limit(NotFoundError(code="PO_NOT_FOUND", message="ORD-1")) is False
 
 
 def test_rate_limit_gate_pauses_until_backoff_elapses():

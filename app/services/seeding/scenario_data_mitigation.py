@@ -7,12 +7,12 @@ same posture as app/services/seeding/scenario_data_projection.py.
 
 from datetime import date
 
-from app.services.fine_mitigation.types import MitigationInputs, ShortageCause
-from app.services.fine_projection import (
+from app.services.penalties.mitigation.types import MitigationInputs, ShortageCause
+from app.services.penalties.projection import (
     AppointmentStatus,
     CalcType,
-    FineRule,
     OrderSnapshot,
+    PenaltyRule,
     ProductionStatus,
 )
 
@@ -87,7 +87,7 @@ EXPENSIVE_CARRIER_SNAPSHOT = OrderSnapshot(
     expected_transit_days=2,
 )
 EXPENSIVE_CARRIER_RULES = [
-    FineRule("RULE-EDGE-OTIF-1", "OTIF_LATE", CalcType.FLAT_FEE, rate=200.0),
+    PenaltyRule("RULE-EDGE-OTIF-1", "OTIF_LATE", CalcType.FLAT_FEE, rate=200.0),
 ]
 EXPENSIVE_CARRIER_INPUTS = MitigationInputs(
     order_id="MIT-EDGE-001",
@@ -115,8 +115,8 @@ MIXED_SHORTAGE_DELAY_SNAPSHOT = OrderSnapshot(
     expected_transit_days=2,
 )
 MIXED_SHORTAGE_DELAY_RULES = [
-    FineRule("RULE-EDGE-SHORT-2", "SHORT_SHIP", CalcType.PER_UNIT, rate=4.0, threshold_pct=0.0),
-    FineRule("RULE-EDGE-OTIF-2", "OTIF_LATE", CalcType.FLAT_FEE, rate=800.0),
+    PenaltyRule("RULE-EDGE-SHORT-2", "SHORT_SHIP", CalcType.PER_UNIT, rate=4.0, threshold_pct=0.0),
+    PenaltyRule("RULE-EDGE-OTIF-2", "OTIF_LATE", CalcType.FLAT_FEE, rate=800.0),
 ]
 MIXED_SHORTAGE_DELAY_INPUTS = MitigationInputs(
     order_id="MIT-EDGE-002",

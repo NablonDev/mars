@@ -16,6 +16,13 @@ relies on that -- these tests are single-threaded and exercise state-
 machine/dispatch-plumbing correctness, not concurrent-claim safety (that
 is `tests/integration/test_job_queue_postgres.py`'s job, gated on a
 reachable Postgres exactly as it already is).
+
+Was written against the pre-restructure `app.repositories.job_queue`
+(`order_id`/`projection_date`/`task_type` on both the repository and
+`ClaimedJob`) -- rewritten against `app.repositories.process.job_queue`
+and the domain-agnostic `ClaimedJob` (`item_type`/`dedupe_key` only; see
+`app.queue.types`'s module docstring for why the domain-shaped fields
+moved off it entirely).
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -39,9 +46,9 @@ from app.queue.interfaces import JobDispatcher, JobSource
 from app.queue.postgres import PostgresJobQueue
 from app.queue.service_bus import ServiceBusJobQueue
 from app.queue.types import ClaimedJob
-from app.repositories.job_queue import JobQueueRepository
+from app.repositories.process.job_queue import JobQueueRepository
 
-ORDER_ID = "ORD-QUEUE-TEST"
+DEDUPE_KEY = "ORD-QUEUE-TEST:2026-08-13:ORDER_RUN"
 FAKE_NAMESPACE = "fake-namespace.servicebus.windows.net"
 
 
@@ -200,7 +207,7 @@ def _fake_message_factory(body: str) -> _FakeMessage:
 
 
 def _make_service_bus_queue(database: Database, fake_bus: _FakeServiceBusQueue) -> ServiceBusJobQueue:
-    settings = Settings(job_queue_service_bus_namespace=FAKE_NAMESPACE)
+    settings = Settings(job_queue={"service_bus_namespace": FAKE_NAMESPACE})
     return ServiceBusJobQueue(
         database,
         settings,
@@ -217,8 +224,8 @@ def _make_service_bus_queue(database: Database, fake_bus: _FakeServiceBusQueue) 
 def _enqueue_item(database: Database, *, max_attempts: int = 5) -> dict[str, Any]:
     with database.session() as session:
         repo = JobQueueRepository(session)
-        run = repo.create_run(run_type="MANUAL_BATCH", projection_date=date(2026, 8, 13))
-        item = repo.enqueue(run["id"], ORDER_ID, date(2026, 8, 13), "ORDER_RUN", max_attempts=5)
+        run = repo.create_run(job_type="ORDER_RUN", trigger_type="MANUAL_BATCH")
+        item = repo.enqueue(run["id"], item_type="ORDER_RUN", dedupe_key=DEDUPE_KEY, max_attempts=5)
         assert item is not None
         if max_attempts != 5:
             row = session.get(JobItem, item["id"])
@@ -265,7 +272,8 @@ def test_dispatch_then_claim_batch_returns_the_item(database: Database, queue) -
     assert len(batch) == 1
     job = batch[0]
     assert job.job_item_id == item["id"]
-    assert job.order_id == ORDER_ID
+    assert job.item_type == "ORDER_RUN"
+    assert job.dedupe_key == DEDUPE_KEY
     assert job.attempt_count == 1
 
 
@@ -403,7 +411,7 @@ def test_message_for_an_already_terminal_row_gets_settled_not_redelivered(
 
 
 def test_service_bus_missing_namespace_raises_actionable_error(database: Database) -> None:
-    settings = Settings(job_queue_service_bus_namespace="")
+    settings = Settings(job_queue={"service_bus_namespace": ""})
     with pytest.raises(ValidationError, match="JOB_QUEUE_SERVICE_BUS_NAMESPACE"):
         ServiceBusJobQueue(database, settings)
 
@@ -416,7 +424,7 @@ def test_service_bus_missing_package_raises_actionable_error(
     monkeypatch.setitem(sys.modules, "azure.servicebus", None)
     monkeypatch.setitem(sys.modules, "azure.identity", None)
 
-    settings = Settings(job_queue_service_bus_namespace=FAKE_NAMESPACE)
+    settings = Settings(job_queue={"service_bus_namespace": FAKE_NAMESPACE})
     with pytest.raises(ValidationError, match="azure-servicebus"):
         ServiceBusJobQueue(database, settings)
 
@@ -436,7 +444,7 @@ def test_factory_builds_postgres_backend_by_default(database: Database) -> None:
 
 def test_settings_rejects_unknown_job_queue_backend_at_startup() -> None:
     with pytest.raises(PydanticValidationError):
-        Settings(job_queue_backend="carrier_pigeon")
+        Settings(job_queue={"backend": "carrier_pigeon"})
 
 
 # ---------------------------------------------------------------------
@@ -503,14 +511,14 @@ def test_service_bus_close_tolerates_a_resource_that_raises(
 
 
 def _enqueue_dispatch_and_claim_many(
-    database: Database, queue: ServiceBusJobQueue, *, count: int, order_prefix: str
+    database: Database, queue: ServiceBusJobQueue, *, count: int, dedupe_prefix: str
 ) -> list[ClaimedJob]:
     for i in range(count):
         with database.session() as session:
             repo = JobQueueRepository(session)
-            run = repo.create_run(run_type="MANUAL_BATCH", projection_date=date(2026, 8, 13))
+            run = repo.create_run(job_type="ORDER_RUN", trigger_type="MANUAL_BATCH")
             item = repo.enqueue(
-                run["id"], f"{order_prefix}-{i}", date(2026, 8, 13), "ORDER_RUN", max_attempts=5
+                run["id"], item_type="ORDER_RUN", dedupe_key=f"{dedupe_prefix}-{i}", max_attempts=5
             )
             assert item is not None
         queue.dispatch(item["id"])
@@ -527,7 +535,7 @@ def test_service_bus_receiver_calls_are_serialized_across_worker_threads(
     shared receiver; without the lock, `_ConcurrencyProbe` catches two
     threads inside `renew_message_lock`/`complete_message` at once."""
     queue = _make_service_bus_queue(database, fake_bus)
-    jobs = _enqueue_dispatch_and_claim_many(database, queue, count=8, order_prefix="ORD-RACE")
+    jobs = _enqueue_dispatch_and_claim_many(database, queue, count=8, dedupe_prefix="ORD-RACE")
     assert len(jobs) == 8
 
     errors: list[BaseException] = []
@@ -561,9 +569,9 @@ def test_service_bus_sender_calls_are_serialized_across_concurrent_dispatch(
     for i in range(8):
         with database.session() as session:
             repo = JobQueueRepository(session)
-            run = repo.create_run(run_type="MANUAL_BATCH", projection_date=date(2026, 8, 13))
+            run = repo.create_run(job_type="ORDER_RUN", trigger_type="MANUAL_BATCH")
             item = repo.enqueue(
-                run["id"], f"ORD-DISPATCH-RACE-{i}", date(2026, 8, 13), "ORDER_RUN", max_attempts=5
+                run["id"], item_type="ORDER_RUN", dedupe_key=f"ORD-DISPATCH-RACE-{i}", max_attempts=5
             )
             assert item is not None
             item_ids.append(item["id"])
