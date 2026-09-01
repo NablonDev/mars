@@ -3,8 +3,7 @@
 Canonical schema reference: `docs/mars_penalties_erp_schema.sql` (Postgres-specific
 DDL, hand-maintained, kept 1:1 with `app/models/`). Runnable ORM: `app/models/`.
 Migrations: `alembic/` (repo root, run with `alembic upgrade head`). Sample data:
-`data/samples/mars_fines_mock_seed_data.sql` (pending a rename to match the
-penalty domain rename -- out of scope for this phase).
+`data/samples/mars_penalties_mock_seed_data.sql`.
 
 ## Postgres schema separation (`common` / `process` / `cmir` / `penalties` / `langgraph`)
 
@@ -303,7 +302,7 @@ Full `fine`/`fines` -> `penalty`/`penalties` domain rename.
 | `mitigation_input` (`MitigationInput`) | `purchase_order_id` (unique) | Mutable current-best-guess cause/cost assumptions; no soft delete/history, deliberately unlike every append-only table in `common` |
 | `mitigation_option` (`MitigationOption`) | `(purchase_order_id, projection_date, action)` | Renamed from `MitigationResult` -- unified on the same name the pure-engine dataclass already used, since both now live in clearly separate modules |
 | `penalty_summary` (`PenaltySummary`) | `(purchase_order_id, summary_type, as_of_date)` | Merges what were two tables (`projection_summary`, `mitigation_summary`) into one, with a `summary_type` (`PROJECTION`\|`MITIGATION`) discriminator |
-| `penalty_projection` (`PenaltyProjection`) | `(purchase_order_id, rule_id, projection_date)` | Renamed from `projected_fine` |
+| `penalty_projection` (`PenaltyProjection`) | `(purchase_order_id, rule_id, projection_date)` | Renamed from `projected_fine`. Three dollar/probability columns, all always populated: `failure_probability` (raw probability, 0-1), `penalty_amount` (raw $ if the violation occurs, independent of probability), `expected_penalty_amount` (= `failure_probability * penalty_amount`, a risk-adjusted combined figure -- retained for internal ranking/PO-level exposure aggregation only, never a predicted certain cost) |
 | `actual_penalty` (`ActualPenalty`) | `actual_penalty_number` | Renamed from `actual_fine` |
 | `po_delivery_change_request` (`PoDeliveryChangeRequest`) | `request_id` | Renamed from `purchase_order_delivery_change_request` (itself renamed from the original `po_delivery_change_request`, back when the FK was also renamed `order_id` -> `purchase_order_id` to point at the surrogate `common.purchase_order.id`) |
 

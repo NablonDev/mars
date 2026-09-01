@@ -1,9 +1,7 @@
 # Runbook
 
 Every way to set up, run, seed, exercise, and troubleshoot this service.
-For *how the code is laid out*, see `docs/architecture/folder-structure.md`
-and `./CLAUDE.local.md` (the current working instructions file); for
-endpoint-by-endpoint reference, see `docs/API.md`.
+For endpoint-by-endpoint reference, see `docs/API.md`.
 This file is about running it.
 
 **Every curl example below needs `-H "X-Internal-Api-Key: $INTERNAL_API_KEY"`
@@ -840,19 +838,12 @@ python scripts/demo/seed_master_data.py   # (with uvicorn running against the sa
 python scripts/demo/demo_daily_simulation.py
 ```
 
-and diff the printed numbers against `data/samples/mars_fines_mock_seed_data.sql`
--- they should match exactly, same as the verification runs logged in
-`PROGRESS.local.md`.
-
 ## 12. Linting and formatting
 
 ```bash
 ruff check app/ scripts/ tests/ alembic/
 ruff format app/ scripts/ tests/ alembic/
 ```
-
-Both must be clean before a change is done -- see `./CLAUDE.local.md`
-"Engineering Rules."
 
 ## 13. Common tasks, quick reference
 
@@ -868,7 +859,7 @@ Both must be clean before a change is done -- see `./CLAUDE.local.md`
 | Rank mitigation actions for a PO | Project that date first, get a `projection_id` from its history, then `curl -X POST "http://127.0.0.1:8000/api/v1/penalty-mitigations?projection_id=<id>"` (§7) |
 | Get an LLM summary of a PO's ranked mitigation options | `python scripts/demo/demo_penalty_mitigation_summary.py --purchase-order-id <uuid>` |
 | Repair a database stuck on the old migration chain | No verified repair path today (§4's callout) -- drop and recreate |
-| Add a new violation type | Update `SHORTAGE_VIOLATION_TYPES`/`DELAY_VIOLATION_TYPES` in `app/services/penalties/projection/types.py` (`./CLAUDE.local.md` "Engineering Rules") |
+| Add a new violation type | Update `SHORTAGE_VIOLATION_TYPES`/`DELAY_VIOLATION_TYPES` in `app/services/penalties/projection/types.py` |
 | Add a DB column | `app/models/*.py` + `alembic revision --autogenerate` + update `docs/mars_penalties_erp_schema.sql` + confirm `tests/unit/db/test_migration_parity.py` still passes |
 | Run the full nightly batch locally | `python scripts/ops/run_daily_batch.py` (see `docs/DEPLOYMENT.md` §3.5) |
 | See why the queue looks stuck | `docs/DEPLOYMENT.md` §3.7 — the SQL to run and what each status means |

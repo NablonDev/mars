@@ -148,6 +148,31 @@ ever accepted here) and is a pure read -- it never schedules generation as a
 side effect; `202`-returning routes signal it explicitly via `response.status_code`,
 not a raised exception.
 
+**Response shape -- probability, raw amount, and combined figure are always
+three separate numbers, never just one blended figure.** Every violation
+(in the live `POST .../penalty-projections` response, and in every persisted
+row returned by the `GET` routes above, including `.../penalty-exposure`)
+carries:
+
+- `probability` / `failure_probability` -- the raw probability of the
+  violation occurring, 0-1.
+- `penalty_amount` -- the raw dollar amount the retailer would charge **if**
+  the violation occurs (same field name in both the live-run response and
+  every persisted row). Not probability-weighted.
+- `expected_penalty_amount` -- `probability * penalty_amount`, a
+  risk-adjusted decision-support figure. **Never a predicted or guaranteed
+  cost** -- it is what the exposure is worth in expectation, not what will
+  be billed.
+
+`.../penalty-exposure`'s `total_expected_penalty_amount` is the `SUM`/`MAX`
+(per the retailer's `stacking_mode`) of the latest projection date's
+per-violation `expected_penalty_amount` figures. Like the per-violation
+figure it aggregates, it
+is a risk-adjusted estimate, not a certain amount -- decompose it back into
+per-violation probability + raw amount via the `violations` array whenever
+the underlying components matter, rather than treating the total as a single
+authoritative number.
+
 ### Mitigations
 
 | Method | Path | Purpose |
