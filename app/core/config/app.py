@@ -18,7 +18,10 @@ class AppSettings(BaseSettings):
     )
 
     project_name: str = Field(
-        default="Mars Petcare -- CMIR Resolution System & Projected Penalties",
+        default=(
+            "Mars Petcare Backend -- CMIR Email Resolution, "
+            "PO Validation, and Projected Penalties & Mitigation"
+        ),
         validation_alias="APP_PROJECT_NAME",
     )
     version: str = Field(default="0.1.0", validation_alias="APP_VERSION")

@@ -1,4 +1,4 @@
-# Mars Petcare — CMIR Resolution System & Projected Penalties
+# Mars Petcare Backend -- CMIR Email Resolution, PO Validation, and Projected Penalties & Mitigation
 
 Two agentic backends in one FastAPI app, separated by Postgres schema:
 
