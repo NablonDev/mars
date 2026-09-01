@@ -4,6 +4,7 @@ import json
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -31,15 +32,22 @@ def apply_sqlite_schema_translation(engine: Engine) -> Engine:
     return engine
 
 
-def checkpoint_dsn(database_url: str) -> str:
-    """Convert a SQLAlchemy database URL to a plain psycopg DSN.
+def checkpoint_dsn(database_url: str, schema: str) -> str:
+    """Convert a SQLAlchemy PostgreSQL URL to a psycopg DSN.
 
     LangGraph's ``PostgresSaver`` connects with psycopg directly and doesn't
     understand SQLAlchemy's ``+psycopg``/``+psycopg2`` driver suffix.
+
+    The PostgreSQL ``search_path`` is configured on the resulting DSN so
+    LangGraph's checkpoint tables are created in the specified schema
+    without changing the database-level configuration.
     """
-    return database_url.replace("postgresql+psycopg2://", "postgresql://").replace(
-        "postgresql+psycopg://", "postgresql://"
-    )
+    parsed = urlsplit(database_url)
+    scheme = parsed.scheme.replace("+psycopg2", "").replace("+psycopg", "")
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    query.append(("options", f"-csearch_path={schema},public"))
+
+    return urlunsplit((scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
 
 
 class Database:

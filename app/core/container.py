@@ -15,6 +15,7 @@ from app.agents.cmir.nodes import WorkflowNodes
 from app.agents.po_validation.graph import build_po_validation_graph
 from app.agents.po_validation.nodes import PoValidationNodes
 from app.core.config import EmailConfig, LLMConfig, ServiceBusConfig, Settings, get_settings
+from app.db.base import LANGGRAPH_SCHEMA
 from app.db.session import Database, checkpoint_dsn
 from app.queue.cmir_mail_producer import ServiceBusMailQueue
 from app.repositories.cmir.action_log import ActionLogRepository
@@ -119,7 +120,9 @@ class Container:
         # Previous implementation using MemorySaver kept for easy rollback.
         # checkpointer = MemorySaver()
         checkpointer = resources.enter_context(
-            PostgresSaver.from_conn_string(checkpoint_dsn(config.database.url))
+            PostgresSaver.from_conn_string(
+                checkpoint_dsn(config.database.url, LANGGRAPH_SCHEMA)
+            )
         )
         checkpointer.setup()
         logger.info("Checkpoint tables verified.")
