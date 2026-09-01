@@ -141,14 +141,23 @@ def main() -> None:
                 print(f"  [skip] {purchase_order_id}: {exc}")
                 continue
 
+            # `result.violations` are the pure-engine `ViolationProjection`
+            # dataclasses (app/services/penalties/projection/types.py), which
+            # already carry `penalty_amount` alongside `expected_penalty_amount`
+            # -- state probability against the raw amount as the primary
+            # framing, with the blended figure kept as a secondary,
+            # clearly-labeled risk-adjusted estimate (see docs/API.md's
+            # response-shape note; never print a bare blended $ as fact).
             parts = ", ".join(
-                f"{v.violation_type} {v.probability * 100:.0f}% (${v.expected_penalty:,.2f})"
+                f"{v.violation_type} {v.probability * 100:.0f}% probability of a "
+                f"${v.penalty_amount:,.2f} penalty (risk-adjusted estimate: ${v.expected_penalty_amount:,.2f})"
                 for v in result.violations
             )
             print(
                 f"  {purchase_order_id} [{result.projection_date}]  "
                 f"days_to_delivery={result.days_to_delivery:<3} "
-                f"stacking={result.stacking_mode:<3} total=${result.total_expected_penalty:,.2f}   {parts}"
+                f"stacking={result.stacking_mode:<3} "
+                f"total (risk-adjusted estimate)=${result.total_expected_penalty_amount:,.2f}   {parts}"
             )
 
             if projection_summary_service is None:

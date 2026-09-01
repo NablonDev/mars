@@ -83,7 +83,7 @@ def _simulate(base_url: str) -> list[dict]:
         last_day = scenario["days"][-1]
         print(
             f"  {scenario['purchase_order_id']}: {len(scenario['days'])} days simulated, "
-            f"final total=${last_day['total_expected_penalty']:,.2f} on {last_day['projection_date']}"
+            f"final total=${last_day['total_expected_penalty_amount']:,.2f} on {last_day['projection_date']}"
         )
     return scenarios
 

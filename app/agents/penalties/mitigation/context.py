@@ -45,7 +45,7 @@ class ActualOutcome(BaseModel):
 class PenaltyMitigationSummaryContext(BaseModel):
     order: OrderContext
     current_projection_date: date  # the day the mitigation_options below were ranked for
-    current_total_expected_penalty: float  # the ACCEPT baseline -- also mitigation_options[0].projected_penalty_after when ACCEPT ranks first, but given explicitly so the model never has to infer which entry is the baseline
+    current_total_expected_penalty_amount: float  # the ACCEPT baseline -- also mitigation_options[0].projected_penalty_after when ACCEPT ranks first, but given explicitly so the model never has to infer which entry is the baseline
     stacking_mode: str
 
     # Already ranked (net_saving descending) by the pure engine -- never

@@ -63,10 +63,10 @@ class MitigationEngine:
     def _accept_option(self, projection: ProjectionResult) -> MitigationOption:
         return MitigationOption(
             action="ACCEPT",
-            projected_penalty_after=projection.total_expected_penalty,
+            projected_penalty_after=projection.total_expected_penalty_amount,
             action_cost=0.0,
             net_saving=0.0,
-            risk_level="HIGH" if projection.total_expected_penalty > 0 else "LOW",
+            risk_level="HIGH" if projection.total_expected_penalty_amount > 0 else "LOW",
             confidence="CONFIRMED",
             rationale="Pay the projected penalty as-is -- always knowable, no mitigation attempted.",
         )
@@ -92,9 +92,9 @@ class MitigationEngine:
         hypothetical = replace(snapshot, confirmed_qty=new_confirmed_qty)
         projected_penalty_after = self._projection_engine.project(
             hypothetical, rules, projection.stacking_mode
-        ).total_expected_penalty
+        ).total_expected_penalty_amount
         action_cost = closable_units * inputs.capacity_boost_cost_per_unit
-        net_saving = projection.total_expected_penalty - projected_penalty_after - action_cost
+        net_saving = projection.total_expected_penalty_amount - projected_penalty_after - action_cost
 
         confidence = (
             "CONFIRMED"
@@ -141,9 +141,9 @@ class MitigationEngine:
         hypothetical = replace(snapshot, expected_transit_days=inputs.express_carrier_transit_days)
         projected_penalty_after = self._projection_engine.project(
             hypothetical, rules, projection.stacking_mode
-        ).total_expected_penalty
+        ).total_expected_penalty_amount
         action_cost = inputs.express_carrier_cost
-        net_saving = projection.total_expected_penalty - projected_penalty_after - action_cost
+        net_saving = projection.total_expected_penalty_amount - projected_penalty_after - action_cost
 
         confidence = "CONFIRMED" if inputs.express_carrier_data_confirmed else "ESTIMATED"
         risk_level = "LOW" if confidence == "CONFIRMED" else "MEDIUM"
@@ -176,12 +176,12 @@ class MitigationEngine:
         # that half of `projection` needs no hypothetical re-run at all.
         shortage_only = [v for v in projection.violations if v.violation_type in SHORTAGE_VIOLATION_TYPES]
         if projection.stacking_mode == "MAX":
-            projected_penalty_after = max((v.expected_penalty for v in shortage_only), default=0.0)
+            projected_penalty_after = max((v.expected_penalty_amount for v in shortage_only), default=0.0)
         else:
-            projected_penalty_after = sum(v.expected_penalty for v in shortage_only)
+            projected_penalty_after = sum(v.expected_penalty_amount for v in shortage_only)
 
         action_cost = inputs.split_shipment_handling_cost
-        net_saving = projection.total_expected_penalty - projected_penalty_after - action_cost
+        net_saving = projection.total_expected_penalty_amount - projected_penalty_after - action_cost
 
         rationale = (
             f"Ships the {snapshot.confirmed_qty} confirmed units on schedule and the remaining "

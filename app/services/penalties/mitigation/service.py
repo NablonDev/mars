@@ -58,20 +58,16 @@ def _build_projection_result(
             violation_type=row["violation_type"],
             rule_id=str(row["rule_id"]),
             probability=row["failure_probability"],
-            penalty_if_realized=(
-                round(row["projected_penalty_amount"] / row["failure_probability"], 2)
-                if row["failure_probability"]
-                else 0.0
-            ),
-            expected_penalty=row["projected_penalty_amount"],
+            penalty_amount=row["penalty_amount"],
+            expected_penalty_amount=row["expected_penalty_amount"],
         )
         for row in day_rows
     ]
 
     if stacking_mode == "MAX":
-        total = max((v.expected_penalty for v in violations), default=0.0)
+        total = max((v.expected_penalty_amount for v in violations), default=0.0)
     else:
-        total = sum(v.expected_penalty for v in violations)
+        total = sum(v.expected_penalty_amount for v in violations)
 
     shortage_probability = next(
         (r["failure_probability"] for r in day_rows if r["violation_type"] in SHORTAGE_VIOLATION_TYPES),
@@ -90,7 +86,7 @@ def _build_projection_result(
         shortage_probability=round(shortage_probability, 4),
         delay_probability=round(delay_probability, 4),
         violations=violations,
-        total_expected_penalty=round(total, 2),
+        total_expected_penalty_amount=round(total, 2),
         stacking_mode=stacking_mode,
     )
 
@@ -133,8 +129,8 @@ class MitigationService:
 
         # "Current" stacking mode, not whatever override (if any) produced
         # the historical projection -- same choice ProjectionService's own
-        # default path makes; individual violations' expected_penalty values
-        # are computed independently of stacking mode, so only the
+        # default path makes; individual violations' expected_penalty_amount
+        # values are computed independently of stacking mode, so only the
         # aggregate total is affected.
         stacking_mode = self.master_data.get_stacking_mode(purchase_order["retailer_id"])
         projection = _build_projection_result(purchase_order_id, projection_date, stacking_mode, day_rows)

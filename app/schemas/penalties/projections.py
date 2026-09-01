@@ -3,11 +3,11 @@ projection-summary trigger/poll contract.
 
 Was `app/schemas/fine_projection/projections.py` + `summaries.py`. Field
 names drop the stale `fine`/`order` vocabulary (`projected_fine_amount` ->
-`projected_penalty_amount`, matching `PenaltyProjectionRepository`'s own
+`expected_penalty_amount`, matching `PenaltyProjectionRepository`'s own
 dict shape; `order_id` -> `purchase_order_id`); the pure-calc engine's
-dataclasses themselves are NOT renamed this phase (see
-`app.services.penalties.projection.types`'s module docstring) -- the route
-layer maps field-for-field where the two vocabularies diverge.
+dataclasses themselves ARE now renamed to match (see
+`app.services.penalties.projection.types`'s module docstring) -- both
+layers share `penalty_amount`/`expected_penalty_amount` field-for-field.
 """
 
 from __future__ import annotations
@@ -32,8 +32,8 @@ class ViolationResponse(BaseModel):
     violation_type: str
     rule_id: str
     probability: float
-    penalty_if_realized: float
-    expected_penalty: float
+    penalty_amount: float
+    expected_penalty_amount: float
 
 
 class PenaltyProjectionResultResponse(BaseModel):
@@ -45,7 +45,7 @@ class PenaltyProjectionResultResponse(BaseModel):
     shortage_probability: float
     delay_probability: float
     violations: list[ViolationResponse]
-    total_expected_penalty: float
+    total_expected_penalty_amount: float
     stacking_mode: str
 
 
@@ -61,7 +61,8 @@ class PenaltyProjectionHistoryRow(BaseModel):
     projection_date: date
     violation_type: str
     failure_probability: float
-    projected_penalty_amount: float
+    penalty_amount: float
+    expected_penalty_amount: float
     days_to_delivery: int
     projection_status: str
 
@@ -69,7 +70,7 @@ class PenaltyProjectionHistoryRow(BaseModel):
 class PenaltyExposureResponse(BaseModel):
     purchase_order_id: UUID
     projection_date: date
-    total_expected_penalty: float
+    total_expected_penalty_amount: float
     violations: list[PenaltyProjectionHistoryRow]
 
 

@@ -25,6 +25,7 @@ class PenaltyProjection(Base, TimestampMixin):
     projection_date: Mapped[date] = mapped_column(Date)
     violation_type: Mapped[str] = mapped_column(String(50))
     failure_probability: Mapped[float] = mapped_column(Numeric(5, 4))
-    projected_penalty_amount: Mapped[float] = mapped_column(Numeric(12, 2))
+    penalty_amount: Mapped[float] = mapped_column(Numeric(12, 2))
+    expected_penalty_amount: Mapped[float] = mapped_column(Numeric(12, 2))
     days_to_delivery: Mapped[int] = mapped_column(Integer)
     projection_status: Mapped[str] = mapped_column(String(30), default="OPEN")

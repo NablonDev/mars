@@ -16,7 +16,7 @@ from uuid import UUID
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models import ActualPenalty, PenaltyProjection
+from app.models import ActualPenalty, PenaltyProjection, PurchaseOrder, Retailer
 from app.services.penalties.projection import ProjectionResult
 
 
@@ -28,7 +28,8 @@ def _projection_to_dict(row: PenaltyProjection) -> dict:
         "projection_date": row.projection_date,
         "violation_type": row.violation_type,
         "failure_probability": float(row.failure_probability),
-        "projected_penalty_amount": float(row.projected_penalty_amount),
+        "penalty_amount": float(row.penalty_amount),
+        "expected_penalty_amount": float(row.expected_penalty_amount),
         "days_to_delivery": row.days_to_delivery,
         "projection_status": row.projection_status,
     }
@@ -74,7 +75,8 @@ class PenaltyProjectionRepository:
             if existing is not None:
                 existing.violation_type = v.violation_type
                 existing.failure_probability = v.probability
-                existing.projected_penalty_amount = v.expected_penalty
+                existing.penalty_amount = v.penalty_amount
+                existing.expected_penalty_amount = v.expected_penalty_amount
                 existing.days_to_delivery = result.days_to_delivery
                 existing.projection_status = "OPEN"
             else:
@@ -85,7 +87,8 @@ class PenaltyProjectionRepository:
                         projection_date=result.projection_date,
                         violation_type=v.violation_type,
                         failure_probability=v.probability,
-                        projected_penalty_amount=v.expected_penalty,
+                        penalty_amount=v.penalty_amount,
+                        expected_penalty_amount=v.expected_penalty_amount,
                         days_to_delivery=result.days_to_delivery,
                         projection_status="OPEN",
                     )
@@ -116,6 +119,29 @@ class PenaltyProjectionRepository:
 
         return [_projection_to_dict(r) for r in rows]
 
+    def _get_stacking_mode(self, purchase_order_id: UUID) -> str:
+        """Resolve the retailer's `stacking_mode` for a purchase order,
+        the same lookup `ProjectionService.run_for_purchase_order`/
+        `MitigationService._build_projection_result` perform via
+        `PurchaseOrderRepository.get_purchase_order` +
+        `MasterDataRepository.get_stacking_mode` -- done here as a single
+        join instead of composing those two repositories, since no
+        repository in this codebase depends on another (session-only
+        constructors throughout; see `app/repositories/common/master_data.py`
+        and `app/repositories/common/purchase_order.py`).
+
+        Falls back to `"SUM"` if the purchase order or retailer can't be
+        resolved (should not happen given the FK from `penalty_projection`
+        to `purchase_order`), matching `MasterDataRepository.get_stacking_
+        mode`'s own fallback for a retailer row that can't be found.
+        """
+        stacking_mode = self._session.scalars(
+            select(Retailer.stacking_mode)
+            .join(PurchaseOrder, PurchaseOrder.retailer_id == Retailer.id)
+            .where(PurchaseOrder.id == purchase_order_id)
+        ).first()
+        return stacking_mode or "SUM"
+
     def get_latest(self, purchase_order_id: UUID) -> dict | None:
         history = self.list_history(purchase_order_id)
         if not history:
@@ -123,12 +149,17 @@ class PenaltyProjectionRepository:
 
         latest_date = max(h["projection_date"] for h in history)
         rows = [h for h in history if h["projection_date"] == latest_date]
-        total = sum(r["projected_penalty_amount"] for r in rows)
+
+        stacking_mode = self._get_stacking_mode(purchase_order_id)
+        if stacking_mode == "MAX":
+            total = max((r["expected_penalty_amount"] for r in rows), default=0.0)
+        else:
+            total = sum(r["expected_penalty_amount"] for r in rows)
 
         return {
             "purchase_order_id": purchase_order_id,
             "projection_date": latest_date,
-            "total_expected_penalty": round(total, 2),
+            "total_expected_penalty_amount": round(total, 2),
             "violations": rows,
         }
 

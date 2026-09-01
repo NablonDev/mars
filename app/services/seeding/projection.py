@@ -498,19 +498,35 @@ def simulate_daily_run(
             # vs. delay-priced for this retailer's rule set (usually one
             # of each, but this doesn't assume that -- a retailer with
             # two shortage-type rules active would sum both correctly).
-            shortage_penalty = sum(
-                v.expected_penalty for v in result.violations if v.violation_type in SHORTAGE_VIOLATION_TYPES
+            # Both the raw (if-realized) and blended (probability-weighted)
+            # sums are reported -- a display surface must never show only
+            # the blended figure (see docs/DEMO.md and app/api/v1/penalties/
+            # projections.py's response-shape note).
+            shortage_penalty_amount = sum(
+                v.penalty_amount for v in result.violations if v.violation_type in SHORTAGE_VIOLATION_TYPES
             )
-            delay_penalty = sum(
-                v.expected_penalty for v in result.violations if v.violation_type in DELAY_VIOLATION_TYPES
+            delay_penalty_amount = sum(
+                v.penalty_amount for v in result.violations if v.violation_type in DELAY_VIOLATION_TYPES
+            )
+            shortage_expected_penalty_amount = sum(
+                v.expected_penalty_amount
+                for v in result.violations
+                if v.violation_type in SHORTAGE_VIOLATION_TYPES
+            )
+            delay_expected_penalty_amount = sum(
+                v.expected_penalty_amount
+                for v in result.violations
+                if v.violation_type in DELAY_VIOLATION_TYPES
             )
             daily_results.append(
                 {
                     "projection_date": result.projection_date,
                     "note": note,
-                    "shortage_penalty": round(shortage_penalty, 2),
-                    "delay_penalty": round(delay_penalty, 2),
-                    "total_expected_penalty": result.total_expected_penalty,
+                    "shortage_penalty_amount": round(shortage_penalty_amount, 2),
+                    "delay_penalty_amount": round(delay_penalty_amount, 2),
+                    "shortage_expected_penalty_amount": round(shortage_expected_penalty_amount, 2),
+                    "delay_expected_penalty_amount": round(delay_expected_penalty_amount, 2),
+                    "total_expected_penalty_amount": result.total_expected_penalty_amount,
                     "shortage_probability": result.shortage_probability,
                     "delay_probability": result.delay_probability,
                 }

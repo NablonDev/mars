@@ -110,8 +110,8 @@ class ViolationProjection:
     violation_type: str
     rule_id: str
     probability: float
-    penalty_if_realized: float
-    expected_penalty: float
+    penalty_amount: float
+    expected_penalty_amount: float
 
 
 @dataclass
@@ -122,5 +122,5 @@ class ProjectionResult:
     shortage_probability: float
     delay_probability: float
     violations: list[ViolationProjection]
-    total_expected_penalty: float
+    total_expected_penalty_amount: float
     stacking_mode: str

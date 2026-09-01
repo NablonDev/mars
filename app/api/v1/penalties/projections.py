@@ -60,12 +60,12 @@ def _to_result_response(result) -> PenaltyProjectionResultResponse:
                 violation_type=v.violation_type,
                 rule_id=v.rule_id,
                 probability=v.probability,
-                penalty_if_realized=v.penalty_if_realized,
-                expected_penalty=v.expected_penalty,
+                penalty_amount=v.penalty_amount,
+                expected_penalty_amount=v.expected_penalty_amount,
             )
             for v in result.violations
         ],
-        total_expected_penalty=result.total_expected_penalty,
+        total_expected_penalty_amount=result.total_expected_penalty_amount,
         stacking_mode=result.stacking_mode,
     )
 

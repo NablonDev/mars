@@ -34,7 +34,7 @@ from app.agents.penalties.projection import (
     build_penalty_projection_summary_tools,
 )
 from app.agents.penalties.projection.agent import PenaltyProjectionAgent
-from app.agents.penalties.projection.prompts.v3 import PROMPT_VERSION, SYSTEM_PROMPT
+from app.agents.penalties.projection.prompts.v1 import PROMPT_VERSION, SYSTEM_PROMPT
 from app.agents.providers.azure_openai import AzureOpenAIChatClient
 from app.core.exceptions import BusinessRuleError, NotFoundError, ValidationError
 from app.models.enums import JobTaskType, SummaryType
@@ -307,12 +307,8 @@ class ProjectionSummaryService(
                     violation_type=r["violation_type"],
                     rule_id=str(r["rule_id"]),
                     probability=r["failure_probability"],
-                    penalty_if_realized=(
-                        round(r["projected_penalty_amount"] / r["failure_probability"], 2)
-                        if r["failure_probability"]
-                        else None
-                    ),
-                    expected_penalty=r["projected_penalty_amount"],
+                    penalty_amount=r["penalty_amount"],
+                    expected_penalty_amount=r["expected_penalty_amount"],
                 )
                 for r in day_rows
             ]
@@ -330,7 +326,9 @@ class ProjectionSummaryService(
                     shortage_probability=shortage_probability,
                     delay_probability=delay_probability,
                     violations=violations,
-                    total_expected_penalty=round(sum(r["projected_penalty_amount"] for r in day_rows), 2),
+                    total_expected_penalty_amount=round(
+                        sum(r["expected_penalty_amount"] for r in day_rows), 2
+                    ),
                 )
             )
         return entries
@@ -414,7 +412,7 @@ def _compute_content_fingerprint(context: PenaltyProjectionSummaryContext) -> st
     current_entry = context.daily_history[-1] if context.daily_history else None
 
     violations = sorted(
-        (v.violation_type, _fmt_number(v.probability), _fmt_number(v.expected_penalty))
+        (v.violation_type, _fmt_number(v.probability), _fmt_number(v.expected_penalty_amount))
         for v in (current_entry.violations if current_entry is not None else [])
     )
     active_rule_ids = sorted(rule.rule_id for rule in context.active_rules)
@@ -422,7 +420,9 @@ def _compute_content_fingerprint(context: PenaltyProjectionSummaryContext) -> st
     payload = {
         "violations": violations,
         "stacking_mode": context.stacking_mode,
-        "total_expected_penalty": _fmt_number(current_entry.total_expected_penalty if current_entry else 0.0),
+        "total_expected_penalty_amount": _fmt_number(
+            current_entry.total_expected_penalty_amount if current_entry else 0.0
+        ),
         "order_status": context.order.order_status,
         "confirmed_qty": current_entry.confirmed_qty if current_entry else None,
         "production_status": current_entry.production_status if current_entry else None,

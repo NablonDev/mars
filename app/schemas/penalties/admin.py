@@ -25,9 +25,17 @@ class SeedDataResponse(BaseModel):
 class ScenarioDayResult(BaseModel):
     projection_date: date
     note: str
-    shortage_penalty: float
-    delay_penalty: float
-    total_expected_penalty: float
+    # Raw, if-realized dollar amounts (not probability-weighted) -- the
+    # primary figure a narrative should pair with the probability below.
+    # See docs/API.md's penalty_amount/expected_penalty_amount note: the two
+    # must always be shown as separate numbers, never collapsed into one.
+    shortage_penalty_amount: float
+    delay_penalty_amount: float
+    # Blended (probability x raw) risk-adjusted figures -- a secondary,
+    # clearly-labeled supporting number, never shown as the only one.
+    shortage_expected_penalty_amount: float
+    delay_expected_penalty_amount: float
+    total_expected_penalty_amount: float
     shortage_probability: float
     delay_probability: float
 

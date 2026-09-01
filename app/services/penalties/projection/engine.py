@@ -42,33 +42,33 @@ class ProjectionEngine:
         for rule in rules:
             if rule.violation_type in SHORTAGE_VIOLATION_TYPES:
                 probability = shortage_prob
-                penalty_if_realized = price_shortage_penalty(
+                penalty_amount = price_shortage_penalty(
                     rule, snapshot.order_qty, snapshot.unit_price, shortfall_units
                 )
             elif rule.violation_type in DELAY_VIOLATION_TYPES:
                 probability = delay_prob
-                penalty_if_realized = price_delay_penalty(rule, snapshot.order_qty, snapshot.unit_price)
+                penalty_amount = price_delay_penalty(rule, snapshot.order_qty, snapshot.unit_price)
             else:
                 raise ValueError(
                     f"Rule {rule.rule_id} has violation_type '{rule.violation_type}' "
                     "not mapped to either SHORTAGE_VIOLATION_TYPES or DELAY_VIOLATION_TYPES"
                 )
 
-            expected = probability * penalty_if_realized
+            expected = probability * penalty_amount
             violations.append(
                 ViolationProjection(
                     violation_type=rule.violation_type,
                     rule_id=rule.rule_id,
                     probability=round(probability, 4),
-                    penalty_if_realized=round(penalty_if_realized, 2),
-                    expected_penalty=round(expected, 2),
+                    penalty_amount=round(penalty_amount, 2),
+                    expected_penalty_amount=round(expected, 2),
                 )
             )
 
         if stacking_mode == "MAX":
-            total = max((v.expected_penalty for v in violations), default=0.0)
+            total = max((v.expected_penalty_amount for v in violations), default=0.0)
         elif stacking_mode == "SUM":
-            total = sum(v.expected_penalty for v in violations)
+            total = sum(v.expected_penalty_amount for v in violations)
         else:
             raise ValueError("stacking_mode must be 'SUM' or 'MAX'")
 
@@ -81,6 +81,6 @@ class ProjectionEngine:
             shortage_probability=round(shortage_prob, 4),
             delay_probability=round(delay_prob, 4),
             violations=violations,
-            total_expected_penalty=round(total, 2),
+            total_expected_penalty_amount=round(total, 2),
             stacking_mode=stacking_mode,
         )

@@ -199,10 +199,12 @@ def test_split_shipment_zeroes_only_the_delay_component():
     split = _options_by_action(options)["SPLIT_SHIPMENT"]
 
     shortage_only_penalty = sum(
-        v.expected_penalty for v in projection.violations if v.violation_type in SHORTAGE_VIOLATION_TYPES
+        v.expected_penalty_amount
+        for v in projection.violations
+        if v.violation_type in SHORTAGE_VIOLATION_TYPES
     )
     assert split.projected_penalty_after == round(shortage_only_penalty, 2)
-    assert split.projected_penalty_after < projection.total_expected_penalty
+    assert split.projected_penalty_after < projection.total_expected_penalty_amount
     assert split.action_cost == MIXED_SHORTAGE_DELAY_INPUTS.split_shipment_handling_cost
 
 

@@ -121,7 +121,7 @@ def test_wmt_100234_accepted_reprojects_aug9_without_the_original_delay_number(r
     ]
     assert len(aug9_delay_rows) == 1
     assert aug9_delay_rows[0]["failure_probability"] == 0.30
-    assert aug9_delay_rows[0]["projected_penalty_amount"] == 324.00
+    assert aug9_delay_rows[0]["expected_penalty_amount"] == 324.00
 
 
 def test_per_retailer_extension_policy_differentiation(repos):

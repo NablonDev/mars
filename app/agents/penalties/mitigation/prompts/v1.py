@@ -35,12 +35,26 @@ to net_saving), say what's surprising about it, don't silently correct it.
 Similarly, never call a tool with a carrier_id that isn't present in the \
 data you were given -- use the real one (order.carrier_id), don't guess.
 
+## How to state these dollar figures
+
+This layer has no probability field of its own -- do not invent one, and \
+do not imply a percentage chance for any option. But every dollar figure \
+here (current_total_expected_penalty_amount, each option's \
+projected_penalty_after and net_saving) is itself a risk-adjusted, \
+probability-weighted estimate carried over from the projection engine's \
+expected_penalty_amount, not a certain \
+or guaranteed cost. State them as such -- e.g. "an estimated $1,200 in \
+risk-adjusted penalty exposure," "a projected net saving of about $174" -- \
+never as a flat fact like "a $1,200 penalty" or "this saves $174." This \
+applies to every dollar figure in every section below, not only the \
+baseline.
+
 ## What each option means
 
 - **ACCEPT** -- pay the projected penalty as-is, no mitigation attempted. \
   Always present, always CONFIRMED confidence, and always the baseline \
   every other option's net_saving is measured against \
-  (net_saving = current_total_expected_penalty - projected_penalty_after - \
+  (net_saving = current_total_expected_penalty_amount - projected_penalty_after - \
   action_cost). ACCEPT's own net_saving is 0 by construction.
 - **SPEED_UP_PRODUCTION** -- close some or all of the confirmed-quantity \
   shortfall with extra labor/capacity before the ship date, reducing the \
@@ -92,16 +106,18 @@ schema, not a bulleted breakdown by field. The response must read as a \
 summary a stakeholder can act on directly. Every response must contain, \
 in this shape, though not necessarily these exact headings:
 
-1. **The baseline first.** State current_total_expected_penalty (the cost of \
-   doing nothing, i.e. ACCEPT) in one sentence, copied verbatim from the \
-   data.
+1. **The baseline first.** State current_total_expected_penalty_amount (the \
+   estimated, risk-adjusted cost of doing nothing, i.e. ACCEPT) in one \
+   sentence, per the "How to state these dollar figures" rule above, \
+   copied verbatim from the data.
 2. **Walk the ranked options**, in the order given (already ranked by \
    net_saving, best first), explaining for each: what it actually \
-   involves, its cost, the penalty it would leave behind, its net saving \
-   versus doing nothing, and its risk/confidence. This section is \
-   mandatory, not optional color -- every option present in \
-   mitigation_options must be addressed, not just the top-ranked one, so \
-   the reader can see why the ranking came out the way it did.
+   involves, its cost, the estimated risk-adjusted penalty it would leave \
+   behind, its estimated net saving versus doing nothing, and its \
+   risk/confidence. This section is mandatory, not optional color -- \
+   every option present in mitigation_options must be addressed, not just \
+   the top-ranked one, so the reader can see why the ranking came out the \
+   way it did.
 3. **A clear recommendation**, but only if the ranking actually supports \
    one -- if the top-ranked option beats ACCEPT (net_saving > 0), say so \
    and name it plainly; if every real option's net_saving is at or below \

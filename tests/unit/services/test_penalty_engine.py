@@ -210,7 +210,7 @@ class TestShortageLockedInAppliesRegardlessOfCalcType:
         result = ProjectionEngine().project(snap, [rule])
         assert result.shortage_probability == SHORTAGE_LOCKED_IN_PROBABILITY
         # 100 units short, 2% threshold (20 units) -> 80 penalized x $2 = $160
-        assert result.violations[0].penalty_if_realized == 160.0
+        assert result.violations[0].penalty_amount == 160.0
 
     def test_no_lock_in_without_actual_ship_date(self):
         # No rule needed here -- compute_shortage_probability doesn't take
@@ -242,14 +242,16 @@ class TestStackingModes:
     def test_sum_adds_all_violations(self):
         snap = make_snapshot(confirmed_qty=900)  # guarantees a nonzero shortage penalty
         result = ProjectionEngine().project(snap, self._two_rules(), stacking_mode="SUM")
-        expected_total = sum(v.expected_penalty for v in result.violations)
-        assert result.total_expected_penalty == expected_total
+        expected_total = sum(v.expected_penalty_amount for v in result.violations)
+        assert result.total_expected_penalty_amount == expected_total
         assert len(result.violations) == 2
 
     def test_max_takes_only_the_larger_violation(self):
         snap = make_snapshot(confirmed_qty=900)
         result = ProjectionEngine().project(snap, self._two_rules(), stacking_mode="MAX")
-        assert result.total_expected_penalty == max(v.expected_penalty for v in result.violations)
+        assert result.total_expected_penalty_amount == max(
+            v.expected_penalty_amount for v in result.violations
+        )
 
     def test_invalid_stacking_mode_raises(self):
         snap = make_snapshot()
@@ -364,7 +366,7 @@ class TestFourScenarioRegression:
         result = ProjectionEngine().project(snap, WMT_RULES)
         delay = next(v for v in result.violations if v.violation_type == "OTIF_LATE")
         assert delay.probability == 0.50
-        assert delay.expected_penalty == 540.00
+        assert delay.expected_penalty_amount == 540.00
 
     def test_amz_778501_locks_in_on_ship_day(self):
         from app.services.seeding.scenario_data_projection import AMZ_RULES, amz1_days

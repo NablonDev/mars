@@ -206,7 +206,7 @@ class MitigationSummaryService(
         ]
 
         accept_row = next((row for row in history if row["action"] == "ACCEPT"), None)
-        current_total_expected_penalty = accept_row["projected_penalty_after"] if accept_row else 0.0
+        current_total_expected_penalty_amount = accept_row["projected_penalty_after"] if accept_row else 0.0
 
         actual_outcomes = None
         if purchase_order["order_status"] == "DELIVERED":
@@ -235,7 +235,7 @@ class MitigationSummaryService(
                 carrier_name=carrier_name,
             ),
             current_projection_date=as_of_date,
-            current_total_expected_penalty=current_total_expected_penalty,
+            current_total_expected_penalty_amount=current_total_expected_penalty_amount,
             stacking_mode=stacking_mode,
             mitigation_options=mitigation_options,
             actual_outcomes=actual_outcomes,
@@ -331,7 +331,7 @@ def _compute_content_fingerprint(context: PenaltyMitigationSummaryContext) -> st
 
     payload = {
         "options": options,
-        "current_total_expected_penalty": _fmt_number(context.current_total_expected_penalty),
+        "current_total_expected_penalty_amount": _fmt_number(context.current_total_expected_penalty_amount),
         "stacking_mode": context.stacking_mode,
         "order_status": context.order.order_status,
         "has_actual_outcomes": context.actual_outcomes is not None,

@@ -27,8 +27,8 @@ class ViolationEntry(BaseModel):
     violation_type: str
     rule_id: str
     probability: float
-    penalty_if_realized: float | None = None
-    expected_penalty: float
+    penalty_amount: float | None = None
+    expected_penalty_amount: float
 
 
 class DailyHistoryEntry(BaseModel):
@@ -49,7 +49,7 @@ class DailyHistoryEntry(BaseModel):
     shortage_probability: float
     delay_probability: float
     violations: list[ViolationEntry]
-    total_expected_penalty: float
+    total_expected_penalty_amount: float
 
 
 class OrderContext(BaseModel):
