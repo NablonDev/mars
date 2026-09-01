@@ -11,7 +11,7 @@ Writes against the `Agent` ORM model directly, using its own `Session`
 built from `Settings().database.url`.
 
 Idempotent: upserts keyed on `(agent_code, prompt_version)`, so running
-this twice leaves exactly 6 rows, not 12.
+this twice leaves exactly 4 rows, not 8.
 
 Security note (carried to the security-reviewer, see the approved Phase 1
 plan): `process.agent.system_prompt` is a new persistent store of LLM
@@ -29,8 +29,6 @@ from sqlalchemy.orm import Session
 
 from app.agents.penalties.mitigation.prompts.v1 import SYSTEM_PROMPT as MITIGATION_V1_PROMPT
 from app.agents.penalties.projection.prompts.v1 import SYSTEM_PROMPT as PROJECTION_V1_PROMPT
-from app.agents.penalties.projection.prompts.v2 import SYSTEM_PROMPT as PROJECTION_V2_PROMPT
-from app.agents.penalties.projection.prompts.v3 import SYSTEM_PROMPT as PROJECTION_V3_PROMPT
 from app.core.config import Settings
 from app.db.session import Database
 from app.models.process.agent import Agent
@@ -88,22 +86,6 @@ AGENT_SEEDS: list[_AgentSeed] = [
         domain="penalties",
         agent_name="Penalty Projection Summary",
         system_prompt=PROJECTION_V1_PROMPT,
-        is_active=False,
-    ),
-    _AgentSeed(
-        agent_code="penalty_projection_summary",
-        prompt_version="v2",
-        domain="penalties",
-        agent_name="Penalty Projection Summary",
-        system_prompt=PROJECTION_V2_PROMPT,
-        is_active=False,
-    ),
-    _AgentSeed(
-        agent_code="penalty_projection_summary",
-        prompt_version="v3",
-        domain="penalties",
-        agent_name="Penalty Projection Summary",
-        system_prompt=PROJECTION_V3_PROMPT,
         is_active=True,
     ),
     _AgentSeed(

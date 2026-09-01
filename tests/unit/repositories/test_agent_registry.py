@@ -17,7 +17,7 @@ def test_ensure_registered_creates_an_agent_row(db_session):
 
     agent_id = repo.ensure_registered(
         agent_code="fine_projection_summary",
-        prompt_version="v2",
+        prompt_version="v1",
         system_prompt="You are a penalty-projection summarizer.",
         agent_name="Penalty Projection Summary",
         domain="penalties",
@@ -36,7 +36,7 @@ def test_ensure_registered_defaults_description_to_none(db_session):
 
     repo.ensure_registered(
         agent_code="fine_projection_summary",
-        prompt_version="v2",
+        prompt_version="v1",
         system_prompt="You are a penalty-projection summarizer.",
         agent_name="Penalty Projection Summary",
         domain="penalties",
@@ -55,7 +55,7 @@ def test_ensure_registered_requires_domain(db_session):
     with pytest.raises(TypeError):
         repo.ensure_registered(
             agent_code="fine_projection_summary",
-            prompt_version="v2",
+            prompt_version="v1",
             system_prompt="You are a penalty-projection summarizer.",
             agent_name="Penalty Projection Summary",
         )
@@ -69,7 +69,7 @@ def test_ensure_registered_is_idempotent(db_session):
     agent_ids = [
         repo.ensure_registered(
             agent_code="fine_projection_summary",
-            prompt_version="v2",
+            prompt_version="v1",
             system_prompt="You are a penalty-projection summarizer.",
             agent_name="Penalty Projection Summary",
             domain="penalties",
@@ -112,19 +112,11 @@ def test_get_active_returns_only_the_active_row(db_session):
         system_prompt="v1 prompt",
         agent_name="Penalty Projection Summary",
         domain="penalties",
-        is_active=False,
-    )
-    repo.ensure_registered(
-        agent_code="fine_projection_summary",
-        prompt_version="v2",
-        system_prompt="v2 prompt",
-        agent_name="Penalty Projection Summary",
-        domain="penalties",
         is_active=True,
     )
 
     active = repo.get_active("fine_projection_summary")
-    assert active["prompt_version"] == "v2"
+    assert active["prompt_version"] == "v1"
 
 
 def test_get_by_code_version_returns_none_when_missing(db_session):

@@ -18,17 +18,25 @@ def test_cmir_extractor_system_prompt_has_no_interpolation_placeholder():
     assert "{" not in seed_agents.CMIR_EXTRACTOR_SYSTEM_PROMPT
 
 
-def test_agent_seeds_cover_all_six_rows():
-    """Guards against a silent drop of one of the six documented seed rows."""
+def test_agent_seeds_cover_all_four_rows():
+    """Guards against a silent drop of one of the four documented seed rows."""
     keys = {(seed.agent_code, seed.prompt_version) for seed in seed_agents.AGENT_SEEDS}
     assert keys == {
         ("penalty_projection_summary", "v1"),
-        ("penalty_projection_summary", "v2"),
-        ("penalty_projection_summary", "v3"),
         ("penalty_mitigation_summary", "v1"),
         ("cmir_extractor", "v1"),
         ("po_validation", "v1"),
     }
+
+
+def test_exactly_one_active_row_per_agent_code():
+    """`uq_agent_one_active_per_code` requires at most one is_active=True row
+    per agent_code -- guard against a version bump leaving two seeds active
+    (or none) for the same agent_code."""
+    active_codes = [seed.agent_code for seed in seed_agents.AGENT_SEEDS if seed.is_active]
+    assert sorted(active_codes) == sorted(set(active_codes))
+    all_codes = {seed.agent_code for seed in seed_agents.AGENT_SEEDS}
+    assert set(active_codes) == all_codes
 
 
 def test_all_agent_seeds_use_a_valid_domain():
