@@ -2,7 +2,10 @@
 pure, DB-free function over the ranked mitigation options themselves
 (not the projection's own fingerprint fields), deliberately excluding
 current_projection_date. See app/services/fine_mitigation/summary.py's
-_compute_content_fingerprint docstring for why."""
+_compute_content_fingerprint docstring for why.
+
+Was `tests/unit/services/test_fine_mitigation_summary_fingerprint.py`
+(`fine`/`fines` -> `penalty`/`penalties` rename)."""
 
 from datetime import date
 from typing import Any
@@ -49,13 +52,13 @@ def _context(
     current_projection_date: date = date(2026, 8, 5),
     mitigation_options: list[MitigationOptionContext] | None = None,
     order: OrderContext | None = None,
-    current_total_expected_penalty: float = 100.0,
+    current_total_expected_penalty_amount: float = 100.0,
     stacking_mode: str = "SUM",
 ) -> PenaltyMitigationSummaryContext:
     return PenaltyMitigationSummaryContext(
         order=order or _order(),
         current_projection_date=current_projection_date,
-        current_total_expected_penalty=current_total_expected_penalty,
+        current_total_expected_penalty_amount=current_total_expected_penalty_amount,
         stacking_mode=stacking_mode,
         mitigation_options=mitigation_options if mitigation_options is not None else [_option()],
     )
@@ -149,9 +152,9 @@ def test_changed_order_status_changes_the_hash():
     assert baseline != changed
 
 
-def test_changed_current_total_expected_penalty_changes_the_hash():
+def test_changed_current_total_expected_penalty_amount_changes_the_hash():
     baseline = _compute_content_fingerprint(_context())
-    changed = _compute_content_fingerprint(_context(current_total_expected_penalty=250.0))
+    changed = _compute_content_fingerprint(_context(current_total_expected_penalty_amount=250.0))
 
     assert baseline != changed
 

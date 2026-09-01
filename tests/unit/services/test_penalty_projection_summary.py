@@ -8,7 +8,9 @@ rewritten against `ProjectionSummaryService` and the merged
 summary_type, as_of_date)` -- `agent_id` is now a reuse-eligibility filter,
 not a cache key component, so `test_cache_miss_on_prompt_version_bump`
 (a scenario that can no longer occur) is dropped rather than adapted; see
-`app/repositories/penalties/summary.py`'s module docstring.
+`app/repositories/penalties/summary.py`'s module docstring. Was
+`tests/unit/services/test_fine_projection_summary.py` (`fine`/`fines` ->
+`penalty`/`penalties` rename).
 """
 
 from contextlib import suppress
@@ -21,7 +23,7 @@ import pytest
 from langchain_core.messages import ToolMessage
 
 from app.agents.penalties.projection import PenaltyProjectionSummaryOutput
-from app.agents.penalties.projection.prompts.v3 import PROMPT_VERSION
+from app.agents.penalties.projection.prompts.v1 import PROMPT_VERSION
 from app.core.exceptions import BusinessRuleError, ExternalServiceError, NotFoundError, ValidationError
 from app.models.enums import SummaryType
 from app.services.penalties.projection import ProjectionResult, ViolationProjection
@@ -116,11 +118,11 @@ def _seed_flat_rule_order(repos, po_number: str = "ORD-EXP"):
                     violation_type="OTIF_LATE",
                     rule_id=str(rule["id"]),
                     probability=0.05,
-                    penalty_if_realized=50.0,
-                    expected_penalty=2.5,
+                    penalty_amount=50.0,
+                    expected_penalty_amount=2.5,
                 )
             ],
-            total_expected_penalty=2.5,
+            total_expected_penalty_amount=2.5,
             stacking_mode="SUM",
         ),
     )
@@ -156,11 +158,11 @@ def _seed_identical_projection(
                     violation_type="OTIF_LATE",
                     rule_id=str(rule_id),
                     probability=0.05,
-                    penalty_if_realized=50.0,
-                    expected_penalty=2.5,
+                    penalty_amount=50.0,
+                    expected_penalty_amount=2.5,
                 )
             ],
-            total_expected_penalty=2.5,
+            total_expected_penalty_amount=2.5,
             stacking_mode="SUM",
         ),
     )
@@ -182,11 +184,11 @@ def _seed_different_projection(repos, purchase_order_id, rule_id, projection_dat
                     violation_type="OTIF_LATE",
                     rule_id=str(rule_id),
                     probability=0.55,
-                    penalty_if_realized=50.0,
-                    expected_penalty=27.5,
+                    penalty_amount=50.0,
+                    expected_penalty_amount=27.5,
                 )
             ],
-            total_expected_penalty=27.5,
+            total_expected_penalty_amount=27.5,
             stacking_mode="SUM",
         ),
     )
@@ -347,11 +349,11 @@ def test_daily_history_is_bounded_to_as_of_date_not_the_full_table(repos):
                     violation_type="OTIF_LATE",
                     rule_id=str(rule_id),
                     probability=0.92,
-                    penalty_if_realized=50.0,
-                    expected_penalty=46.0,
+                    penalty_amount=50.0,
+                    expected_penalty_amount=46.0,
                 )
             ],
-            total_expected_penalty=46.0,
+            total_expected_penalty_amount=46.0,
             stacking_mode="SUM",
         ),
     )
@@ -1109,28 +1111,28 @@ def test_penalty_projection_summary_response_schema_additive_fields_default():
 
 
 # ---------------------------------------------------------------------------
-# v3 prompt registration
+# v1 prompt registration
 # ---------------------------------------------------------------------------
 
 
-def test_v3_prompt_version_is_registered_on_first_use(repos):
+def test_v1_prompt_version_is_registered_on_first_use(repos):
     """_ensure_registered must insert a new `process.agent` row for
-    `penalty_projection_summary`/"v3" the first time this service runs
+    `penalty_projection_summary`/"v1" the first time this service runs
     against a fresh registry."""
     purchase_order_id, _, _ = _seed_flat_rule_order(repos)
     fake_llm = FakeChatClient()
     service = _build_service(repos, fake_llm)
 
-    assert PROMPT_VERSION == "v3"
+    assert PROMPT_VERSION == "v1"
 
     job = _schedule_and_run(service, purchase_order_id, as_of_date=date(2026, 8, 5))
 
     assert job.status == "READY"
-    assert job.output.prompt_version == "v3"
+    assert job.output.prompt_version == "v1"
 
     registered = repos.agent_registry.get_active("penalty_projection_summary")
     assert registered is not None
-    assert registered["prompt_version"] == "v3"
+    assert registered["prompt_version"] == "v1"
 
     persisted = repos.penalty_summaries.get_by_key(
         purchase_order_id, SummaryType.PROJECTION, date(2026, 8, 5)

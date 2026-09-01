@@ -2,7 +2,10 @@
 DB-free function over the engine's OUTPUTS for the "current" day plus
 material facts, deliberately excluding as_of_date/current_projection_date,
 any generated-at timestamp, and days_to_delivery. See
-app/agents/penalties/projection/prompts/v3.py and PROGRESS.local.md for why."""
+app/agents/penalties/projection/prompts/v1.py and PROGRESS.local.md for why.
+
+Was `tests/unit/services/test_fine_projection_summary_fingerprint.py`
+(`fine`/`fines` -> `penalty`/`penalties` rename)."""
 
 from datetime import date
 from typing import Any
@@ -37,7 +40,7 @@ def _violation(**overrides: Any) -> ViolationEntry:
         "violation_type": "OTIF_LATE",
         "rule_id": "RULE-FP-FLAT",
         "probability": 0.05,
-        "expected_penalty": 2.5,
+        "expected_penalty_amount": 2.5,
     }
     fields.update(overrides)
     return ViolationEntry(**fields)
@@ -56,7 +59,7 @@ def _entry(**overrides: Any) -> DailyHistoryEntry:
         "shortage_probability": 0.05,
         "delay_probability": 0.05,
         "violations": [_violation()],
-        "total_expected_penalty": 2.5,
+        "total_expected_penalty_amount": 2.5,
     }
     fields.update(overrides)
     return DailyHistoryEntry(**fields)
@@ -113,11 +116,16 @@ def test_changed_probability_changes_the_hash():
     assert baseline != changed
 
 
-def test_changed_expected_penalty_changes_the_hash():
+def test_changed_expected_penalty_amount_changes_the_hash():
     baseline = _compute_content_fingerprint(_context())
     changed = _compute_content_fingerprint(
         _context(
-            daily_history=[_entry(violations=[_violation(expected_penalty=7.5)], total_expected_penalty=7.5)]
+            daily_history=[
+                _entry(
+                    violations=[_violation(expected_penalty_amount=7.5)],
+                    total_expected_penalty_amount=7.5,
+                )
+            ]
         )
     )
 
@@ -126,7 +134,7 @@ def test_changed_expected_penalty_changes_the_hash():
 
 def test_changed_days_to_delivery_alone_does_not_change_the_hash():
     """days_to_delivery is explicitly excluded -- it's banded completely
-    differently for shortage vs delay probability (see v3.py), so it must
+    differently for shortage vs delay probability (see v1.py), so it must
     never gate reuse on its own."""
     baseline = _compute_content_fingerprint(_context())
     changed = _compute_content_fingerprint(_context(daily_history=[_entry(days_to_delivery=0)]))

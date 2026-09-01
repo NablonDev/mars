@@ -5,7 +5,8 @@ rather than recomputing one.
 Was against `FineMitigationService`/`MitigationResultRepository` (business-
 string `order_id`); rewritten against `MitigationService` and the new
 `common`/`penalties` repositories, keyed by the UUID surrogate
-`purchase_order_id`.
+`purchase_order_id`. Was `tests/unit/services/test_fine_mitigation_service.py`
+(`fine`/`fines` -> `penalty`/`penalties` rename).
 """
 
 from __future__ import annotations
@@ -83,7 +84,7 @@ def _seed_shortage_order(repos, projection_service, po_number: str = "ORD-MIT"):
         confirmed_quantity=700,
     )
     result = projection_service.run_for_purchase_order(purchase_order["id"], date(2026, 8, 5))
-    assert result.total_expected_penalty > 0
+    assert result.total_expected_penalty_amount > 0
     repos.mitigation_inputs.upsert_inputs(
         purchase_order_id=purchase_order["id"],
         shortage_cause=ShortageCause.LABOR_CAPACITY.value,
@@ -209,7 +210,7 @@ def test_current_stacking_mode_used_not_a_historical_override(repos):
 
     history = repos.penalty_projections.list_history(purchase_order_id)
     day_rows = [r for r in history if r["projection_date"] == date(2026, 8, 5)]
-    expected_total = round(sum(r["projected_penalty_amount"] for r in day_rows), 2)
+    expected_total = round(sum(r["expected_penalty_amount"] for r in day_rows), 2)
     assert accept.projected_penalty_after == expected_total
 
 
@@ -264,7 +265,7 @@ def test_reconstructed_projection_result_handles_max_stacking(repos):
 
     history = repos.penalty_projections.list_history(purchase_order["id"])
     day_rows = [r for r in history if r["projection_date"] == date(2026, 8, 5)]
-    expected_total = round(max(r["projected_penalty_amount"] for r in day_rows), 2)
+    expected_total = round(max(r["expected_penalty_amount"] for r in day_rows), 2)
     assert accept.projected_penalty_after == expected_total
 
 

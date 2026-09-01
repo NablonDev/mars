@@ -1,11 +1,13 @@
 """Tests for MitigationSummaryService, mirroring
-tests/unit/services/test_fine_projection_summary.py's structure for the
+tests/unit/services/test_penalty_projection_summary.py's structure for the
 mitigation-summary feature.
 
 Was against `FineMitigationSummaryService`/`MitigationResultRepository`/
 `FineMitigationSummaryRepository` (business-string `order_id`, separate
 `mitigation_summary` table); rewritten against `MitigationSummaryService`
-and the merged `penalties.penalty_summary` table.
+and the merged `penalties.penalty_summary` table. Was
+`tests/unit/services/test_fine_mitigation_summary.py` (`fine`/`fines` ->
+`penalty`/`penalties` rename).
 """
 
 from __future__ import annotations
@@ -196,7 +198,7 @@ def test_mandatory_context_contains_ranked_options(repos):
     for expected_key in (
         "order",
         "current_projection_date",
-        "current_total_expected_penalty",
+        "current_total_expected_penalty_amount",
         "stacking_mode",
         "mitigation_options",
     ):
@@ -286,7 +288,7 @@ def test_as_of_date_before_earliest_options_date_raises_invalid_as_of_date(repos
 
 def test_v1_prompt_version_is_registered_on_first_use(repos):
     """Mirrors
-    test_fine_projection_summary.py::test_v3_prompt_version_is_registered_on_first_use
+    test_penalty_projection_summary.py::test_v1_prompt_version_is_registered_on_first_use
     for this feature's own agent/prompt identity."""
     purchase_order_id = _seed_order(repos)
     _seed_options(repos, purchase_order_id, date(2026, 8, 5))
