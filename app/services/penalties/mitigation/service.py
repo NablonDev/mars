@@ -22,7 +22,7 @@ against that dataclass, not a repository dict) can be called unchanged.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 from uuid import UUID
 
 from app.core.exceptions import BusinessRuleError, NotFoundError
@@ -40,6 +40,7 @@ from app.services.penalties.projection import (
     ViolationProjection,
 )
 from app.services.penalties.projection.service import ProjectionService
+from app.utils.clock import utc_today
 
 
 def _build_projection_result(
@@ -110,10 +111,10 @@ class MitigationService:
         if purchase_order is None:
             raise NotFoundError(
                 code="PO_NOT_FOUND",
-                message=f"No purchase order found with purchase_order_id={purchase_order_id!r}",
+                message=f"No purchase order found with purchase_order_id={purchase_order_id}",
             )
 
-        projection_date = projection_date or datetime.now(UTC).date()
+        projection_date = projection_date or utc_today()
 
         history = self.projections.list_history(purchase_order_id)
         day_rows = [row for row in history if row["projection_date"] == projection_date]
@@ -121,9 +122,9 @@ class MitigationService:
             raise BusinessRuleError(
                 code="NO_PROJECTION_EXISTS",
                 message=(
-                    f"No projection exists for purchase_order_id={purchase_order_id!r} on "
+                    f"No projection exists for purchase_order_id={purchase_order_id} on "
                     f"projection_date={projection_date.isoformat()}. Run "
-                    f"POST /purchase-orders/{{purchase_order_id}}/penalty-projections for that date first."
+                    "POST /penalties/projections for that date first."
                 ),
             )
 
@@ -150,7 +151,7 @@ class MitigationService:
         if purchase_order is None:
             raise NotFoundError(
                 code="PO_NOT_FOUND",
-                message=f"No purchase order found with purchase_order_id={purchase_order_id!r}",
+                message=f"No purchase order found with purchase_order_id={purchase_order_id}",
             )
 
         rows = self.mitigation_options.get_latest(purchase_order_id)
@@ -158,8 +159,8 @@ class MitigationService:
             raise BusinessRuleError(
                 code="NO_MITIGATION_OPTIONS_EXIST",
                 message=(
-                    f"No mitigation options exist yet for purchase_order_id={purchase_order_id!r}. "
-                    "Run POST /purchase-orders/{purchase_order_id}/penalty-mitigations first."
+                    f"No mitigation options exist yet for purchase_order_id={purchase_order_id}. "
+                    "Run POST /penalties/mitigations first."
                 ),
             )
         return rows[0]["projection_date"], rows

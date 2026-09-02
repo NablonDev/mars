@@ -705,13 +705,13 @@ def test_ready_output_reconstructed_from_the_rows_own_columns(repos):
 # ---------------------------------------------------------------------------
 
 
-def test_get_latest_ready_not_after_returns_the_prior_ready_row(repos):
+def test_get_latest_not_after_returns_the_prior_ready_row(repos):
     purchase_order_id, _, _ = _seed_flat_rule_order(repos)
     fake_llm = FakeChatClient()
     service = _build_service(repos, fake_llm)
     _schedule_and_run(service, purchase_order_id, as_of_date=date(2026, 8, 5))
 
-    found = repos.penalty_summaries.get_latest_ready_not_after(
+    found = repos.penalty_summaries.get_latest_not_after(
         purchase_order_id, SummaryType.PROJECTION, date(2026, 8, 6)
     )
 
@@ -720,29 +720,34 @@ def test_get_latest_ready_not_after_returns_the_prior_ready_row(repos):
     assert found["status"] == "READY"
 
 
-def test_get_latest_ready_not_after_returns_none_with_no_ready_row(repos):
+def test_get_latest_not_after_also_returns_a_still_pending_row(repos):
+    """Status-agnostic on purpose -- a PENDING row (never picked up by a
+    worker) dated before as_of_date must still be surfaced as PENDING, not
+    treated as if no job exists just because it never reached READY."""
     purchase_order_id, _, _ = _seed_flat_rule_order(repos)
     fake_llm = FakeChatClient()
     service = _build_service(repos, fake_llm)
     # PENDING only -- never generated, so nothing READY exists yet.
     service.get_or_schedule(purchase_order_id, as_of_date=date(2026, 8, 5))
 
-    found = repos.penalty_summaries.get_latest_ready_not_after(
+    found = repos.penalty_summaries.get_latest_not_after(
         purchase_order_id, SummaryType.PROJECTION, date(2026, 8, 6)
     )
 
-    assert found is None
+    assert found is not None
+    assert found["as_of_date"] == date(2026, 8, 5)
+    assert found["status"] == "PENDING"
 
 
-def test_get_latest_ready_not_after_never_looks_ahead(repos):
-    """A READY row dated after the requested date must never be returned --
-    this fallback is nearest-prior-date only, not nearest overall."""
+def test_get_latest_not_after_never_looks_ahead(repos):
+    """A row dated after the requested date must never be returned -- this
+    fallback is nearest-prior-date only, not nearest overall."""
     purchase_order_id, _, _ = _seed_flat_rule_order(repos)
     fake_llm = FakeChatClient()
     service = _build_service(repos, fake_llm)
     _schedule_and_run(service, purchase_order_id, as_of_date=date(2026, 8, 10))
 
-    found = repos.penalty_summaries.get_latest_ready_not_after(
+    found = repos.penalty_summaries.get_latest_not_after(
         purchase_order_id, SummaryType.PROJECTION, date(2026, 8, 5)
     )
 
@@ -781,9 +786,28 @@ def test_get_status_falls_back_to_the_nearest_prior_ready_summary(repos):
     assert job.output.as_of_date == date(2026, 8, 5)
 
 
-def test_get_status_still_raises_when_no_ready_row_exists_at_or_before(repos):
-    """A READY row exists, but only after the requested date -- the
-    fallback must not look ahead, so this is still a genuine 404."""
+def test_get_status_falls_back_to_a_still_pending_prior_job_not_just_ready(repos):
+    """Real bug this guards against: a job requested on an earlier day that
+    a worker never picked up (still PENDING) must still be found and
+    reported as PENDING when polled on a later day with no as_of_date
+    override -- not silently treated as "no job exists" just because it
+    never reached READY."""
+    purchase_order_id, _, _ = _seed_flat_rule_order(repos)
+    fake_llm = FakeChatClient()
+    service = _build_service(repos, fake_llm)
+    service.get_or_schedule(purchase_order_id, as_of_date=date(2026, 8, 5))  # left PENDING, never run
+
+    job = service.get_status(purchase_order_id, as_of_date=date(2026, 8, 6))
+
+    assert job.status == "PENDING"
+    assert job.as_of_date == date(2026, 8, 5)
+    assert job.output is None
+
+
+def test_get_status_still_raises_when_no_row_exists_at_or_before(repos):
+    """A row exists, but only after the requested date -- the fallback
+    must not look ahead, so this is still a genuine 404, regardless of
+    that later row's status."""
     purchase_order_id, _, _ = _seed_flat_rule_order(repos)
     fake_llm = FakeChatClient()
     service = _build_service(repos, fake_llm)

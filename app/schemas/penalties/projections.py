@@ -19,16 +19,31 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import SummaryStatus
+from app.schemas.penalties.mitigations import MitigationOptionResponse, PenaltyMitigationSummaryResponse
 
 
 class PenaltyProjectionRunRequest(BaseModel):
-    """Body for POST /purchase-orders/{purchase_order_id}/penalty-projections."""
+    """Body for POST /penalties/projections. `purchase_order_id` used to be
+    a path param (`POST /purchase-orders/{purchase_order_id}/penalty-
+    projections`) -- now that the route is flat, it travels in the body
+    instead."""
 
+    purchase_order_id: UUID
     projection_date: date | None = None
     stacking_mode_override: Literal["SUM", "MAX"] | None = None
 
 
 class ViolationResponse(BaseModel):
+    # The persisted `penalties.penalty_projection` row this violation was
+    # just written to -- one row per violation (see
+    # `PenaltyProjectionRepository.save_result`), so this is the one id a
+    # client needs to call `GET /penalties/projections/{projection_id}` or
+    # `POST /penalties/mitigations` (`projection_id` in the body) against
+    # this run's output without a separate list/query round-trip. Named to
+    # match those two routes' own `projection_id` param, not the bare `id`
+    # field `PenaltyProjectionHistoryRow` (the GET-by-id response shape)
+    # uses for the same column.
+    projection_id: UUID
     violation_type: str
     rule_id: str
     probability: float
@@ -37,7 +52,16 @@ class ViolationResponse(BaseModel):
 
 
 class PenaltyProjectionResultResponse(BaseModel):
-    """One projection run's engine output -- POST response shape."""
+    """One projection run's engine output -- POST response shape.
+
+    `summary_status`/`summary`/`mitigations`/`mitigation_summary_status`/
+    `mitigation_summary` are the same optional `?include=` pure-read fields
+    `PenaltyProjectionDetailResponse` carries (see that model's docstring) --
+    populated only when `POST /penalties/projections` is called with the
+    matching `?include=` value, and only from cached state; the run itself
+    never schedules summary generation nor computes mitigations as a side
+    effect.
+    """
 
     purchase_order_id: UUID
     projection_date: date
@@ -47,6 +71,11 @@ class PenaltyProjectionResultResponse(BaseModel):
     violations: list[ViolationResponse]
     total_expected_penalty_amount: float
     stacking_mode: str
+    summary_status: SummaryStatus | None = None
+    summary: PenaltyProjectionSummaryResponse | None = None
+    mitigations: list[MitigationOptionResponse] | None = None
+    mitigation_summary_status: SummaryStatus | None = None
+    mitigation_summary: PenaltyMitigationSummaryResponse | None = None
 
 
 class PenaltyProjectionHistoryRow(BaseModel):
@@ -75,8 +104,11 @@ class PenaltyExposureResponse(BaseModel):
 
 
 class PenaltyProjectionSummaryRequest(BaseModel):
-    """Body for POST /purchase-orders/{purchase_order_id}/penalty-projections/summary."""
+    """Body for POST /penalties/projections/summary. `purchase_order_id`
+    used to be a path param -- now that the route is flat, it travels in
+    the body instead."""
 
+    purchase_order_id: UUID
     as_of_date: date | None = None
     force_regenerate: bool = False
 
@@ -96,22 +128,43 @@ class PenaltyProjectionSummaryResponse(BaseModel):
 
 
 class PenaltyProjectionSummaryStatusResponse(BaseModel):
+    """`status`/`as_of_date` are `None` only for the genuine "never
+    requested" case -- no projection-summary job has ever been posted for
+    this `purchase_order_id` (at any date, in the direct-lookup sense this
+    route uses). This matches the `?include=summary` convention elsewhere
+    (`summary_status=None` is a normal, non-error state, never a 404) --
+    see `get_penalty_projection_summary`'s docstring for why this dedicated
+    route converged to the same rule."""
+
     purchase_order_id: UUID
-    as_of_date: date
-    status: SummaryStatus
+    as_of_date: date | None
+    status: SummaryStatus | None
     summary: PenaltyProjectionSummaryResponse | None = None
     error_message: str | None = None
 
 
 class PenaltyProjectionDetailResponse(PenaltyProjectionHistoryRow):
-    """`?include=summary` shape -- pure read, never schedules generation
-    (approved plan §5). Used both for
-    `GET /penalty-projections/{projection_id}?include=summary` and the
-    nested `GET .../penalty-projections?include=summary` history view.
+    """`?include=` shape -- pure read, never schedules generation. Used by
+    every `GET`/`POST /penalties/projections...` route: the single-resource
+    `GET /penalties/projections/{projection_id}`, the flat/cross-PO
+    `GET /penalties/projections?purchase_order_id=&status=&...` list, and
+    (via `PenaltyProjectionResultResponse`'s sibling fields) the run
+    endpoint `POST /penalties/projections`. All three share the same
+    `{"summary", "mitigations", "mitigation_summary"}` allow-list -- no
+    route gets a narrower one.
+
     `summary_status` is always populated once `include=summary` is
     requested (`READY`/`PENDING`/`FAILED`, from cached state only);
     `summary` itself is populated only when `summary_status == READY`.
+    `mitigations` is populated only when at least one mitigation option has
+    been computed for this row's `(purchase_order_id, projection_date)`;
+    `mitigation_summary_status`/`mitigation_summary` follow the identical
+    READY/PENDING/FAILED-from-cache convention as `summary_status`/`summary`,
+    against the mitigation-summary job instead of the projection-summary job.
     """
 
     summary_status: SummaryStatus | None = None
     summary: PenaltyProjectionSummaryResponse | None = None
+    mitigations: list[MitigationOptionResponse] | None = None
+    mitigation_summary_status: SummaryStatus | None = None
+    mitigation_summary: PenaltyMitigationSummaryResponse | None = None

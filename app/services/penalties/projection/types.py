@@ -23,6 +23,7 @@ domain rename still outstanding in this package.
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
+from uuid import UUID
 
 
 class ProductionStatus(Enum):
@@ -112,6 +113,13 @@ class ViolationProjection:
     probability: float
     penalty_amount: float
     expected_penalty_amount: float
+    # The persisted `penalties.penalty_projection` row's own surrogate id --
+    # unset (`None`) for a violation not yet round-tripped through
+    # `PenaltyProjectionRepository.save_result` (e.g. the reconstruction
+    # `app.services.penalties.mitigation.service._build_projection_result`
+    # does for engine input only). `ProjectionService.run_for_purchase_order`
+    # fills it in immediately after persisting, for the API response.
+    id: UUID | None = None
 
 
 @dataclass

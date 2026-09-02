@@ -32,7 +32,7 @@ def test_an_ordered_tier_band_is_still_accepted(client):
     ]
 
     resp = client.post(
-        "/api/v1/penalty-rules",
+        "/api/v1/penalties/rules",
         json={
             "rule_code": "RULE-TIERS-OK",
             "retailer_id": retailer["id"],

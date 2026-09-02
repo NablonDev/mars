@@ -1,7 +1,4 @@
-"""Admin API endpoints for seeding demo data and simulating daily runs.
-
-Rewritten against `app.services.seeding.service.PenaltySeedingService`
-(Phase 3 rewrite) -- was wired to the removed `FineSeedingService`."""
+"""Admin API endpoints for seeding demo data and simulating daily runs."""
 
 from __future__ import annotations
 

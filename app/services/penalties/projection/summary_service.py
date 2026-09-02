@@ -15,7 +15,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Any
 from uuid import UUID
 
@@ -52,6 +52,7 @@ from app.services.penalties._summary_base import (  # noqa: F401 -- SummaryJob r
 )
 from app.services.penalties.projection import DELAY_VIOLATION_TYPES, SHORTAGE_VIOLATION_TYPES
 from app.services.penalties.projection.service import ProjectionService
+from app.utils.clock import utc_today
 
 logger = logging.getLogger(__name__)
 
@@ -135,10 +136,10 @@ class ProjectionSummaryService(
         if purchase_order is None:
             raise NotFoundError(
                 code="PO_NOT_FOUND",
-                message=f"No purchase order found with purchase_order_id={purchase_order_id!r}",
+                message=f"No purchase order found with purchase_order_id={purchase_order_id}",
             )
 
-        today = datetime.now(UTC).date()
+        today = utc_today()
         as_of_date = as_of_date or today
 
         history = self.projections.list_history(purchase_order_id)

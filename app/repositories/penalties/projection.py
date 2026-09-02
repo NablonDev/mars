@@ -51,7 +51,20 @@ class PenaltyProjectionRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def save_result(self, purchase_order_id: UUID, result: ProjectionResult) -> None:
+    def save_result(self, purchase_order_id: UUID, result: ProjectionResult) -> dict[str, UUID]:
+        """Persist every violation as its own `penalty_projection` row and
+        return each one's surrogate id, keyed by the (stringified) `rule_id`
+        that produced it -- `ProjectionService.run_for_purchase_order` uses
+        this to stitch the persisted id back onto each `ViolationProjection`
+        for the API response (`POST /penalties/projections` has no other
+        way to hand a client that row's own id -- see `ViolationProjection.id`'s
+        docstring)."""
+        # `row.id` is a Python-side column default (`generate_uuid7`) --
+        # SQLAlchemy only evaluates it during flush, so a newly-added row's
+        # `id` reads back as `None` until after `self._session.flush()`
+        # below runs. Collect (rule_id, row) pairs during the loop and read
+        # `row.id` only afterward.
+        rows_by_rule_id: list[tuple[str, PenaltyProjection]] = []
         for v in result.violations:
             # Deliberate Phase 3 fix (flagged in the phase report): `v.rule_id`
             # is the pure-engine `PenaltyRule.rule_id`, typed `str` (its contract
@@ -79,45 +92,104 @@ class PenaltyProjectionRepository:
                 existing.expected_penalty_amount = v.expected_penalty_amount
                 existing.days_to_delivery = result.days_to_delivery
                 existing.projection_status = "OPEN"
+                row = existing
             else:
-                self._session.add(
-                    PenaltyProjection(
-                        purchase_order_id=purchase_order_id,
-                        rule_id=rule_id,
-                        projection_date=result.projection_date,
-                        violation_type=v.violation_type,
-                        failure_probability=v.probability,
-                        penalty_amount=v.penalty_amount,
-                        expected_penalty_amount=v.expected_penalty_amount,
-                        days_to_delivery=result.days_to_delivery,
-                        projection_status="OPEN",
-                    )
+                row = PenaltyProjection(
+                    purchase_order_id=purchase_order_id,
+                    rule_id=rule_id,
+                    projection_date=result.projection_date,
+                    violation_type=v.violation_type,
+                    failure_probability=v.probability,
+                    penalty_amount=v.penalty_amount,
+                    expected_penalty_amount=v.expected_penalty_amount,
+                    days_to_delivery=result.days_to_delivery,
+                    projection_status="OPEN",
                 )
+                self._session.add(row)
+            rows_by_rule_id.append((str(rule_id), row))
         self._session.flush()
+        return {rule_id_str: row.id for rule_id_str, row in rows_by_rule_id}
 
     def get_by_id(self, projection_id: UUID) -> dict | None:
         """Fetch one `penalty_projection` row by its own surrogate id.
 
         Phase 7a addition (flagged -- repositories were nominally out of
-        scope for that phase): `GET /penalty-projections/{projection_id}`
-        (approved plan §5) has no other way to resolve a single projection
-        row; every other method here is keyed by `purchase_order_id`, not
-        by this table's own `id`. Purely additive, zero behavior change to
-        any existing method."""
+        scope for that phase): `GET /penalties/projections/{projection_id}`
+        has no other way to resolve a single projection row; every other
+        method here is keyed by `purchase_order_id`, not by this table's
+        own `id`. Purely additive, zero behavior change to any existing
+        method."""
         row = self._session.get(PenaltyProjection, projection_id)
         return _projection_to_dict(row) if row is not None else None
 
-    def list_history(self, purchase_order_id: UUID) -> list[dict]:
-        rows = self._session.scalars(
-            select(PenaltyProjection)
-            .where(PenaltyProjection.purchase_order_id == purchase_order_id)
-            .order_by(
-                PenaltyProjection.projection_date.asc(),
-                PenaltyProjection.rule_id.asc(),
-            )
-        ).all()
+    def list_projections(
+        self,
+        purchase_order_id: UUID | None = None,
+        status: str | None = None,
+        projection_date: date | None = None,
+        projection_date_from: date | None = None,
+        projection_date_to: date | None = None,
+    ) -> list[dict]:
+        """General `penalty_projection` row filter backing
+        `GET /penalties/projections?purchase_order_id=&status=&
+        projection_date=&projection_date_from=&projection_date_to=` -- the
+        merged replacement for what used to be two separate routes:
+        `GET .../penalty-projections` history (filtered only by
+        `purchase_order_id`, via this method's own former `list_history`,
+        now a thin wrapper below) and `GET /penalty-projections?status=`
+        cross-PO (restricted to each PO's own latest `projection_date`; see
+        `ProjectionService.list_open_across_purchase_orders`, now folded in
+        here instead of composed from per-PO `get_latest` calls).
 
-        return [_projection_to_dict(r) for r in rows]
+        `purchase_order_id` given: every matching row for that PO, in the
+        same order `list_history` always returned them -- `status`/date
+        filters are additive on top, with no latest-only restriction (a
+        single PO's full history is still the full history).
+
+        `purchase_order_id` omitted (the old cross-PO `?status=` list):
+        restrict to each purchase order's own latest matching
+        `projection_date` first, THEN apply `status` -- not the other way
+        around, so a `status` value that only ever matches an older,
+        non-latest row for some PO still excludes that PO here, exactly as
+        `list_open_across_purchase_orders`'s per-PO `get_latest` composition
+        did before.
+        """
+        query = select(PenaltyProjection)
+        if purchase_order_id is not None:
+            query = query.where(PenaltyProjection.purchase_order_id == purchase_order_id)
+        if projection_date is not None:
+            query = query.where(PenaltyProjection.projection_date == projection_date)
+        if projection_date_from is not None:
+            query = query.where(PenaltyProjection.projection_date >= projection_date_from)
+        if projection_date_to is not None:
+            query = query.where(PenaltyProjection.projection_date <= projection_date_to)
+        if purchase_order_id is not None and status is not None:
+            query = query.where(PenaltyProjection.projection_status == status)
+        query = query.order_by(
+            PenaltyProjection.projection_date.asc(),
+            PenaltyProjection.rule_id.asc(),
+        )
+        rows = [_projection_to_dict(r) for r in self._session.scalars(query).all()]
+
+        if purchase_order_id is None:
+            latest_by_po: dict[UUID, date] = {}
+            for row in rows:
+                po_id = row["purchase_order_id"]
+                if po_id not in latest_by_po or row["projection_date"] > latest_by_po[po_id]:
+                    latest_by_po[po_id] = row["projection_date"]
+            rows = [r for r in rows if r["projection_date"] == latest_by_po[r["purchase_order_id"]]]
+            if status is not None:
+                rows = [r for r in rows if r["projection_status"] == status]
+
+        return rows
+
+    def list_history(self, purchase_order_id: UUID) -> list[dict]:
+        """Full, unfiltered projection history for one PO -- every other
+        repository/service caller in this codebase still uses this narrow
+        shape (`MitigationService`, `ProjectionSummaryService`, `get_latest`
+        below, several tests); kept as its own method rather than inlining
+        `list_projections(purchase_order_id=...)` at every call site."""
+        return self.list_projections(purchase_order_id=purchase_order_id)
 
     def _get_stacking_mode(self, purchase_order_id: UUID) -> str:
         """Resolve the retailer's `stacking_mode` for a purchase order,
@@ -200,11 +272,36 @@ class ActualPenaltyRepository:
         self._session.flush()
         return _actual_penalty_to_dict(row)
 
-    def list_for_purchase_order(self, purchase_order_id: UUID) -> list[dict]:
-        rows = self._session.scalars(
-            select(ActualPenalty).where(ActualPenalty.purchase_order_id == purchase_order_id)
-        ).all()
+    def get(self, actual_penalty_id: UUID) -> dict | None:
+        """Fetch one `actual_penalty` row by its own surrogate id.
+
+        Mirrors `PenaltyProjectionRepository.get_by_id` -- backs
+        `GET /penalties/actual-penalties/{actual_penalty_id}`; every other
+        method here is keyed by `purchase_order_id`, not by this table's own
+        `id`."""
+        row = self._session.get(ActualPenalty, actual_penalty_id)
+        return _actual_penalty_to_dict(row) if row is not None else None
+
+    def list_actual_penalties(self, purchase_order_id: UUID | None = None) -> list[dict]:
+        """General `actual_penalty` row filter backing
+        `GET /penalties/actual-penalties?purchase_order_id=` -- mirrors
+        `PenaltyProjectionRepository.list_projections`'s own optional
+        `purchase_order_id` filter: given, every row for that PO (same shape
+        `list_for_purchase_order` below already returned); omitted, every
+        row across every PO."""
+        query = select(ActualPenalty)
+        if purchase_order_id is not None:
+            query = query.where(ActualPenalty.purchase_order_id == purchase_order_id)
+        rows = self._session.scalars(query).all()
         return [_actual_penalty_to_dict(r) for r in rows]
+
+    def list_for_purchase_order(self, purchase_order_id: UUID) -> list[dict]:
+        """Full, unfiltered actual-penalty list for one PO -- kept as its
+        own narrow method for existing callers (`ProjectionSummaryService`)
+        that only ever need this shape, same reason
+        `PenaltyProjectionRepository.list_history` still wraps
+        `list_projections` above."""
+        return self.list_actual_penalties(purchase_order_id=purchase_order_id)
 
     def truncate_all(self) -> None:
         """Deletes every actual_penalty row, for a force-reseed. FKs to

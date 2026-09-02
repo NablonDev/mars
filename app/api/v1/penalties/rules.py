@@ -1,5 +1,4 @@
-"""API endpoints for managing `penalties.penalty_rule`. Was
-`app/api/v1/fine_rules.py`."""
+"""API endpoints for managing `penalties.penalty_rule`."""
 
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ router = APIRouter(tags=["penalty-rules"])
 
 
 @router.post(
-    "/penalty-rules", response_model=Envelope[PenaltyRuleResponse], status_code=status.HTTP_201_CREATED
+    "/penalties/rules", response_model=Envelope[PenaltyRuleResponse], status_code=status.HTTP_201_CREATED
 )
 def create_penalty_rule(
     body: PenaltyRuleRequest,
@@ -40,7 +39,7 @@ def create_penalty_rule(
     return success_envelope(PenaltyRuleResponse.model_validate(created), message="Penalty rule created.")
 
 
-@router.get("/penalty-rules", response_model=Envelope[list[PenaltyRuleResponse]])
+@router.get("/penalties/rules", response_model=Envelope[list[PenaltyRuleResponse]])
 def list_penalty_rules(
     retailer_id: UUID | None = Query(default=None),
     rules: PenaltyRuleRepository = Depends(get_penalty_rule_repository),

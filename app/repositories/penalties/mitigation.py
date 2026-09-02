@@ -175,7 +175,7 @@ class MitigationOptionRepository:
         """Fetch one `mitigation_option` row by its own surrogate id.
 
         Phase 7a addition (flagged -- repositories were nominally out of
-        scope for that phase): `GET /penalty-mitigations/{mitigation_id}`
+        scope for that phase): `GET /penalties/mitigations/{mitigation_id}`
         (approved plan §5) has no other way to resolve a single option row;
         every other method here is keyed by `(purchase_order_id,
         projection_date)`, not by this table's own `id`. Purely additive,
@@ -212,7 +212,7 @@ class MitigationOptionRepository:
         """Ranked options for the most recent projection_date <= as_of_date.
 
         Same nearest-prior-date reasoning as
-        PenaltySummaryRepository.get_latest_ready_not_after.
+        PenaltySummaryRepository.get_latest_not_after.
         """
         latest_date = self._latest_date_not_after(purchase_order_id, not_after=as_of_date)
         if latest_date is None:

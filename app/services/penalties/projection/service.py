@@ -17,7 +17,7 @@ Phase 1 plan and Phase 2's own flags): `unit_price` now lives on
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 from uuid import UUID
 
 from app.core.exceptions import BusinessRuleError, NotFoundError
@@ -33,6 +33,7 @@ from app.services.penalties.projection.types import (
     ProductionStatus,
     ProjectionResult,
 )
+from app.utils.clock import utc_today
 
 
 @dataclass
@@ -78,7 +79,7 @@ class ProjectionService:
         if not lines:
             raise BusinessRuleError(
                 code="NO_ACTIVE_RULES",
-                message=f"Purchase order {purchase_order_id!r} has no lines to project a snapshot from.",
+                message=f"Purchase order {purchase_order_id} has no lines to project a snapshot from.",
             )
 
         order_qty = sum(line["ordered_quantity"] for line in lines)
@@ -161,18 +162,18 @@ class ProjectionService:
         if purchase_order is None:
             raise NotFoundError(
                 code="PO_NOT_FOUND",
-                message=f"No purchase order found with purchase_order_id={purchase_order_id!r}",
+                message=f"No purchase order found with purchase_order_id={purchase_order_id}",
             )
 
-        projection_date = projection_date or datetime.now(UTC).date()
+        projection_date = projection_date or utc_today()
         snapshot = self.build_snapshot(purchase_order_id, projection_date)
         rule_list = self.rules.list_rules_for_retailer(purchase_order["retailer_id"])
         if not rule_list:
             raise BusinessRuleError(
                 code="NO_ACTIVE_RULES",
                 message=(
-                    f"No active penalty rules for retailer {purchase_order['retailer_id']!r} "
-                    f"(purchase_order {purchase_order_id!r})"
+                    f"No active penalty rules for retailer {purchase_order['retailer_id']} "
+                    f"(purchase_order {purchase_order_id})"
                 ),
             )
 
@@ -180,34 +181,16 @@ class ProjectionService:
             purchase_order["retailer_id"]
         )
         result = ProjectionEngine().project(snapshot, rule_list, stacking_mode=stacking_mode)
-        self.projections.save_result(purchase_order_id, result)
+        ids_by_rule_id = self.projections.save_result(purchase_order_id, result)
+        # Stitch each violation's own persisted `penalty_projection.id` back
+        # onto it -- the only way `POST /penalties/projections` can hand a
+        # client that row's id in the response (see `ViolationProjection.id`'s
+        # docstring); `save_result` itself stays return-shaped as a plain
+        # rule_id -> id mapping rather than mutating `result` directly, so it
+        # has no dependency on the pure-engine dataclass being mutable.
+        for v in result.violations:
+            v.id = ids_by_rule_id[v.rule_id]
         return result
-
-    def list_open_across_purchase_orders(self, status: str = "OPEN") -> list[dict]:
-        """Cross-PO, flat projection-violation list for
-        `GET /penalty-projections?status=open` (approved plan §5, row 1b) --
-        composed here from existing repository reads (no new repository
-        method): the latest projection snapshot per purchase order, with
-        every violation row matching `status` flattened out and tagged with
-        its `purchase_order_id`/`projection_date`. Kept in the service layer
-        rather than the route handler per this project's router/service/
-        repository layering convention.
-        """
-        results: list[dict] = []
-        for purchase_order in self.purchase_orders.list_purchase_orders():
-            latest = self.projections.get_latest(purchase_order["id"])
-            if latest is None:
-                continue
-            for violation in latest["violations"]:
-                if violation["projection_status"] == status:
-                    results.append(
-                        {
-                            "purchase_order_id": purchase_order["id"],
-                            "projection_date": latest["projection_date"],
-                            **violation,
-                        }
-                    )
-        return results
 
     def run_for_all_open(
         self,
