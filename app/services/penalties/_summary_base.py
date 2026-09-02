@@ -341,16 +341,20 @@ class SummaryServiceBase[ContextT: BaseModel, OutputT: BaseModel](ABC):
         row = self.summaries.get_by_key(purchase_order_id, self.summary_type, as_of_date)
         if row is None:
             # No job dated exactly as_of_date -- fall back to the nearest
-            # prior READY summary, same reasoning as find_reusable's
-            # nearest-prior-date matching.
-            row = self.summaries.get_latest_ready_not_after(purchase_order_id, self.summary_type, as_of_date)
+            # prior job of any status, same reasoning as find_reusable's
+            # nearest-prior-date matching. Status-agnostic on purpose: a
+            # PENDING/FAILED job dated before as_of_date must still be
+            # reported as such, not treated as if it never existed just
+            # because it never reached READY (see
+            # PenaltySummaryRepository.get_latest_not_after's docstring).
+            row = self.summaries.get_latest_not_after(purchase_order_id, self.summary_type, as_of_date)
         if row is None:
             raise NotFoundError(
                 code=_NO_SUMMARY_JOB_CODES[self.summary_domain],
                 message=(
                     f"No penalty-{self.summary_domain}-summary job found for "
-                    f"purchase_order_id={purchase_order_id!r}, as_of_date={as_of_date.isoformat()!r} -- "
-                    f"POST /purchase-orders/{{purchase_order_id}}/{self.summary_domain}-summary first."
+                    f"purchase_order_id={purchase_order_id}, as_of_date={as_of_date.isoformat()} -- "
+                    f"POST /penalties/{self.summary_domain}s/summary first."
                 ),
             )
 

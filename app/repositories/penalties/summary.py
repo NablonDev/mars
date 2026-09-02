@@ -96,18 +96,29 @@ class PenaltySummaryRepository:
         row = self._find(purchase_order_id, summary_type, as_of_date)
         return _to_dict(row) if row is not None else None
 
-    def get_latest_ready_not_after(
+    def get_latest_not_after(
         self, purchase_order_id: UUID, summary_type: str, as_of_date: date
     ) -> dict | None:
-        """Latest READY row at or before as_of_date -- the same
+        """Latest row of any status at or before as_of_date -- the same
         nearest-prior-date reasoning as find_reusable, for read callers
-        that fall back when no row is dated exactly as_of_date."""
+        (`SummaryServiceBase.get_status`) that fall back when no row is
+        dated exactly as_of_date.
+
+        Deliberately status-agnostic, not READY-only: a still-PENDING or
+        FAILED job dated before "today" (e.g. one `run_generation` never
+        picked up -- see the worker-dispatch gap this reasoning was found
+        alongside) must still be surfaced as that job's real status, not
+        silently reported as "no job exists" just because it never reached
+        READY. Ordering by as_of_date alone (regardless of status) also
+        means a more recent PENDING/FAILED row correctly wins over an older
+        READY one -- the caller is polling for the most relevant job near
+        this date, not specifically "the latest usable narrative" (that
+        latter, fingerprint-matched case is what find_reusable is for)."""
         row = self._session.scalars(
             select(PenaltySummary)
             .where(
                 PenaltySummary.purchase_order_id == purchase_order_id,
                 PenaltySummary.summary_type == summary_type,
-                PenaltySummary.status == SummaryStatus.READY,
                 PenaltySummary.as_of_date <= as_of_date,
             )
             .order_by(PenaltySummary.as_of_date.desc())
