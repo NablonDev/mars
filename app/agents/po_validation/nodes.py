@@ -192,14 +192,10 @@ class PoValidationNodes:
 
     def handle_error(self, state: POGraphState) -> POGraphState:
         error = state.get("error") or {}
-        # process.processing_error (generalizing the old po_line_errors) has no
-        # purchase_order_line_id column -- only job_item_id/agent_run_id (see
-        # app.repositories.process.workflow.ProcessingErrorRepository and
-        # PoValidationService's own docstring, point 3, for the same documented gap).
-        # agent_run_id is the only thread this error row can be found by later.
         self._processing_error_repository.log(
             error.get("error_type", "SYSTEM_ERROR"),
             agent_run_id=state.get("run_id"),
+            purchase_order_line_id=state["po_line_id"],
             error_code=error.get("error_code"),
             error_message=error.get("error_message"),
             node_name=error.get("node_name", "unknown"),

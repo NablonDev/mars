@@ -30,21 +30,14 @@ not pure renames:
    defaulted: a real integration needs either a real price on the payload
    or that column made nullable, both out of scope for a services-only
    phase.
-3. **`processing_error` (generalizing the old `po_line_errors`) has no
-   `purchase_order_line_id` column** -- only `job_item_id`/`agent_run_id`
-   (see `app.models.process.processing_error`). `get_errors` can only
-   discover a line's errors through a `workflow_thread` that was actually
-   created for it (via that thread's `agent_run_id`, stashed in its
-   `metadata_json`, same bridge as point 1). A line that failed BEFORE ever
-   reaching a human interrupt (i.e. at `persist_po_line`/
-   `validate_against_cmir`/`check_material_master`, all pre-interrupt
-   steps, per `app/agents/po_validation/graph.py`) has no discoverable
-   error trail through this method -- a real, flagged capability gap
-   versus the old design, not a silent smoothing-over. Fixing it properly
-   needs a new repository query capability (Phase 2 scope) or nodes.py
-   always creating a thread eagerly (contradicts the model's own "lazy,
-   only on first interrupt" design intent) -- neither is this phase's call
-   to make unilaterally.
+3. **`processing_error.purchase_order_line_id`** now lets `get_errors` find
+   a line's errors directly (`ProcessingErrorRepository.list_for_purchase_order_line`),
+   without needing a `workflow_thread` to exist first -- `handle_error`
+   (`app/agents/po_validation/nodes.py`) sets it on every row it logs, and
+   is reached from every pre-interrupt node (`persist_po_line`/
+   `validate_against_cmir`/`check_material_master`/`create_cmir_record`),
+   closing what used to be a real discoverability gap for a line that fails
+   before ever reaching a human interrupt.
 3b. **`purchase_order_line.line_status` had no writer at all** --
    `PurchaseOrderRepository.update_line_status` is a deliberate Phase 3
    addition (flagged in the phase report) closing that gap: the
@@ -53,41 +46,66 @@ not pure renames:
    here. The *terminal* statuses (READY_FOR_SO_CREATION/DISCONTINUED/...)
    are still nodes.py's/Phase 4's job once it's rewired against the new
    repositories.
-4. **`list_ready_lines` has no repository support.** There is no
-   cross-purchase-order "list every purchase_order_line filtered/paginated
-   by `line_status`" query in `PurchaseOrderRepository` (Phase 2 scope,
-   already reviewed/frozen) -- only `list_lines(purchase_order_id)`, scoped
-   to one PO. Raises `ValidationError(code="VIEW_NOT_SUPPORTED")` rather
-   than faking an unindexed full scan.
-5. **No job-run/job-item queue wiring** (unlike
-   `app.services.cmir.run_service.CmirRunService.start_email_ingest`):
-   PO-validation ingest stays synchronous/inline, per the PRD's own
-   contract ("no queue/internal-process endpoint for this agent") -- there
-   is no async dispatch concept here for a job_item to represent, so
-   `cmir.cmir_job_item_context`'s `purchase_order_line_id` branch (defined
-   in the model from Phase 1) has no writer in this phase either.
+4. **`list_ready_lines`** is backed by `PurchaseOrderRepository.
+   list_lines_by_status`, a cross-purchase-order query filtered/paginated
+   by `line_status` (cursor on `updated_at`, same convention as
+   `WorkflowThreadRepository.list_threads`) -- alongside the existing
+   `list_lines(purchase_order_id)`, scoped to one PO. `status=None` defaults
+   to the "ready" set (`READY_FOR_SO_CREATION`/`READY_FOR_SO_CREATION_PARTIAL`)
+   rather than every line regardless of status.
+5. **Job-run/job-item queue wiring**, mirroring
+   `app.services.cmir.run_service.CmirRunService.start_email_ingest`:
+   `ingest_po_lines` creates one `process.job_run` (`job_type=
+   "PO_VALIDATION_BATCH"`) per ingest call plus its `cmir.cmir_job_run_context`
+   row, and `_ingest_one_line` enqueues one `process.job_item`
+   (`item_type=JobTaskType.PO_VALIDATION`) per line with a matching
+   `cmir.cmir_job_item_context` row (`purchase_order_line_id` set -- the
+   branch the model has carried, unwritten, since Phase 1). Unlike CMIR's
+   email ingest, which only enqueues and lets a worker process each item
+   later, PO-validation ingest stays synchronous/behavior-preserving (each
+   line is still validated inline as part of the ingest request, per the
+   PRD's contract) -- so each job item is claimed (by an in-process
+   `worker_id`) and settled SUCCEEDED/DEAD in the same request right after
+   its graph invocation returns, giving a full job-queue trail for
+   observability/replay parity with CMIR without changing the response
+   contract. `app.workers.po_validation.replay_stranded_job_run_items`
+   covers the one case that can leave an item PENDING/RUNNING regardless
+   (the request process dying between enqueue and settle) -- not the
+   steady-state path.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Any
 from uuid import UUID, uuid4
 
 from langgraph.types import Command
 
+from app.core.config import get_settings
 from app.core.exceptions import ConflictError, ExternalServiceError, NotFoundError, ValidationError
+from app.models.enums import JobRunType, JobTaskType
+from app.repositories.cmir.job_context import CmirJobItemContextRepository, CmirJobRunContextRepository
 from app.repositories.common.master_data import MasterDataRepository
 from app.repositories.common.purchase_order import PurchaseOrderRepository
 from app.repositories.process.agent_registry import AgentRegistryRepository, AgentRunRepository
+from app.repositories.process.job_queue import JobQueueRepository
 from app.repositories.process.workflow import (
     HumanActionRepository,
     ProcessingErrorRepository,
     WorkflowThreadRepository,
 )
+from app.utils.clock import utc_today
 
 logger = logging.getLogger(__name__)
+
+# `process.job_run.job_type`/`process.job_item.item_type` for this domain's
+# ingest batch -- `job_type` is a free string (no CHECK, see JobRun's
+# docstring); `item_type` reuses the `JobTaskType.PO_VALIDATION` value the
+# `ck_job_item_item_type` CHECK has already carried since Phase 1 (see
+# `app/models/enums.py`), unwritten until now.
+_JOB_TYPE_PO_VALIDATION_BATCH = "PO_VALIDATION_BATCH"
 
 INTERRUPT_KEY = "__interrupt__"
 
@@ -100,6 +118,12 @@ NODE_BY_INTERRUPT = {
     "manual_cmir_entry": "human_manual_cmir_entry",
     "qty_mismatch_decision": "human_qty_mismatch_decision",
 }
+
+# "Ready" for downstream sales-order creation -- the two terminal
+# line_status values FINAL_STAGE_BY_LINE_STATUS below maps to
+# READY_FOR_SO_CREATION(_PARTIAL); list_ready_lines' default filter when no
+# explicit `status` is requested.
+_READY_LINE_STATUSES = ("READY_FOR_SO_CREATION", "READY_FOR_SO_CREATION_PARTIAL")
 
 # Maps the terminal purchase_order_line.line_status set by the graph's
 # outcome nodes to the PRD's UI stage / workflow_thread.status pair.
@@ -132,6 +156,9 @@ class PoValidationService:
         workflow_threads: WorkflowThreadRepository,
         human_actions: HumanActionRepository,
         processing_errors: ProcessingErrorRepository,
+        job_queue: JobQueueRepository,
+        job_run_context: CmirJobRunContextRepository,
+        job_item_context: CmirJobItemContextRepository,
     ) -> None:
         self._graph = graph
         self._purchase_orders = purchase_orders
@@ -141,6 +168,9 @@ class PoValidationService:
         self._workflow_threads = workflow_threads
         self._human_actions = human_actions
         self._processing_errors = processing_errors
+        self._job_queue = job_queue
+        self._job_run_context = job_run_context
+        self._job_item_context = job_item_context
 
     def _ensure_registered(self) -> UUID:
         return self._agent_registry.ensure_registered(
@@ -158,15 +188,30 @@ class PoValidationService:
     def ingest_po_lines(self, lines: list[dict[str, Any]]) -> dict[str, Any]:
         """Persist each PO line and run it through the graph synchronously.
 
-        There is no queue/internal-process endpoint for this agent per the
-        PRD's API contract (see this module's docstring, point 5), so each
-        line is validated inline as part of the ingest request.
+        Each line is still validated inline as part of the ingest request
+        (behavior-preserving -- the response reports each line's resulting
+        status, same as before), but every line's run is now also tracked
+        through the shared job queue (see this module's docstring, point 5):
+        one `process.job_run` per call to this method, one `process.job_item`
+        per line, claimed and settled in the same request.
         """
-        batch_id = self._new_batch_id()
-        summaries = [self._ingest_one_line(batch_id, payload) for payload in lines]
-        return {"batch_id": batch_id, "total_lines": len(summaries), "lines": summaries}
+        settings = get_settings()
+        run = self._job_queue.create_run(
+            job_type=_JOB_TYPE_PO_VALIDATION_BATCH,
+            trigger_type=JobRunType.ON_DEMAND,
+            requested_item_count=len(lines),
+        )
+        self._job_run_context.create(job_run_id=run["id"], source_type="api")
 
-    def _ingest_one_line(self, batch_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        summaries = [
+            self._ingest_one_line(str(run["id"]), payload, run["id"], settings.job_queue.max_attempts)
+            for payload in lines
+        ]
+        return {"batch_id": str(run["id"]), "total_lines": len(summaries), "lines": summaries}
+
+    def _ingest_one_line(
+        self, batch_id: str, payload: dict[str, Any], job_run_id: UUID, max_attempts: int
+    ) -> dict[str, Any]:
         retailer = self._master_data.get_retailer_by_code(payload["customer_id"])
         if retailer is None:
             retailer = self._master_data.add_retailer(payload["customer_id"], payload["customer_id"], None)
@@ -180,7 +225,7 @@ class PoValidationService:
             purchase_order = self._purchase_orders.create_purchase_order(
                 purchase_order_number=payload["po_number"],
                 retailer_id=retailer["id"],
-                order_date=datetime.now(UTC).date(),
+                order_date=utc_today(),
                 requested_delivery_date=_parse_date(payload.get("requested_delivery_date")),
             )
 
@@ -203,7 +248,10 @@ class PoValidationService:
                 raw_payload=payload,
             )
 
+        claimed_job_item_id = self._enqueue_and_claim_job_item(job_run_id, line["id"], max_attempts)
         result = self._run_po_line(batch_id, line["id"], payload, plant["id"])
+        if claimed_job_item_id is not None:
+            self._settle_job_item(claimed_job_item_id, result)
         # purchase_order_line.line_status (NEW/AWAITING_DECISION/READY_FOR_SO_CREATION/...)
         # is the vocabulary this response reports in, not workflow_thread.status (which
         # `result` carries and is only meaningful once a thread exists) -- read it back
@@ -254,22 +302,121 @@ class PoValidationService:
             return {"batch_id": batch_id, "thread_id": None, "status": "FAILED", "updated_at": None}
         return self._handle_graph_state(run_id, batch_id, po_line_id, checkpoint_thread_id, state)
 
+    @staticmethod
+    def _inline_worker_id(job_item_id: UUID) -> str:
+        """Deterministic from `job_item_id` so `_settle_job_item` (called
+        later, after the graph invocation returns) never has to thread a
+        separate worker-id value through `_ingest_one_line` alongside it."""
+        return f"po-validation-inline-{job_item_id}"
+
+    def _enqueue_and_claim_job_item(
+        self, job_run_id: UUID, po_line_id: UUID, max_attempts: int
+    ) -> UUID | None:
+        """Enqueue one `PO_VALIDATION` job item for a line, attach its
+        `cmir_job_item_context` row (`purchase_order_line_id` set), and
+        claim it under an in-process worker id -- mirrors
+        `CmirRunService.start_email_ingest`'s per-item enqueue, keyed on the
+        line itself so re-ingesting the same line while its prior run is
+        still in flight dedupes instead of double-queuing.
+
+        Returns `None` (no job-queue trail for this one call) whenever
+        enqueue or claim didn't yield a fresh, this-caller-owned PENDING
+        item to settle later: either the narrow race `JobQueueRepository.
+        enqueue` itself documents (the winning row turns terminal before
+        this loser re-reads it), or a dedupe hit returning an item some
+        other in-flight run already owns (not PENDING, so claim_batch
+        can't claim it here) -- the line still runs through the graph
+        either way.
+        """
+        item = self._job_queue.enqueue(
+            job_run_id,
+            item_type=JobTaskType.PO_VALIDATION,
+            dedupe_key=str(po_line_id),
+            max_attempts=max_attempts,
+        )
+        if item is None:
+            return None
+        if self._job_item_context.get(item["id"]) is None:
+            self._job_item_context.create(job_item_id=item["id"], purchase_order_line_id=po_line_id)
+
+        worker_id = self._inline_worker_id(item["id"])
+        claimed = self._job_queue.claim_batch(worker_id, 1, job_item_ids=[item["id"]])
+        return item["id"] if claimed else None
+
+    def _settle_job_item(self, job_item_id: UUID, result: dict[str, Any]) -> None:
+        """Mark the job item claimed for this line's inline run terminal.
+
+        `result["status"] == "FAILED"` (upper case) is `_run_po_line`'s own
+        except-block literal for "the graph invocation itself raised" --
+        distinct from the lower-case `"failed"` `FINAL_STAGE_BY_LINE_STATUS`
+        reports when `handle_error` completes normally and the graph's
+        outcome is simply a business-level FAILED line. Only the former is a
+        job-execution failure; the latter is a job that ran to completion
+        and is DEAD-LETTER-worthy at the job-queue level not at all.
+        """
+        worker_id = self._inline_worker_id(job_item_id)
+        if result.get("status") == "FAILED":
+            self._job_queue.mark_dead(
+                job_item_id,
+                worker_id,
+                error="PO line validation graph invocation raised.",
+                error_code="PO_VALIDATION_GRAPH_ERROR",
+            )
+        else:
+            self._job_queue.mark_succeeded(job_item_id, worker_id)
+
+    def replay_line(self, purchase_order_line_id: UUID) -> None:
+        """Re-run one PO line's graph invocation from its originally-ingested
+        payload (`purchase_order_line.raw_payload`) -- the recovery path
+        `app.workers.po_validation.replay_stranded_job_run_items` uses for a
+        `PO_VALIDATION` job item left PENDING/RUNNING (see this module's
+        docstring, point 5); not part of the normal synchronous ingest flow,
+        which claims and settles its own job item inline."""
+        po_line = self._purchase_orders.get_line(purchase_order_line_id)
+        if po_line is None or not po_line.get("raw_payload"):
+            raise ValidationError(
+                code="VALIDATION_ERROR",
+                message="Unknown purchase_order_line_id, or it has no raw_payload to replay from.",
+                details={"purchase_order_line_id": str(purchase_order_line_id)},
+            )
+        self._run_po_line(
+            self._new_batch_id(), purchase_order_line_id, po_line["raw_payload"], po_line["plant_id"]
+        )
+
     def list_ready_lines(
         self,
         *,
+        purchase_order_id: UUID | None = None,
         status: str | None = None,
         limit: int = 50,
         cursor: str | None = None,
     ) -> dict[str, Any]:
-        raise ValidationError(
-            code="VIEW_NOT_SUPPORTED",
-            message=(
-                "Cross-purchase-order line listing has no repository support in the "
-                "common/process/cmir/penalties restructure -- list a single PO's lines "
-                "via GET /purchase-orders/{purchase_order_id}/lines instead."
-            ),
-            details={"status": status},
+        """Flat `purchase_order_line` listing -- the one route for this
+        resource (replaces the old separate flat/nested routes, see
+        `app/api/v1/po_validation.py`'s module docstring).
+
+        `purchase_order_id=None, status=None`: today's existing default,
+        the "ready" set (`_READY_LINE_STATUSES`) across every PO.
+
+        `purchase_order_id=<id>, status=None`: preserves the old nested
+        route's behavior -- ALL of that PO's lines regardless of status, no
+        "ready" default applied.
+
+        `status=<explicit value>` (with or without `purchase_order_id`):
+        filters on exactly that `line_status`, optionally also scoped to
+        one PO.
+        """
+        line_status: str | tuple[str, ...] | None
+        if status is not None:
+            line_status = status
+        elif purchase_order_id is not None:
+            line_status = None
+        else:
+            line_status = _READY_LINE_STATUSES
+        items, next_cursor = self._purchase_orders.list_lines_by_status(
+            line_status, purchase_order_id=purchase_order_id, limit=limit, cursor=cursor
         )
+        return {"items": items, "next_cursor": next_cursor}
 
     def get_errors(self, po_line_id: UUID) -> dict[str, Any]:
         po_line = self._purchase_orders.get_line(po_line_id)
@@ -280,17 +427,10 @@ class PoValidationService:
                 details={"po_line_id": str(po_line_id)},
             )
 
-        thread = self._workflow_threads.get_latest_by_purchase_order_line(po_line_id)
-        if thread is None:
-            # See this module's docstring, point 3: a line that failed before
-            # ever reaching a human interrupt has no discoverable error trail
-            # through this method today.
-            return {"items": []}
-
-        agent_run_id = (thread.get("metadata_json") or {}).get("agent_run_id")
-        if not agent_run_id:
-            return {"items": []}
-        return {"items": self._processing_errors.list_for_agent_run(UUID(agent_run_id))}
+        # Direct lookup by purchase_order_line_id (see this module's docstring,
+        # point 3) -- finds every error `handle_error` logged for this line,
+        # whether or not it ever reached a human interrupt.
+        return {"items": self._processing_errors.list_for_purchase_order_line(po_line_id)}
 
     def get_stage(self, thread_id: UUID) -> dict[str, Any]:
         stage = self._workflow_threads.get_stage(thread_id)

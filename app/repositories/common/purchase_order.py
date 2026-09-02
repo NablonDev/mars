@@ -12,6 +12,7 @@ available, its stringified surrogate id.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from uuid import UUID
 
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, NotFoundError
 from app.models import PurchaseOrder, PurchaseOrderLine
+from app.utils.pagination import parse_cursor
 
 
 def describe_no_open_orders(counts: dict[str, int]) -> str | None:
@@ -87,6 +89,7 @@ def _purchase_order_line_to_dict(row: PurchaseOrderLine) -> dict:
         "required_ship_date": row.required_ship_date,
         "line_status": row.line_status,
         "raw_payload": row.raw_payload,
+        "updated_at": row.updated_at,
     }
 
 
@@ -134,15 +137,26 @@ class PurchaseOrderRepository:
         if purchase_order is None:
             raise NotFoundError(
                 code="PO_NOT_FOUND",
-                message=f"No purchase order found with purchase_order_id={purchase_order_id!r}",
+                message=f"No purchase order found with purchase_order_id={purchase_order_id}",
             )
 
         return purchase_order
 
-    def list_purchase_orders(self, order_status: str | None = None) -> list[dict]:
+    def list_purchase_orders(
+        self,
+        order_status: str | None = None,
+        purchase_order_ids: list[UUID] | None = None,
+    ) -> list[dict]:
+        """`purchase_order_ids`, when given, restricts the result to those
+        ids -- AND'd with `order_status` if both are given (the
+        `PenaltyFullRunScope` schema validator normally prevents both being
+        meaningfully set at once; this stays additive and doesn't crash
+        either way)."""
         stmt = select(PurchaseOrder)
         if order_status:
             stmt = stmt.where(PurchaseOrder.order_status == order_status)
+        if purchase_order_ids:
+            stmt = stmt.where(PurchaseOrder.id.in_(purchase_order_ids))
 
         rows = self._session.scalars(stmt).all()
         return [_purchase_order_to_dict(r) for r in rows]
@@ -159,7 +173,7 @@ class PurchaseOrderRepository:
         if row is None:
             raise NotFoundError(
                 code="PO_NOT_FOUND",
-                message=f"No purchase order found with purchase_order_id={purchase_order_id!r}",
+                message=f"No purchase order found with purchase_order_id={purchase_order_id}",
             )
 
         row.order_status = order_status
@@ -179,7 +193,7 @@ class PurchaseOrderRepository:
         if row is None:
             raise NotFoundError(
                 code="PO_NOT_FOUND",
-                message=f"No purchase order found with purchase_order_id={purchase_order_id!r}",
+                message=f"No purchase order found with purchase_order_id={purchase_order_id}",
             )
 
         row.current_delivery_date = current_delivery_date
@@ -195,7 +209,7 @@ class PurchaseOrderRepository:
         if row is None:
             raise NotFoundError(
                 code="PO_NOT_FOUND",
-                message=f"No purchase order found with purchase_order_id={purchase_order_id!r}",
+                message=f"No purchase order found with purchase_order_id={purchase_order_id}",
             )
 
         row.negotiation_status = negotiation_status
@@ -231,7 +245,7 @@ class PurchaseOrderRepository:
         if row is None:
             raise NotFoundError(
                 code="PO_LINE_NOT_FOUND",
-                message=f"No purchase order line found with purchase_order_line_id={purchase_order_line_id!r}",
+                message=f"No purchase order line found with purchase_order_line_id={purchase_order_line_id}",
             )
 
         row.line_status = line_status
@@ -244,6 +258,42 @@ class PurchaseOrderRepository:
             .order_by(PurchaseOrderLine.line_number.asc())
         ).all()
         return [_purchase_order_line_to_dict(r) for r in rows]
+
+    def list_lines_by_status(
+        self,
+        line_status: str | Sequence[str] | None,
+        *,
+        purchase_order_id: UUID | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> tuple[list[dict], str | None]:
+        """Cross-PO `purchase_order_line` listing filtered by `line_status`
+        (a single value, or any of a sequence), paginated on `updated_at` --
+        same cursor convention as `WorkflowThreadRepository.list_threads`
+        (`app.utils.pagination.parse_cursor`). `line_status=None` lists
+        every line regardless of status.
+
+        `purchase_order_id`, when given, scopes the listing to one PO's own
+        lines (SQL-filtered, replacing what used to be the separate
+        `list_lines(purchase_order_id)` nested route) -- combines with
+        `line_status` rather than overriding it, so `purchase_order_id=<id>,
+        line_status=None` still returns that PO's lines regardless of
+        status."""
+        stmt = select(PurchaseOrderLine)
+        if purchase_order_id is not None:
+            stmt = stmt.where(PurchaseOrderLine.purchase_order_id == purchase_order_id)
+        if isinstance(line_status, str):
+            stmt = stmt.where(PurchaseOrderLine.line_status == line_status)
+        elif line_status is not None:
+            stmt = stmt.where(PurchaseOrderLine.line_status.in_(line_status))
+        if cursor is not None:
+            stmt = stmt.where(PurchaseOrderLine.updated_at < parse_cursor(cursor))
+        stmt = stmt.order_by(PurchaseOrderLine.updated_at.desc(), PurchaseOrderLine.id.desc()).limit(limit)
+
+        rows = self._session.scalars(stmt).all()
+        items = [_purchase_order_line_to_dict(r) for r in rows]
+        next_cursor = items[-1]["updated_at"].isoformat() if len(items) == limit and items else None
+        return items, next_cursor
 
     def list_open_orders_for_material_plant(
         self,

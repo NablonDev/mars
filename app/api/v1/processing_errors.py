@@ -1,7 +1,7 @@
-"""API endpoint for `process.processing_error` (was `GET /po-lines/{id}/errors`).
+"""API endpoint for `process.processing_error`.
 
-`processing_error` is a `process`-schema table shared across domains
-(approved plan §6) -- flat + filter, not nested two levels deep under
+`processing_error` is a `process`-schema table shared across domains -- flat
++ filter, not nested two levels deep under
 `/purchase-order-lines/{id}/errors`. `PoValidationService.get_errors` is
 this phase's only caller (see that method's docstring for the discoverability
 gap on a line that failed before ever reaching a human interrupt); a

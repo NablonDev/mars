@@ -1,18 +1,19 @@
 """API endpoints for the PO Validation ingest pipeline and `purchase_order_line`
 listing.
 
-Was `app/api/v1/po_validation.py`'s `create_router()` factory (stale imports
--- schemas/exceptions that no longer exist post-restructure). Rewritten per
-the approved plan §6: module-level `router = APIRouter(...)` (Phase 7a's
-convention), `Envelope[T]` on every route, the collapsed `AppError`
-hierarchy.
+Processing-error listing lives on `app/api/v1/processing_errors.py` and
+thread-lifecycle decisions on `app/api/v1/workflow_threads.py` --
+`processing_error`/`workflow_thread` are shared `process`-schema resources
+used by both `cmir` and `po_validation`, not owned by either domain's own
+router.
 
-| Old | New |
-|---|---|
-| `POST /ingest/po-lines` | `POST /api/v1/po-validation/purchase-order-lines` |
-| `GET /po-lines` | `GET /api/v1/purchase-order-lines?status=...` (flat, cross-PO) + `GET /api/v1/purchase-orders/{purchase_order_id}/lines` (nested, single-PO -- built as well since `common.purchase_order_line` listing for one known PO already has full repository support) |
-| `GET /po-lines/{id}/errors` | `GET /api/v1/processing-errors?purchase_order_line_id={id}` (`app/api/v1/processing_errors.py`) |
-| `POST /threads/{id}/qty-mismatch-decision`, `POST /threads/{id}/manual-cmir-entry` | `POST /api/v1/workflow-threads/{thread_id}/decisions` (`app/api/v1/workflow_threads.py`) |
+`GET /purchase-order-lines` used to be two routes for the same resource: this
+flat, paginated, cross-PO listing, and a separate nested
+`GET /purchase-orders/{purchase_order_id}/lines` (unpaginated, single-PO).
+Consolidated into the one route below, same "no 2-3 different URL shapes for
+one resource" reasoning as `app.api.v1.penalties.projections`/`mitigations`
+-- see `PoValidationService.list_ready_lines`'s docstring for the exact
+`purchase_order_id`/`status` semantics preserved from each.
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ from fastapi import APIRouter, Depends, Query
 from app.api.dependencies import get_po_service, get_purchase_order_repository
 from app.core.envelope import Envelope, success_envelope
 from app.repositories.common.purchase_order import PurchaseOrderRepository
-from app.schemas.common.purchase_orders import PurchaseOrderLineResponse
 from app.schemas.po_validation.purchase_order_lines import (
     IngestPurchaseOrderLinesRequest,
     IngestPurchaseOrderLinesResponse,
@@ -40,15 +40,14 @@ router = APIRouter(tags=["po-validation"])
     response_model=Envelope[IngestPurchaseOrderLinesResponse],
     status_code=202,
 )
-def create_purchase_order_lines(
+def ingest_purchase_order_lines(
     body: IngestPurchaseOrderLinesRequest,
     po_service: PoValidationService = Depends(get_po_service),
 ) -> Envelope[IngestPurchaseOrderLinesResponse]:
-    """Domain-scoped ingest action creating `common.purchase_order_line` rows
-    (approved plan §6 Phase-0 decision): kept under `/po-validation/` since
-    it's the validation pipeline's entry point (runs CMIR matching/
-    material-master checks as a side effect of ingest), not a generic
-    `common.purchase_order_line` CRUD create."""
+    """Domain-scoped ingest action creating `common.purchase_order_line` rows:
+    kept under `/po-validation/` since it's the validation pipeline's entry
+    point (runs CMIR matching/material-master checks as a side effect of
+    ingest), not a generic `common.purchase_order_line` CRUD create."""
     result = po_service.ingest_po_lines([line.model_dump() for line in body.lines])
     return success_envelope(
         IngestPurchaseOrderLinesResponse.model_validate(result), message="Purchase order lines ingested."
@@ -57,32 +56,20 @@ def create_purchase_order_lines(
 
 @router.get("/purchase-order-lines", response_model=Envelope[PurchaseOrderLinesListResponse])
 def list_purchase_order_lines(
+    purchase_order_id: UUID | None = Query(default=None),
     status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     cursor: str | None = None,
+    purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
     po_service: PoValidationService = Depends(get_po_service),
 ) -> Envelope[PurchaseOrderLinesListResponse]:
-    """Flat, cross-PO listing (approved plan §5/§6's naming rule) -- see
-    `PurchaseOrderLinesListResponse`'s docstring for the current
-    `VIEW_NOT_SUPPORTED` capability gap this surfaces rather than fakes."""
-    result = po_service.list_ready_lines(status=status, limit=limit, cursor=cursor)
+    """The one `purchase_order_line` listing route -- see
+    `PurchaseOrderLinesListResponse`'s and `PoValidationService.
+    list_ready_lines`'s docstrings for the exact `purchase_order_id`/
+    `status` semantics."""
+    if purchase_order_id is not None:
+        purchase_orders.require_purchase_order(purchase_order_id)
+    result = po_service.list_ready_lines(
+        purchase_order_id=purchase_order_id, status=status, limit=limit, cursor=cursor
+    )
     return success_envelope(PurchaseOrderLinesListResponse.model_validate(result))
-
-
-@router.get(
-    "/purchase-orders/{purchase_order_id}/lines",
-    response_model=Envelope[list[PurchaseOrderLineResponse]],
-)
-def list_purchase_order_lines_for_order(
-    purchase_order_id: UUID,
-    purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
-) -> Envelope[list[PurchaseOrderLineResponse]]:
-    """Nested, single-PO listing -- `PurchaseOrderRepository.list_lines`
-    already supports this directly (unlike the flat cross-PO listing
-    above), so this route reads the repository directly rather than
-    round-tripping through `PoValidationService`, mirroring
-    `app/api/v1/common/purchase_orders.py`'s own convention for read-only
-    nested listings."""
-    purchase_orders.require_purchase_order(purchase_order_id)
-    rows = purchase_orders.list_lines(purchase_order_id)
-    return success_envelope([PurchaseOrderLineResponse.model_validate(r) for r in rows])

@@ -35,10 +35,10 @@ from app.core.exceptions import ValidationError
 from app.db.session import Database
 from app.queue.interfaces import JobDispatcher, JobSource
 from app.repositories.cmir.job_context import CmirJobItemContextRepository, CmirJobRunContextRepository
+from app.repositories.common.delivery_change_request import PoDeliveryChangeRequestRepository
 from app.repositories.common.fulfillment import FulfillmentRepository
 from app.repositories.common.master_data import MasterDataRepository
 from app.repositories.common.purchase_order import PurchaseOrderRepository
-from app.repositories.penalties.delivery_change_request import PoDeliveryChangeRequestRepository
 from app.repositories.penalties.job_context import (
     PenaltyJobItemContextRepository,
     PenaltyJobRunContextRepository,
@@ -445,8 +445,17 @@ def build_service() -> CmirRunService:
 
 
 def build_po_validation_service() -> PoValidationService:
-    """Build the production PO Validation service from the project composition root."""
+    """Build the production PO Validation service from the project composition root.
+
+    `Container.build()` does not itself construct the `process.job_queue`/
+    `cmir.cmir_job_*_context` repositories `PoValidationService` needs
+    either (same gap `_build_cmir_job_context_repositories` above already
+    flags/works around for `CmirRunService`) -- reuses that same helper
+    rather than duplicating it, since both need the identical repository
+    trio against the same database URL.
+    """
     container = Container.build()
+    job_queue, job_run_context, job_item_context = _build_cmir_job_context_repositories(container)
     return PoValidationService(
         graph=container.po_validation_graph,
         purchase_orders=container.purchase_orders,
@@ -456,6 +465,9 @@ def build_po_validation_service() -> PoValidationService:
         workflow_threads=container.workflow_threads,
         human_actions=container.human_actions,
         processing_errors=container.processing_errors,
+        job_queue=job_queue,
+        job_run_context=job_run_context,
+        job_item_context=job_item_context,
     )
 
 

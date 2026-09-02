@@ -1,16 +1,5 @@
 """API endpoints for the shared `process.workflow_thread` resource -- used by
-both the `cmir` and `po_validation` domains now that `workflow_thread` lives
-in the `process` schema (approved plan §6). New module: neither
-`app/api/v1/cmir.py` nor `app/api/v1/po_validation.py` solely owns this
-resource any more.
-
-| Old | New |
-|---|---|
-| `GET /runs?view=threads` | `GET /api/v1/workflow-threads?domain=cmir\\|po_validation` |
-| `GET /threads/{id}/stage`, `GET /threads/{id}/snapshot` | `GET /api/v1/workflow-threads/{thread_id}?include=snapshot` |
-| `POST /threads/{id}/missing-fields` | `POST /api/v1/workflow-threads/{thread_id}/missing-fields` |
-| `POST /threads/{id}/update` | `PATCH /api/v1/workflow-threads/{thread_id}/draft` |
-| `POST /threads/{id}/decision` (cmir), `POST /threads/{id}/qty-mismatch-decision`, `POST /threads/{id}/manual-cmir-entry` (po_validation) | `POST /api/v1/workflow-threads/{thread_id}/decisions` (`decision_type` discriminator) |
+both the `cmir` and `po_validation` domains, neither of which owns it solely.
 
 `missing-fields`/`draft` stay CMIR-only in substance (`PoValidationService`
 has no equivalent resume path -- its two interrupts are `qty_mismatch_decision`
@@ -154,8 +143,7 @@ def update_workflow_thread_draft(
     body: WorkflowThreadFieldsRequest,
     run_service: CmirRunService = Depends(get_service),
 ) -> Envelope[WorkflowThreadDraftResponse]:
-    """Was `POST /threads/{id}/update` -- verb-to-HTTP-method (approved plan
-    §6): a `PATCH` on the in-flight review draft sub-resource."""
+    """A `PATCH` on the in-flight review draft sub-resource."""
     result = run_service.update_draft(
         thread_id,
         actor=body.actor,
@@ -176,9 +164,9 @@ def submit_workflow_thread_decision(
     po_run_service: PoValidationService = Depends(get_po_service),
 ) -> Envelope[WorkflowThreadResponse]:
     """One generic decision-recording endpoint, `decision_type`-discriminated,
-    replacing the three separate `decision`/`qty-mismatch-decision`/
-    `manual-cmir-entry` endpoints -- a direct consequence of `workflow_thread`
-    now being a shared `process`-schema resource (approved plan §6)."""
+    covering CMIR approval decisions and both `po_validation` decision
+    types -- a direct consequence of `workflow_thread` being a shared
+    `process`-schema resource rather than owned by either domain."""
     if isinstance(body, CmirApprovalDecisionRequest):
         result = run_service.submit_decision(
             thread_id,

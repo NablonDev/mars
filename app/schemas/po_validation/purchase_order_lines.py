@@ -13,11 +13,10 @@ directly by `PoValidationService._ingest_one_line` (`payload["po_number"]`,
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, Field
 
 from app.schemas.cmir.threads import IsoDatetime
+from app.schemas.common.purchase_orders import PurchaseOrderLineResponse
 
 
 class IngestPurchaseOrderLineItem(BaseModel):
@@ -58,16 +57,22 @@ class IngestPurchaseOrderLinesResponse(BaseModel):
 
 
 class PurchaseOrderLinesListResponse(BaseModel):
-    """Cross-PO, filtered listing -- `PoValidationService.list_ready_lines`
-    has no repository support for this today (no "list every
-    purchase_order_line by line_status across every PO" query exists on
-    `PurchaseOrderRepository`; only `list_lines(purchase_order_id)`, scoped
-    to one PO) -- see that service method's docstring, point 4. The route
-    surfaces `ValidationError(code="VIEW_NOT_SUPPORTED")` rather than
-    faking an unindexed full scan; use
-    `GET /purchase-orders/{purchase_order_id}/lines` for a single PO's lines
-    in the meantime.
+    """The one `purchase_order_line` listing shape -- backed by
+    `PurchaseOrderRepository.list_lines_by_status` (see
+    `PoValidationService.list_ready_lines`'s docstring). `purchase_order_id`
+    and `status` are both optional, independent filters:
+
+    - both omitted: the "ready" set (`READY_FOR_SO_CREATION`/
+      `READY_FOR_SO_CREATION_PARTIAL`) across every PO.
+    - `purchase_order_id` given, `status` omitted: every line for that PO
+      regardless of status (the old nested single-PO route's behavior).
+    - `status` given: filters on exactly that `line_status`, optionally also
+      scoped to one PO.
+
+    Replaces what used to be two routes (this flat, paginated, cross-PO
+    listing, and a separate unpaginated `GET /purchase-orders/{purchase_order_id}/lines`)
+    -- see `app/api/v1/po_validation.py`'s module docstring.
     """
 
-    items: list[dict[str, Any]]
+    items: list[PurchaseOrderLineResponse]
     next_cursor: str | None = None

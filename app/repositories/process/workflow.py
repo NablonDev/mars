@@ -78,6 +78,7 @@ def _processing_error_to_dict(row: ProcessingError) -> dict:
         "id": row.id,
         "job_item_id": row.job_item_id,
         "agent_run_id": row.agent_run_id,
+        "purchase_order_line_id": row.purchase_order_line_id,
         "error_type": row.error_type,
         "error_code": row.error_code,
         "error_message": row.error_message,
@@ -459,6 +460,7 @@ class ProcessingErrorRepository:
         *,
         job_item_id: UUID | None = None,
         agent_run_id: UUID | None = None,
+        purchase_order_line_id: UUID | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
         node_name: str | None = None,
@@ -467,6 +469,7 @@ class ProcessingErrorRepository:
         row = ProcessingError(
             job_item_id=job_item_id,
             agent_run_id=agent_run_id,
+            purchase_order_line_id=purchase_order_line_id,
             error_type=error_type,
             error_code=error_code,
             error_message=error_message,
@@ -489,6 +492,18 @@ class ProcessingErrorRepository:
         rows = self._session.scalars(
             select(ProcessingError)
             .where(ProcessingError.agent_run_id == agent_run_id)
+            .order_by(ProcessingError.occurred_at.desc())
+        ).all()
+        return [_processing_error_to_dict(r) for r in rows]
+
+    def list_for_purchase_order_line(self, purchase_order_line_id: UUID) -> list[dict]:
+        """Errors for one PO-validation line, found directly rather than via
+        an intermediate `workflow_thread` -- covers errors logged before the
+        line ever reached a human interrupt (see
+        `PoValidationService.get_errors`)."""
+        rows = self._session.scalars(
+            select(ProcessingError)
+            .where(ProcessingError.purchase_order_line_id == purchase_order_line_id)
             .order_by(ProcessingError.occurred_at.desc())
         ).all()
         return [_processing_error_to_dict(r) for r in rows]
