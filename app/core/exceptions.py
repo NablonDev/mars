@@ -15,6 +15,7 @@ matches its old `status_code`.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import ClassVar
 
 from fastapi import FastAPI, HTTPException, Request
@@ -105,6 +106,41 @@ def _resolve_request_id(request: Request) -> str:
     return getattr(request.state, "request_id", None) or get_request_id()
 
 
+def _is_json_safe(value: object) -> bool:
+    """Whether `value` survives `json.dumps` unchanged (recursively)."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(_is_json_safe(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _is_json_safe(item) for key, item in value.items())
+    return False
+
+
+def _sanitize_validation_errors(errors: Sequence[dict]) -> list[dict]:
+    """Make every error dict from `RequestValidationError.errors()` JSON-safe.
+
+    Pydantic v2 packages a plain `ValueError` raised by a custom
+    `model_validator`/`field_validator` into the error dict's `ctx` key as
+    the raw exception object itself (``ctx={"error": ValueError(...)}``) --
+    not JSON-serializable, and `JSONResponse.render` has no fallback encoder,
+    so `json.dumps` raises an unhandled `TypeError` instead of the intended
+    422 (surfacing as a 500). Replace any non-JSON-safe `ctx` value with its
+    `str()` form instead of dropping it, so the original validator's message
+    still reaches the client.
+    """
+    sanitized = []
+    for error in errors:
+        ctx = error.get("ctx")
+        if isinstance(ctx, dict):
+            error = {
+                **error,
+                "ctx": {key: value if _is_json_safe(value) else str(value) for key, value in ctx.items()},
+            }
+        sanitized.append(error)
+    return sanitized
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Register handlers for expected application and unexpected exceptions.
 
@@ -179,7 +215,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         envelope = error_envelope(
             "REQUEST_VALIDATION_ERROR",
             "Request validation failed.",
-            details={"errors": exc.errors()},
+            details={"errors": _sanitize_validation_errors(exc.errors())},
         )
         return JSONResponse(
             status_code=422,
