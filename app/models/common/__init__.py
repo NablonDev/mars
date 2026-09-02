@@ -1,8 +1,11 @@
-"""ORM models for the `common` schema: master data and fulfillment facts
-shared by the `cmir`/`po_validation` and `penalties` domains."""
+"""ORM models for the shared master data and fulfillment facts used by both
+the `cmir`/`po_validation` and `penalties` domains. These tables live in
+Postgres's default `public` schema (unqualified), not a dedicated schema --
+`process`/`cmir`/`penalties`/`langgraph` remain separate schemas."""
 
 from app.models.common.carrier import Carrier
 from app.models.common.delivery import Delivery, DeliveryLine, Shipment
+from app.models.common.delivery_change_request import PoDeliveryChangeRequest
 from app.models.common.demand_exception import DemandException
 from app.models.common.location import RetailerLocation
 from app.models.common.material import Material, MaterialMaster
@@ -23,6 +26,7 @@ __all__ = [
     "OrderConfirmation",
     "OrderConfirmationLine",
     "Plant",
+    "PoDeliveryChangeRequest",
     "ProductionOrder",
     "ProductionSchedule",
     "PurchaseOrder",

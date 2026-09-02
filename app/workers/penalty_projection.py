@@ -42,10 +42,10 @@ from app.db.session import Database
 from app.models.enums import JobRunType, JobTaskType, SummaryStatus, SummaryType
 from app.queue.interfaces import JobDispatcher
 from app.queue.types import ClaimedJob, SweepResult
+from app.repositories.common.delivery_change_request import PoDeliveryChangeRequestRepository
 from app.repositories.common.fulfillment import FulfillmentRepository
 from app.repositories.common.master_data import MasterDataRepository
 from app.repositories.common.purchase_order import PurchaseOrderRepository, describe_no_open_orders
-from app.repositories.penalties.delivery_change_request import PoDeliveryChangeRequestRepository
 from app.repositories.penalties.job_context import (
     PenaltyJobItemContextRepository,
     PenaltyJobRunContextRepository,

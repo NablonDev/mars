@@ -1,8 +1,11 @@
-"""API schemas for `penalties.po_delivery_change_request`.
+"""API schemas for `po_delivery_change_request` (common/unqualified schema).
 
-Was `app/schemas/fine_projection/po_delivery_change_requests.py`. Nested
-under `/purchase-orders/{purchase_order_id}/delivery-change-requests` per
-the approved plan §5 (was a flat `/po-delivery-change-requests/...` path)."""
+Was `app/schemas/fine_projection/po_delivery_change_requests.py`. Flattened
+to `/delivery-change-requests` (was nested under
+`/purchase-orders/{purchase_order_id}/delivery-change-requests`) -- see
+`app/api/v1/common/delivery_change_requests.py`'s module docstring for
+the same flattening rationale already applied to
+`app.api.v1.penalties.projections`/`mitigations`."""
 
 from __future__ import annotations
 
@@ -14,16 +17,16 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class DeliveryChangeRequestCreate(BaseModel):
-    """Body for POST .../delivery-change-requests -- purchase_order_id
-    comes from the path."""
+    """Body for POST /delivery-change-requests."""
 
+    purchase_order_id: UUID
     reason_code: Literal["SHORTAGE", "DELAY", "OTHER"]
     proposed_delivery_date: date
     notes: str | None = None
 
 
 class DeliveryChangeResponseRequest(BaseModel):
-    """Body for POST .../delivery-change-requests/{request_id}/response --
+    """Body for POST .../delivery-change-requests/{delivery_change_request_id}/response --
     mock/manual retailer-response entry.
 
     Only self-contained validation lives here (presence of
@@ -49,7 +52,6 @@ class DeliveryChangeRequestResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    request_id: str
     purchase_order_id: UUID
     reason_code: str
     requested_at: datetime

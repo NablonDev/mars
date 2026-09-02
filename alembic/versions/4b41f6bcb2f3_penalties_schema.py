@@ -28,7 +28,6 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 PENALTIES = "penalties"
-COMMON = "common"
 PROCESS = "process"
 
 
@@ -51,7 +50,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["retailer_id"], [f"{COMMON}.retailer.id"]),
+        sa.ForeignKeyConstraint(["retailer_id"], ["retailer.id"]),
         sa.PrimaryKeyConstraint("id"),
         schema=PENALTIES,
     )
@@ -106,7 +105,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(["job_item_id"], [f"{PROCESS}.job_item.id"]),
-        sa.ForeignKeyConstraint(["purchase_order_id"], [f"{COMMON}.purchase_order.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_id"], ["purchase_order.id"]),
         sa.PrimaryKeyConstraint("job_item_id"),
         schema=PENALTIES,
     )
@@ -127,7 +126,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["purchase_order_id"], [f"{COMMON}.purchase_order.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_id"], ["purchase_order.id"]),
         sa.PrimaryKeyConstraint("id"),
         schema=PENALTIES,
     )
@@ -154,7 +153,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["purchase_order_id"], [f"{COMMON}.purchase_order.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_id"], ["purchase_order.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "purchase_order_id", "projection_date", "action", name="uq_mitigation_option_po_date_action"
@@ -183,7 +182,7 @@ def upgrade() -> None:
             "summary_type IN ('PROJECTION', 'MITIGATION')", name="ck_penalty_summary_summary_type"
         ),
         sa.ForeignKeyConstraint(["agent_id"], [f"{PROCESS}.agent.id"]),
-        sa.ForeignKeyConstraint(["purchase_order_id"], [f"{COMMON}.purchase_order.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_id"], ["purchase_order.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "purchase_order_id", "summary_type", "as_of_date", name="uq_penalty_summary_po_type_date"
@@ -206,7 +205,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["purchase_order_id"], [f"{COMMON}.purchase_order.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_id"], ["purchase_order.id"]),
         sa.ForeignKeyConstraint(["rule_id"], [f"{PENALTIES}.penalty_rule.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
@@ -227,7 +226,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["purchase_order_id"], [f"{COMMON}.purchase_order.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_id"], ["purchase_order.id"]),
         sa.PrimaryKeyConstraint("id"),
         schema=PENALTIES,
     )
@@ -239,81 +238,8 @@ def upgrade() -> None:
         schema=PENALTIES,
     )
 
-    op.create_table(
-        "po_delivery_change_request",
-        sa.Column("id", sa.Uuid(), nullable=False),
-        sa.Column("request_id", sa.String(length=50), nullable=False),
-        sa.Column("purchase_order_id", sa.Uuid(), nullable=False),
-        sa.Column("reason_code", sa.String(length=30), nullable=False),
-        sa.Column("requested_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("baseline_delivery_date", sa.Date(), nullable=False),
-        sa.Column("proposed_delivery_date", sa.Date(), nullable=False),
-        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("status", sa.String(length=30), nullable=False),
-        sa.Column("retailer_response_date", sa.Date(), nullable=True),
-        sa.Column("countered_delivery_date", sa.Date(), nullable=True),
-        sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column(
-            "response_payload",
-            sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql"),
-            nullable=True,
-        ),
-        sa.Column("notes", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.CheckConstraint(
-            "status IN ('PENDING', 'ACCEPTED', 'COUNTERED', 'REJECTED', 'EXPIRED')",
-            name="ck_po_delivery_change_request_status",
-        ),
-        sa.CheckConstraint(
-            "reason_code IN ('SHORTAGE', 'DELAY', 'OTHER')",
-            name="ck_po_delivery_change_request_reason_code",
-        ),
-        sa.ForeignKeyConstraint(["purchase_order_id"], [f"{COMMON}.purchase_order.id"]),
-        sa.PrimaryKeyConstraint("id"),
-        schema=PENALTIES,
-    )
-    op.create_index(
-        op.f("ix_po_delivery_change_request_request_id"),
-        "po_delivery_change_request",
-        ["request_id"],
-        unique=True,
-        schema=PENALTIES,
-    )
-    op.create_index(
-        "ix_po_delivery_change_request_po_status",
-        "po_delivery_change_request",
-        ["purchase_order_id", "status"],
-        unique=False,
-        schema=PENALTIES,
-    )
-    op.create_index(
-        "ix_po_delivery_change_request_status_expires",
-        "po_delivery_change_request",
-        ["status", "expires_at"],
-        unique=False,
-        schema=PENALTIES,
-    )
-
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_po_delivery_change_request_status_expires",
-        table_name="po_delivery_change_request",
-        schema=PENALTIES,
-    )
-    op.drop_index(
-        "ix_po_delivery_change_request_po_status",
-        table_name="po_delivery_change_request",
-        schema=PENALTIES,
-    )
-    op.drop_index(
-        op.f("ix_po_delivery_change_request_request_id"),
-        table_name="po_delivery_change_request",
-        schema=PENALTIES,
-    )
-    op.drop_table("po_delivery_change_request", schema=PENALTIES)
     op.drop_index(
         op.f("ix_actual_penalty_actual_penalty_number"), table_name="actual_penalty", schema=PENALTIES
     )

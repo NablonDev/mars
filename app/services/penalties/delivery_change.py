@@ -25,26 +25,32 @@ and `PurchaseOrderRepository.update_negotiation_status`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from uuid import UUID, uuid4
 
 from app.core.exceptions import BusinessRuleError, ConflictError, NotFoundError, ValidationError
+from app.repositories.common.delivery_change_request import PoDeliveryChangeRequestRepository
 from app.repositories.common.master_data import MasterDataRepository
 from app.repositories.common.purchase_order import PurchaseOrderRepository
-from app.repositories.penalties.delivery_change_request import PoDeliveryChangeRequestRepository
 from app.services.penalties.projection.service import ProjectionService
+from app.utils.clock import utc_now_naive
 
 _TERMINAL_DECISIONS = {"ACCEPTED", "COUNTERED", "REJECTED"}
-
-
-def _new_request_id() -> str:
-    return f"ext_{uuid4().hex[:12]}"
 
 
 def _utcnow() -> datetime:
     """Naive UTC, matching this table's naive DateTime columns -- same convention
     as `app/repositories/process/job_queue.py`'s `_utcnow()`."""
-    return datetime.now(UTC).replace(tzinfo=None)
+    return utc_now_naive()
+
+
+def _new_request_id() -> str:
+    """External-system correlation key, generated here (not by the caller)
+    so every request gets one regardless of entry point (API, seeding
+    replay, the ops CLI). Not API-visible -- see this module's docstring
+    and `PoDeliveryChangeRequestRepository.get_by_id` being the sole
+    lookup method."""
+    return f"ext_{uuid4().hex[:12]}"
 
 
 @dataclass
@@ -73,8 +79,8 @@ class PoDeliveryChangeRequestService:
             raise ConflictError(
                 code="ACTIVE_PO_DELIVERY_CHANGE_REQUEST_EXISTS",
                 message=(
-                    f"Purchase order {purchase_order_id!r} already has an active PO "
-                    f"delivery-change request ({active['request_id']!r})"
+                    f"Purchase order {purchase_order_id} already has an active PO "
+                    f"delivery-change request ({active['id']})"
                 ),
             )
 
@@ -89,7 +95,7 @@ class PoDeliveryChangeRequestService:
             raise BusinessRuleError(
                 code="PO_DELIVERY_CHANGE_LEAD_TIME_ERROR",
                 message=(
-                    f"Purchase order {purchase_order_id!r} is only {lead_days} day(s) from its required "
+                    f"Purchase order {purchase_order_id} is only {lead_days} day(s) from its required "
                     f"ship date ({current_required_ship_date.isoformat()}); minimum lead time to request "
                     f"a delivery-date change is {policy['min_lead_days']} day(s)."
                 ),
@@ -100,13 +106,13 @@ class PoDeliveryChangeRequestService:
         )
 
         created = self.delivery_change_requests.create(
-            request_id=_new_request_id(),
             purchase_order_id=purchase_order_id,
             reason_code=reason_code,
             requested_at=now,
             baseline_delivery_date=baseline_delivery_date,
             proposed_delivery_date=proposed_delivery_date,
             expires_at=now + timedelta(hours=policy["response_sla_hours"]),
+            request_id=_new_request_id(),
             notes=notes,
         )
         self.purchase_orders.update_negotiation_status(purchase_order_id, "PENDING")
@@ -114,25 +120,26 @@ class PoDeliveryChangeRequestService:
 
     def record_response(
         self,
-        request_id: str,
+        delivery_change_request_id: UUID,
         decision: str,
         countered_delivery_date: date | None = None,
         now: datetime | None = None,
     ) -> dict:
         """`now` is injectable for the same reason as create_request's -- see there."""
-        row = self.delivery_change_requests.get_by_request_id(request_id)
+        row = self.delivery_change_requests.get_by_id(delivery_change_request_id)
         if row is None:
             raise NotFoundError(
                 code="PO_DELIVERY_CHANGE_REQUEST_NOT_FOUND",
-                message=f"No PO delivery-change request found with request_id={request_id!r}",
+                message=f"No PO delivery-change request found with id={delivery_change_request_id}",
             )
 
         if row["status"] != "PENDING":
             raise ValidationError(
                 code="INVALID_PO_DELIVERY_CHANGE_RESPONSE",
                 message=(
-                    f"PO delivery-change request {request_id!r} is not PENDING (status={row['status']!r}); "
-                    "a response has already been recorded, or it has already expired."
+                    f"PO delivery-change request {delivery_change_request_id} is not PENDING "
+                    f"(status={row['status']!r}); a response has already been recorded, or it has "
+                    "already expired."
                 ),
             )
 
@@ -165,7 +172,7 @@ class PoDeliveryChangeRequestService:
 
         now = now or _utcnow()
         updated = self.delivery_change_requests.record_response(
-            request_id=request_id,
+            delivery_change_request_id=delivery_change_request_id,
             status=decision,
             retailer_response_date=now.date(),
             resolved_at=now,
@@ -202,7 +209,7 @@ class PoDeliveryChangeRequestService:
 
         results = []
         for row in expired:
-            updated = self.delivery_change_requests.mark_expired(row["request_id"], resolved_as_of)
+            updated = self.delivery_change_requests.mark_expired(row["id"], resolved_as_of)
             # No PurchaseOrder date change -- current_delivery_date is already
             # untouched while PENDING, so the existing projection cycle already
             # is the fallback plan. negotiation_status still moves to EXPIRED.
@@ -211,5 +218,21 @@ class PoDeliveryChangeRequestService:
             results.append(updated)
         return results
 
-    def list_history(self, purchase_order_id: UUID) -> list[dict]:
+    def list_history(self, purchase_order_id: UUID | None = None) -> list[dict]:
+        """`purchase_order_id` given: unchanged, one PO's full history.
+        Omitted: every request across every PO -- backs
+        `GET /delivery-change-requests` with no filter."""
         return self.delivery_change_requests.list_history(purchase_order_id)
+
+    def get_by_id(self, delivery_change_request_id: UUID) -> dict:
+        """Standalone fetch by the surrogate `id` -- backs
+        `GET /delivery-change-requests/{delivery_change_request_id}`. Same
+        not-found shape `record_response` already raises for an unknown
+        id."""
+        row = self.delivery_change_requests.get_by_id(delivery_change_request_id)
+        if row is None:
+            raise NotFoundError(
+                code="PO_DELIVERY_CHANGE_REQUEST_NOT_FOUND",
+                message=f"No PO delivery-change request found with id={delivery_change_request_id}",
+            )
+        return row

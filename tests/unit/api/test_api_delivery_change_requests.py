@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 
@@ -37,7 +38,7 @@ def purchase_order(client) -> dict:
     # without an active rule for the retailer, that re-projection legitimately
     # raises NO_ACTIVE_RULES.
     client.post(
-        "/api/v1/penalty-rules",
+        "/api/v1/penalties/rules",
         json={
             "rule_code": "RULE-DCR",
             "retailer_id": retailer["id"],
@@ -61,29 +62,65 @@ def purchase_order(client) -> dict:
 
 def test_create_and_list_delivery_change_request(client, purchase_order):
     resp = client.post(
-        f"/api/v1/purchase-orders/{purchase_order['id']}/delivery-change-requests",
-        json={"reason_code": "SHORTAGE", "proposed_delivery_date": _PROPOSED_DATE_1},
+        "/api/v1/delivery-change-requests",
+        json={
+            "purchase_order_id": purchase_order["id"],
+            "reason_code": "SHORTAGE",
+            "proposed_delivery_date": _PROPOSED_DATE_1,
+        },
     )
     assert resp.status_code == 201, resp.text
     created = resp.json()["data"]
     assert created["status"] == "PENDING"
     assert created["proposed_delivery_date"] == _PROPOSED_DATE_1
 
-    listed = client.get(f"/api/v1/purchase-orders/{purchase_order['id']}/delivery-change-requests").json()[
-        "data"
-    ]
+    listed = client.get(
+        "/api/v1/delivery-change-requests", params={"purchase_order_id": purchase_order["id"]}
+    ).json()["data"]
     assert len(listed) == 1
+
+    fetched = client.get(f"/api/v1/delivery-change-requests/{created['id']}").json()["data"]
+    assert fetched["id"] == created["id"]
+
+
+def test_list_delivery_change_requests_across_purchase_orders(client, purchase_order):
+    client.post(
+        "/api/v1/delivery-change-requests",
+        json={
+            "purchase_order_id": purchase_order["id"],
+            "reason_code": "SHORTAGE",
+            "proposed_delivery_date": _PROPOSED_DATE_1,
+        },
+    )
+
+    listed = client.get("/api/v1/delivery-change-requests").json()["data"]
+    assert any(row["purchase_order_id"] == purchase_order["id"] for row in listed)
+
+
+def test_get_delivery_change_request_unknown_id_returns_404(client):
+    resp = client.get(f"/api/v1/delivery-change-requests/{uuid4()}")
+
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "PO_DELIVERY_CHANGE_REQUEST_NOT_FOUND"
 
 
 def test_a_second_active_request_is_rejected(client, purchase_order):
     client.post(
-        f"/api/v1/purchase-orders/{purchase_order['id']}/delivery-change-requests",
-        json={"reason_code": "SHORTAGE", "proposed_delivery_date": _PROPOSED_DATE_1},
+        "/api/v1/delivery-change-requests",
+        json={
+            "purchase_order_id": purchase_order["id"],
+            "reason_code": "SHORTAGE",
+            "proposed_delivery_date": _PROPOSED_DATE_1,
+        },
     )
 
     resp = client.post(
-        f"/api/v1/purchase-orders/{purchase_order['id']}/delivery-change-requests",
-        json={"reason_code": "DELAY", "proposed_delivery_date": _PROPOSED_DATE_2},
+        "/api/v1/delivery-change-requests",
+        json={
+            "purchase_order_id": purchase_order["id"],
+            "reason_code": "DELAY",
+            "proposed_delivery_date": _PROPOSED_DATE_2,
+        },
     )
 
     assert resp.status_code == 409
@@ -92,13 +129,16 @@ def test_a_second_active_request_is_rejected(client, purchase_order):
 
 def test_record_accepted_response_updates_purchase_order_dates(client, purchase_order):
     created = client.post(
-        f"/api/v1/purchase-orders/{purchase_order['id']}/delivery-change-requests",
-        json={"reason_code": "SHORTAGE", "proposed_delivery_date": _PROPOSED_DATE_1},
+        "/api/v1/delivery-change-requests",
+        json={
+            "purchase_order_id": purchase_order["id"],
+            "reason_code": "SHORTAGE",
+            "proposed_delivery_date": _PROPOSED_DATE_1,
+        },
     ).json()["data"]
 
     resp = client.post(
-        f"/api/v1/purchase-orders/{purchase_order['id']}/delivery-change-requests/"
-        f"{created['request_id']}/response",
+        f"/api/v1/delivery-change-requests/{created['id']}/response",
         json={"decision": "ACCEPTED"},
     )
 
@@ -115,13 +155,16 @@ def test_record_accepted_response_updates_purchase_order_dates(client, purchase_
 
 def test_countered_response_requires_a_countered_date_between_baseline_and_proposed(client, purchase_order):
     created = client.post(
-        f"/api/v1/purchase-orders/{purchase_order['id']}/delivery-change-requests",
-        json={"reason_code": "DELAY", "proposed_delivery_date": _PROPOSED_DATE_3},
+        "/api/v1/delivery-change-requests",
+        json={
+            "purchase_order_id": purchase_order["id"],
+            "reason_code": "DELAY",
+            "proposed_delivery_date": _PROPOSED_DATE_3,
+        },
     ).json()["data"]
 
     resp = client.post(
-        f"/api/v1/purchase-orders/{purchase_order['id']}/delivery-change-requests/"
-        f"{created['request_id']}/response",
+        f"/api/v1/delivery-change-requests/{created['id']}/response",
         json={"decision": "COUNTERED", "countered_delivery_date": _COUNTERED_DATE},
     )
 
@@ -130,9 +173,9 @@ def test_countered_response_requires_a_countered_date_between_baseline_and_propo
     assert resp.json()["data"]["countered_delivery_date"] == _COUNTERED_DATE
 
 
-def test_response_to_unknown_request_id_returns_404(client, purchase_order):
+def test_response_to_unknown_id_returns_404(client, purchase_order):
     resp = client.post(
-        f"/api/v1/purchase-orders/{purchase_order['id']}/delivery-change-requests/ext_unknown/response",
+        f"/api/v1/delivery-change-requests/{uuid4()}/response",
         json={"decision": "ACCEPTED"},
     )
 

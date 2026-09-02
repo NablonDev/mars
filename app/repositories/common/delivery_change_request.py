@@ -1,4 +1,4 @@
-"""Repository for `penalties.po_delivery_change_request` --
+"""Repository for `po_delivery_change_request` (common/unqualified schema) --
 the request/response lifecycle history
 `PoDeliveryChangeRequestService` reads and writes. Historized,
 one row per request, same "latest row per PO" convention as
@@ -45,17 +45,16 @@ class PoDeliveryChangeRequestRepository:
 
     def create(
         self,
-        request_id: str,
         purchase_order_id: UUID,
         reason_code: str,
         requested_at: datetime,
         baseline_delivery_date: date,
         proposed_delivery_date: date,
         expires_at: datetime,
+        request_id: str,
         notes: str | None = None,
     ) -> dict:
         row = PoDeliveryChangeRequest(
-            request_id=request_id,
             purchase_order_id=purchase_order_id,
             reason_code=reason_code,
             requested_at=requested_at,
@@ -63,19 +62,20 @@ class PoDeliveryChangeRequestRepository:
             proposed_delivery_date=proposed_delivery_date,
             expires_at=expires_at,
             status="PENDING",
+            request_id=request_id,
             notes=notes,
         )
         self._session.add(row)
         self._session.flush()
         return _to_dict(row)
 
-    def get_by_request_id(self, request_id: str) -> dict | None:
-        row = self._get_row(request_id)
+    def get_by_id(self, delivery_change_request_id: UUID) -> dict | None:
+        row = self._get_row(delivery_change_request_id)
         return _to_dict(row) if row is not None else None
 
-    def _get_row(self, request_id: str) -> PoDeliveryChangeRequest | None:
+    def _get_row(self, delivery_change_request_id: UUID) -> PoDeliveryChangeRequest | None:
         return self._session.scalars(
-            select(PoDeliveryChangeRequest).where(PoDeliveryChangeRequest.request_id == request_id)
+            select(PoDeliveryChangeRequest).where(PoDeliveryChangeRequest.id == delivery_change_request_id)
         ).first()
 
     def find_active_for_purchase_order(self, purchase_order_id: UUID) -> dict | None:
@@ -104,26 +104,31 @@ class PoDeliveryChangeRequestRepository:
         ).all()
         return [_to_dict(r) for r in rows]
 
-    def list_history(self, purchase_order_id: UUID) -> list[dict]:
-        rows = self._session.scalars(
-            select(PoDeliveryChangeRequest)
-            .where(PoDeliveryChangeRequest.purchase_order_id == purchase_order_id)
-            .order_by(PoDeliveryChangeRequest.requested_at.asc())
-        ).all()
+    def list_history(self, purchase_order_id: UUID | None = None) -> list[dict]:
+        """`purchase_order_id` given: every request for that PO (unchanged
+        behavior). Omitted: every request across every PO -- backs
+        `GET /delivery-change-requests` with no filter, mirroring
+        `PenaltyProjectionRepository.list_projections`'s own optional
+        `purchase_order_id` filter."""
+        query = select(PoDeliveryChangeRequest)
+        if purchase_order_id is not None:
+            query = query.where(PoDeliveryChangeRequest.purchase_order_id == purchase_order_id)
+        query = query.order_by(PoDeliveryChangeRequest.requested_at.asc())
+        rows = self._session.scalars(query).all()
         return [_to_dict(r) for r in rows]
 
     def record_response(
         self,
-        request_id: str,
+        delivery_change_request_id: UUID,
         status: str,
         retailer_response_date: date,
         resolved_at: datetime,
         countered_delivery_date: date | None = None,
         response_payload: dict | None = None,
     ) -> dict:
-        row = self._get_row(request_id)
+        row = self._get_row(delivery_change_request_id)
         if row is None:
-            raise ValueError(f"No PO delivery change request found with request_id={request_id!r}")
+            raise ValueError(f"No PO delivery change request found with id={delivery_change_request_id!r}")
 
         row.status = status
         row.retailer_response_date = retailer_response_date
@@ -133,10 +138,10 @@ class PoDeliveryChangeRequestRepository:
         self._session.flush()
         return _to_dict(row)
 
-    def mark_expired(self, request_id: str, resolved_at: datetime) -> dict:
-        row = self._get_row(request_id)
+    def mark_expired(self, delivery_change_request_id: UUID, resolved_at: datetime) -> dict:
+        row = self._get_row(delivery_change_request_id)
         if row is None:
-            raise ValueError(f"No PO delivery change request found with request_id={request_id!r}")
+            raise ValueError(f"No PO delivery change request found with id={delivery_change_request_id!r}")
 
         row.status = "EXPIRED"
         row.resolved_at = resolved_at

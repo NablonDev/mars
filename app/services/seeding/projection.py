@@ -434,7 +434,7 @@ def simulate_daily_run(
         offset = purchase_order["order_date"] - _ORIGINAL_ORDER_DATE[purchase_order_number]
 
         negotiation_scenario = _NEGOTIATION_SCENARIOS.get(purchase_order_number)
-        negotiation_request_id: str | None = None
+        negotiation_id: UUID | None = None
         negotiation_result: dict[str, Any] | None = None
         # Idempotent, same convention as seed(): a re-run must not
         # double-create a request or error retrying a terminal one. If this
@@ -536,7 +536,7 @@ def simulate_daily_run(
                 create_spec = negotiation_scenario.get("create")
                 if (
                     create_spec is not None
-                    and negotiation_request_id is None
+                    and negotiation_id is None
                     and snapshot.projection_date == create_spec["trigger_date"]
                 ):
                     created = delivery_change_service.create_request(
@@ -546,17 +546,17 @@ def simulate_daily_run(
                         notes=create_spec["notes"],
                         now=create_spec["now"] + offset,
                     )
-                    negotiation_request_id = created["request_id"]
+                    negotiation_id = created["id"]
 
                 respond_spec = negotiation_scenario.get("respond")
                 if (
                     respond_spec is not None
-                    and negotiation_request_id is not None
+                    and negotiation_id is not None
                     and negotiation_result is None
                     and snapshot.projection_date == respond_spec["trigger_date"]
                 ):
                     negotiation_result = delivery_change_service.record_response(
-                        request_id=negotiation_request_id,
+                        delivery_change_request_id=negotiation_id,
                         decision=respond_spec["decision"],
                         countered_delivery_date=(
                             respond_spec["countered_delivery_date"] + offset
@@ -569,9 +569,7 @@ def simulate_daily_run(
         expire_as_of = None if negotiation_scenario is None else negotiation_scenario.get("expire_as_of")
         if expire_as_of is not None:
             expired = delivery_change_service.expire_stale(as_of=expire_as_of + offset)
-            negotiation_result = next(
-                (row for row in expired if row["request_id"] == negotiation_request_id), None
-            )
+            negotiation_result = next((row for row in expired if row["id"] == negotiation_id), None)
 
         purchase_orders.set_order_status(purchase_order_id, "DELIVERED")
         summary: dict[str, Any] = {"purchase_order_id": str(purchase_order_id), "days": daily_results}

@@ -1,5 +1,6 @@
-"""API schemas for the `common` domain: master data, purchase orders, and
-fulfillment facts, plus the shared `HealthResponse`.
+"""API schemas for the `common` domain: master data, purchase orders,
+fulfillment facts, and PO delivery-change-requests, plus the shared
+`HealthResponse`.
 
 Was the flat `app/schemas/fine_master_data.py`/`orders.py` plus the
 standalone `app/schemas/common.py` (this package's `__init__` absorbs that
@@ -12,6 +13,11 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.schemas.common.delivery_change_requests import (
+    DeliveryChangeRequestCreate,
+    DeliveryChangeRequestResponse,
+    DeliveryChangeResponseRequest,
+)
 from app.schemas.common.fulfillment import (
     ActualPenaltyRequest,
     ActualPenaltyResponse,
@@ -58,6 +64,9 @@ __all__ = [
     "ActualPenaltyResponse",
     "CarrierRequest",
     "CarrierResponse",
+    "DeliveryChangeRequestCreate",
+    "DeliveryChangeRequestResponse",
+    "DeliveryChangeResponseRequest",
     "DemandExceptionRequest",
     "DemandExceptionResponse",
     "HealthResponse",

@@ -2,7 +2,6 @@
 `penalties` domain rename)."""
 
 from app.models.penalties.actual_penalty import ActualPenalty
-from app.models.penalties.delivery_change_request import PoDeliveryChangeRequest
 from app.models.penalties.job_context import PenaltyJobItemContext, PenaltyJobRunContext
 from app.models.penalties.mitigation import MitigationInput, MitigationOption
 from app.models.penalties.projection import PenaltyProjection
@@ -19,5 +18,4 @@ __all__ = [
     "PenaltyRule",
     "PenaltyRuleTier",
     "PenaltySummary",
-    "PoDeliveryChangeRequest",
 ]

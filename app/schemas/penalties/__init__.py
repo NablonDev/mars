@@ -1,6 +1,5 @@
 """API schemas for the `penalties` domain: rules, projections, mitigations,
-delivery-change-requests, batch job-runs, and the seed/replay admin
-endpoints.
+batch job-runs, and the seed/replay admin endpoints.
 
 Was the flat `app/schemas/fine_rules.py`, `fine_projection/*.py`,
 `fine_mitigation/*.py`, `fine_runs.py`, `batches.py`, `admin.py`."""
@@ -20,11 +19,6 @@ from app.schemas.penalties.batches import (
     JobRunResponse,
     JobRunStatusCounts,
     JobRunStatusResponse,
-)
-from app.schemas.penalties.delivery_change_requests import (
-    DeliveryChangeRequestCreate,
-    DeliveryChangeRequestResponse,
-    DeliveryChangeResponseRequest,
 )
 from app.schemas.penalties.mitigations import (
     MitigationOptionDetailResponse,
@@ -48,9 +42,6 @@ from app.schemas.penalties.projections import (
 from app.schemas.penalties.rules import PenaltyRuleRequest, PenaltyRuleResponse, PenaltyRuleTierSchema
 
 __all__ = [
-    "DeliveryChangeRequestCreate",
-    "DeliveryChangeRequestResponse",
-    "DeliveryChangeResponseRequest",
     "JobItemListResponse",
     "JobItemResponse",
     "JobRunRequest",

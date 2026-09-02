@@ -25,6 +25,7 @@ from app.models.common import (
     OrderConfirmation,
     OrderConfirmationLine,
     Plant,
+    PoDeliveryChangeRequest,
     ProductionOrder,
     ProductionSchedule,
     PurchaseOrder,
@@ -47,7 +48,6 @@ from app.models.penalties import (
     PenaltyRule,
     PenaltyRuleTier,
     PenaltySummary,
-    PoDeliveryChangeRequest,
 )
 from app.models.process import (
     Agent,
