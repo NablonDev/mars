@@ -105,6 +105,7 @@ class DemandExceptionResponse(BaseModel):
 
 
 class ActualPenaltyRequest(BaseModel):
+    purchase_order_id: UUID
     actual_penalty_number: str
     violation_type: str
     actual_penalty_amount: float
