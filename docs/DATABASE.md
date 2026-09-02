@@ -5,19 +5,33 @@ DDL, hand-maintained, kept 1:1 with `app/models/`). Runnable ORM: `app/models/`.
 Migrations: `alembic/` (repo root, run with `alembic upgrade head`). Sample data:
 `data/samples/mars_penalties_mock_seed_data.sql`.
 
-## Postgres schema separation (`common` / `process` / `cmir` / `penalties` / `langgraph`)
+## Postgres schema separation (`public` / `process` / `cmir` / `penalties` / `langgraph`)
 
 This one FastAPI app hosts two domains against one physical Postgres
-database, split across five **schemas**. `public` holds no domain tables
-at all.
+database, split across four dedicated **schemas** plus Postgres's default
+`public` schema, which holds the shared master/fulfillment tables
+unqualified (no schema override on those models).
 
-- **`common`** -- shared master data (`retailer`, `sku`, `material`/
-  `material_master`, `plant`/`storage_location`/`warehouse`,
-  `retailer_location`, `carrier`) and fulfillment facts (`purchase_order`/
-  `purchase_order_line`, `order_confirmation`/`*_line`, `delivery`/
-  `*_line`/`shipment`, `production_order`/`production_schedule`,
-  `demand_exception`), used by both the `cmir`/`po_validation` and
-  `penalties` domains. Declared in `app/db/base.py::COMMON_SCHEMA`.
+- **`public`** (unqualified, no schema constant in `app/db/base.py`) --
+  shared master data (`retailer`, `sku`, `material`/`material_master`,
+  `plant`/`storage_location`/`warehouse`, `retailer_location`, `carrier`)
+  and fulfillment facts (`purchase_order`/`purchase_order_line`,
+  `order_confirmation`/`*_line`, `delivery`/`*_line`/`shipment`,
+  `production_order`/`production_schedule`, `demand_exception`), used by
+  both the `cmir`/`po_validation` and `penalties` domains. These tables
+  used to live in a dedicated `common` schema; that split was reversed --
+  they now live in `public` like any unqualified SQLAlchemy model. Also
+  `po_delivery_change_request` (`PoDeliveryChangeRequest`, identified solely
+  by its surrogate `id`) -- a procurement/EDI concept (vendor delivery-date
+  renegotiation, SAP ORDRSP/EDI-865 equivalent), not a
+  penalty-calculation concept, moved here from `penalties` in a later
+  pass since the penalty projection/mitigation engines never read it.
+  Renamed from `purchase_order_delivery_change_request` (itself renamed
+  from the original `po_delivery_change_request`, back when the FK was
+  also renamed `order_id` -> `purchase_order_id` to point at the surrogate
+  `purchase_order.id`).
+  Alembic's own version table lives here too (see "Migration history"
+  below).
 - **`process`** -- the shared job/agent/workflow backbone (`job_run`,
   `job_item`, `workflow_thread`, `workflow_thread_subject`, `agent`,
   `agent_run`, `agent_trace`, `human_action`, `processing_error`),
@@ -25,8 +39,6 @@ at all.
   old `fines` schema's `job_run`/`job_item`, and the `cmir` schema's
   `agent_runs`/`agent_traces`/`workflow_threads`/`hitl_actions`/
   `pending_human_actions`. Declared in `app/db/base.py::PROCESS_SCHEMA`.
-  Alembic's own version table lives here too (see "Migration history"
-  below).
 - **`cmir`** -- CMIR/PO-validation-only tables (`email_event`,
   `email_action_log`, `cmir_record`, `cmir_job_run_context`,
   `cmir_job_item_context`). Declared in `app/db/base.py::CMIR_SCHEMA`.
@@ -40,20 +52,25 @@ at all.
   runtime, never via Alembic, and never queried/written directly by
   application code. No ORM model is bound to this schema.
 
-Every FK across all four ORM-owned schemas is a `uuid -> <schema>.<table>.id`
-surrogate-key reference, schema-qualified in the FK string
-(`ForeignKey(f"{COMMON_SCHEMA}.purchase_order.id")`) -- nothing relies on the
-connection's default `search_path`. This is the single largest mechanical
-change from the pre-restructure schema, where most FKs pointed at a
-business-key column (e.g. `Order.retailer_id -> fines.retailer.retailer_id`,
-a `String(50)`).
+Every FK is a `uuid -> <table>.id` surrogate-key reference. FKs into a
+`process`/`cmir`/`penalties`-schema table are schema-qualified in the FK
+string (`ForeignKey(f"{PENALTIES_SCHEMA}.penalty_rule.id")`); FKs into a
+`public`-schema table (the former `common` tables) are bare and
+unqualified (`ForeignKey("purchase_order.id")`), resolved via the
+connection's default `search_path` rather than a schema prefix -- this
+includes cross-schema FKs from `process`/`cmir`/`penalties` models
+pointing into `public` (e.g. `cmir_record.purchase_order_line_id`,
+`penalty_projection.purchase_order_id`). This is the single largest
+mechanical change from the pre-restructure schema, where most FKs pointed
+at a business-key column (e.g. `Order.retailer_id ->
+fines.retailer.retailer_id`, a `String(50)`).
 
 On SQLite (the whole test suite, plus the `sqlite:////tmp/...` local-dev
 recipe), schemas don't exist at all -- `app/db/session.py` and
 `alembic/env.py` both apply SQLAlchemy's `schema_translate_map` at the
-connection level to translate `common`, `process`, `cmir`, and `penalties`
-away (never `langgraph` -- no ORM model is bound to it, so there is
-nothing to translate).
+connection level to translate `process`, `cmir`, and `penalties` away
+(never `public` -- there is nothing to translate, its tables are already
+unqualified; never `langgraph` either -- no ORM model is bound to it).
 
 **A structural consequence of that flattening, worth knowing before adding
 a new domain-owned extension table:** two tables with the same bare name
@@ -74,7 +91,7 @@ Five revisions, one per schema, in FK-dependency order:
 
 | Revision | File | What it adds |
 |---|---|---|
-| `0824321a02a4` | `alembic/versions/0824321a02a4_common_schema.py`, `down_revision=None` | Every `common`-schema table |
+| `0824321a02a4` | `alembic/versions/0824321a02a4_common_schema.py`, `down_revision=None` | Every shared master/fulfillment table (unqualified, in `public`) |
 | `ff53dabe6e4c` | `alembic/versions/ff53dabe6e4c_process_schema.py` | Every `process`-schema table except `workflow_thread_subject` (see below) |
 | `374aa902b053` | `alembic/versions/374aa902b053_cmir_schema.py` | Every `cmir`-schema table, **plus `process.workflow_thread_subject`** |
 | `4b41f6bcb2f3` | `alembic/versions/4b41f6bcb2f3_penalties_schema.py` | Every `penalties`-schema table |
@@ -135,8 +152,8 @@ Exactly one `is_current = TRUE` row per `(customer_identity_key,
 target_customer_material_ref_key)`, enforced by a partial unique index
 (`uq_cmir_record_current_identity`, migration-only raw DDL). Renamed from
 `cmir_records`; its `po_line_id` FK is renamed `purchase_order_line_id`
-and now points at `common.purchase_order_line.id` (a real table, not the
-CMIR-schema stub `po_lines` used to be).
+and now points at `purchase_order_line.id` (a real table in `public`, not
+the CMIR-schema stub `po_lines` used to be).
 
 ### `cmir_job_run_context` (`CmirJobRunContext`) / `cmir_job_item_context` (`CmirJobItemContext`)
 Extension tables for `process.job_run`/`process.job_item`, carrying
@@ -172,7 +189,22 @@ why this was avoided.
 ### `job_item` (`JobItem`)
 Generic work ledger shared by both domains -- one row per unit of work
 (`item_type`: `EMAIL_INGEST`/`PO_VALIDATION`/`ORDER_RUN`/
-`PROJECTION_SUMMARY_REGEN`/`MITIGATION_SUMMARY_REGEN`). `status` moves
+`PROJECTION_SUMMARY_REGEN`/`MITIGATION_RUN`/`MITIGATION_SUMMARY_REGEN`/
+`PENALTY_FULL_RUN`).
+`MITIGATION_RUN` (added alongside `PENALTY_MITIGATION_BATCH`/
+`app.api.v1.job_runs._trigger_penalty_mitigation_batch`) computes and
+persists fresh mitigation options for a purchase order against its
+existing projection; it is a distinct operation from
+`MITIGATION_SUMMARY_REGEN`, which only regenerates the LLM summary over
+options that already exist (see `app/workers/penalty_mitigation.py`).
+`PENALTY_FULL_RUN` (added alongside `PENALTY_FULL_RUN_BATCH`/
+`app.api.v1.job_runs._trigger_penalty_full_run_batch`) runs only the
+requested subset of projection/projection_summary/mitigation/
+mitigation_summary steps for one purchase order, in that fixed dependency
+order -- the requested `steps` (and the run's resolved `projection_date`)
+are stored on this table's own `metadata` column rather than a new
+`penalty_job_item_context` column (see `app/workers/penalty_full_run.py`).
+`status` moves
 `PENDING -> RUNNING -> SUCCEEDED`, or `PENDING -> RUNNING -> PENDING`
 (retry) `-> ... -> DEAD`. There is deliberately **no resting `FAILED`
 state**. `id` is a UUIDv7, doubling as a FIFO tiebreaker. Domain-specific
@@ -257,9 +289,14 @@ are now one row's lifecycle, not two separately-written tables.
 ### `processing_error` (`ProcessingError`)
 Generalizes the old CMIR-only `PoLineErrorORM`/`po_line_errors` -- system/
 lookup failures, distinct from `human_action` (human decisions). FKs to
-`process.job_item.id`/`process.agent_run.id`; the domain-specific
-`po_line_id` link that table used to carry now lives on
-`cmir.cmir_job_item_context` instead.
+`process.job_item.id`/`process.agent_run.id`/`purchase_order_line.id`
+(the last unqualified, since that table lives in `public`).
+`purchase_order_line_id` (nullable) lets a PO-validation line's errors be
+found directly -- `app/agents/po_validation/nodes.py`'s `handle_error` sets
+it on every row it logs, so a line that fails in a pre-interrupt node
+(`persist_po_line`/`validate_against_cmir`/`check_material_master`/
+`create_cmir_record`, before any `workflow_thread` exists) is still
+discoverable via `GET /api/v1/processing-errors?purchase_order_line_id=`.
 
 ## Primary keys
 
@@ -280,7 +317,7 @@ missing surrogate key.
 ## Historization
 
 `order_confirmation`, `production_schedule`, and `shipment` (all in
-`common`) are append-only: every write is a new row, never an update to an
+`public`) are append-only: every write is a new row, never an update to an
 existing one. `production_schedule` is keyed by `(material_id, plant_id)`,
 not a single PO -- a production line serves whichever POs draw on it. Two
 POs that share a line will see each other's status updates; see
@@ -299,12 +336,11 @@ Full `fine`/`fines` -> `penalty`/`penalties` domain rename.
 | `penalty_rule` (`PenaltyRule`) | `rule_code` | Renamed from `fine_rule`/`rule_id` |
 | `penalty_rule_tier` (`PenaltyRuleTier`) | `(rule_id, tier_code)` | Renamed from `fine_rule_tier`; only populated for `calc_type = TIERED` rules |
 | `penalty_job_run_context` (`PenaltyJobRunContext`) / `penalty_job_item_context` (`PenaltyJobItemContext`) | -- | Extension tables for `process.job_run`/`process.job_item`, carrying `purchase_order_id`, `projection_date`, `task_type`, `stacking_mode_override`, `force_regenerate_summary` |
-| `mitigation_input` (`MitigationInput`) | `purchase_order_id` (unique) | Mutable current-best-guess cause/cost assumptions; no soft delete/history, deliberately unlike every append-only table in `common` |
+| `mitigation_input` (`MitigationInput`) | `purchase_order_id` (unique) | Mutable current-best-guess cause/cost assumptions; no soft delete/history, deliberately unlike every append-only table in `public` |
 | `mitigation_option` (`MitigationOption`) | `(purchase_order_id, projection_date, action)` | Renamed from `MitigationResult` -- unified on the same name the pure-engine dataclass already used, since both now live in clearly separate modules |
 | `penalty_summary` (`PenaltySummary`) | `(purchase_order_id, summary_type, as_of_date)` | Merges what were two tables (`projection_summary`, `mitigation_summary`) into one, with a `summary_type` (`PROJECTION`\|`MITIGATION`) discriminator |
 | `penalty_projection` (`PenaltyProjection`) | `(purchase_order_id, rule_id, projection_date)` | Renamed from `projected_fine`. Three dollar/probability columns, all always populated: `failure_probability` (raw probability, 0-1), `penalty_amount` (raw $ if the violation occurs, independent of probability), `expected_penalty_amount` (= `failure_probability * penalty_amount`, a risk-adjusted combined figure -- retained for internal ranking/PO-level exposure aggregation only, never a predicted certain cost) |
 | `actual_penalty` (`ActualPenalty`) | `actual_penalty_number` | Renamed from `actual_fine` |
-| `po_delivery_change_request` (`PoDeliveryChangeRequest`) | `request_id` | Renamed from `purchase_order_delivery_change_request` (itself renamed from the original `po_delivery_change_request`, back when the FK was also renamed `order_id` -> `purchase_order_id` to point at the surrogate `common.purchase_order.id`) |
 
 ## Why no `dim_`/`fact_` prefix
 

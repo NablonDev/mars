@@ -36,7 +36,7 @@ left open for load balancers/uptime monitors. Missing or wrong key ->
 never echoes what was sent or what was expected.
 
 ```bash
-curl http://127.0.0.1:8000/api/v1/purchase-orders -H "X-Internal-Api-Key: $INTERNAL_API_KEY"
+curl http://127.0.0.1:8000/api/v1/purchase-orders -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"
 ```
 
 Every curl example below omits this header for brevity -- add it to every
@@ -115,11 +115,30 @@ list routes take no query filters except where noted.
 | GET | `/api/v1/purchase-orders/{purchase_order_id}/shipments` | List shipments for the PO |
 | POST | `/api/v1/purchase-orders/{purchase_order_id}/demand-exceptions` | Flag a demand exception (`422 PO_HAS_NO_LINES` if the PO has no lines and none is given) |
 | GET | `/api/v1/purchase-orders/{purchase_order_id}/demand-exceptions` | List demand exceptions across the PO's lines |
-| POST | `/api/v1/purchase-orders/{purchase_order_id}/actual-penalties` | Record an actual (post-delivery) penalty |
-| GET | `/api/v1/purchase-orders/{purchase_order_id}/actual-penalties` | List actual penalties for the PO |
 
 Every create route returns `201`; every list route returns `200` with a
-plain JSON array as `data`.
+plain JSON array as `data`. Actual (post-delivery) penalties are a
+`penalties`-domain resource -- see `/api/v1/penalties/actual-penalties`
+below, not nested under `/purchase-orders/{purchase_order_id}/...` like the
+facts above.
+
+### Delivery-change requests
+
+A procurement/EDI concept (vendor delivery-date renegotiation, SAP
+ORDRSP/EDI-865 equivalent), not a penalty-calculation concept -- the penalty
+projection/mitigation engines never read this resource, so it lives here,
+flat and unprefixed, rather than under `/penalties/...`. Same reasoning as
+Projections/Mitigations below for flattening, except `POST
+.../{delivery_change_request_id}/response`, which stays nested under the
+request's own surrogate `id` (a sub-action on one resource's own id, not a
+second URL shape for the collection).
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/v1/delivery-change-requests` (body: `purchase_order_id` + ...) | Open a delivery-date negotiation (`reason_code` is `SHORTAGE`\|`DELAY`\|`OTHER`) |
+| GET | `/api/v1/delivery-change-requests?purchase_order_id=` | List delivery-change-request history, optionally filtered to one PO; omitted lists across every PO |
+| GET | `/api/v1/delivery-change-requests/{delivery_change_request_id}` | Single request read by its surrogate `id` (`404 PO_DELIVERY_CHANGE_REQUEST_NOT_FOUND`) |
+| POST | `/api/v1/delivery-change-requests/{delivery_change_request_id}/response` | Record the retailer's response (`ACCEPTED`\|`COUNTERED`\|`REJECTED`); re-runs the projection engine, so an accepted/countered response can legitimately surface `409 NO_ACTIVE_RULES` if no rule covers the retailer |
 
 ## Penalties
 
@@ -129,31 +148,71 @@ Routes in `app/api/v1/penalties/`, backed by `app/services/penalties/`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/v1/penalty-rules` | Create a penalty rule, with tiers when `calc_type="TIERED"` |
-| GET | `/api/v1/penalty-rules?retailer_id=` | List penalty rules, optionally by retailer |
+| POST | `/api/v1/penalties/rules` | Create a penalty rule, with tiers when `calc_type="TIERED"` |
+| GET | `/api/v1/penalties/rules?retailer_id=` | List penalty rules, optionally by retailer |
 
 ### Projections
 
+Flat, not nested under `/purchase-orders/{id}/...` -- a resource with its own
+globally-meaningful id, fetched directly and listed cross-parent as a
+first-class case, shouldn't have 2-3 different URL shapes for the same
+resource type.
+
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/v1/purchase-orders/{purchase_order_id}/penalty-projections` | Compute and persist a projection for one PO (synchronous) |
-| GET | `/api/v1/purchase-orders/{purchase_order_id}/penalty-projections?include=summary` | Projection history for one PO, optionally with each row's cached summary |
-| GET | `/api/v1/penalty-projections?status=OPEN` | Flat cross-PO projection list |
-| GET | `/api/v1/penalty-projections/{projection_id}?include=summary` | Single projection read (`404 PROJECTION_NOT_FOUND`) |
-| GET | `/api/v1/purchase-orders/{purchase_order_id}/penalty-exposure` | Latest projection's total-expected-penalty summary (`404 NO_PROJECTION_EXISTS` if none exist yet) |
-| POST | `/api/v1/purchase-orders/{purchase_order_id}/penalty-projections/summary` | Trigger/poll the LLM projection-summary job (`200` with a cached/ready summary, or `202 PENDING`) |
+| POST | `/api/v1/penalties/projections` (body: `purchase_order_id`, `projection_date?`, `stacking_mode_override?`) | Compute and persist a projection for one PO (synchronous). Does not accept `?include=` -- fetch `summary`/`mitigations`/`mitigation_summary` afterward via the `GET` routes below |
+| GET | `/api/v1/penalties/projections?purchase_order_id=&status=&projection_date=&projection_date_from=&projection_date_to=` `?include=summary,mitigations,mitigation_summary` | Merges the old PO-scoped history and cross-PO open-projection list into one route: `purchase_order_id` given returns that PO's full history (any status/date filters narrowing further); omitted returns the cross-PO list, defaulting `status` to `OPEN` |
+| GET | `/api/v1/penalties/projections/{projection_id}?include=summary,mitigations,mitigation_summary` | Single projection read (`404 PROJECTION_NOT_FOUND`) |
+| GET | `/api/v1/penalties/exposure?purchase_order_id=` | Latest projection's total-expected-penalty summary (`404 NO_PROJECTION_EXISTS` if none exist yet) |
+| POST | `/api/v1/penalties/projections/summary` (body: `purchase_order_id`, `as_of_date?`, `force_regenerate?`) | Trigger/poll the LLM projection-summary job (`200` with a cached/ready summary, or `202 PENDING`) |
+| GET | `/api/v1/penalties/projections/summary?purchase_order_id=&as_of_date=` | Dedicated pure-read poll for the same summary job, without re-fetching the projection (`200`, `status: null` if none was ever requested for this PO -- see below; unknown `purchase_order_id` is still `404 PO_NOT_FOUND`) |
 
-`?include=` is validated against a per-route allow-list (only `summary` is
-ever accepted here) and is a pure read -- it never schedules generation as a
-side effect; `202`-returning routes signal it explicitly via `response.status_code`,
-not a raised exception.
+`?include=` is validated against a per-route allow-list and is a pure read --
+it never schedules generation as a side effect. Both `GET` projections routes
+above (list and single-read) share the identical
+`{summary, mitigations, mitigation_summary}` allow-list -- no `GET` route
+gets a narrower one. `POST /api/v1/penalties/projections` does not accept
+`include=` at all: a compute call always returns the bare projection result,
+with `summary`/`mitigations`/`mitigation_summary` left unset; fetch those
+separately via the `GET` routes once the projection exists.
+
+**Combined dashboard read.** Both `GET` routes above embed each of
+`summary`/`mitigations`/`mitigation_summary`, when requested, onto every row
+returned (a single object for the single-read route, per-row for the list
+route):
+
+- `summary` / `summary_status` -- the row's cached projection-summary job.
+- `mitigations` -- that row's ranked mitigation options (`MitigationOptionRepository.list_for_date`
+  keyed on the row's own `(purchase_order_id, projection_date)`), or `null` if none have been
+  computed yet for that date (a legitimate empty state, not an error).
+- `mitigation_summary` / `mitigation_summary_status` -- the row's cached
+  mitigation-summary job, same `READY`/`PENDING`/`FAILED`-from-cache
+  contract as `summary_status`.
+
+None of the three ever trigger computation -- a row with nothing cached simply
+comes back with the corresponding field(s) `null`.
+
+`GET /api/v1/penalties/mitigations` (see Mitigations below) also accepts
+`?include=summary`, attaching each listed option's cached mitigation-summary
+job the same way the single-mitigation route already does.
+`POST /api/v1/penalties/mitigations` does not accept `include=` -- its
+response's `options[].summary_status`/`options[].summary` always come back
+unset; fetch a computed option's mitigation summary afterward via
+`GET /api/v1/penalties/mitigations` or the single-mitigation route.
 
 **Response shape -- probability, raw amount, and combined figure are always
 three separate numbers, never just one blended figure.** Every violation
-(in the live `POST .../penalty-projections` response, and in every persisted
-row returned by the `GET` routes above, including `.../penalty-exposure`)
-carries:
+(in the live `POST /api/v1/penalties/projections` response, and in every
+persisted row returned by the `GET` routes above, including
+`.../penalties/exposure`) carries:
 
+- `projection_id` (`POST /api/v1/penalties/projections` response only) -- the
+  surrogate id of the `penalty_projection` row this violation was just
+  persisted to (one row per violation, same id the `GET` routes' `id` field
+  and the `projection_id` field elsewhere refer to). Use it
+  directly against `GET /api/v1/penalties/projections/{projection_id}` or
+  `POST /api/v1/penalties/mitigations` (`projection_id` in the body) -- no
+  separate list/query call needed to look it up after a run.
 - `probability` / `failure_probability` -- the raw probability of the
   violation occurring, 0-1.
 - `penalty_amount` -- the raw dollar amount the retailer would charge **if**
@@ -164,7 +223,7 @@ carries:
   cost** -- it is what the exposure is worth in expectation, not what will
   be billed.
 
-`.../penalty-exposure`'s `total_expected_penalty_amount` is the `SUM`/`MAX`
+`.../penalties/exposure`'s `total_expected_penalty_amount` is the `SUM`/`MAX`
 (per the retailer's `stacking_mode`) of the latest projection date's
 per-violation `expected_penalty_amount` figures. Like the per-violation
 figure it aggregates, it
@@ -175,30 +234,40 @@ authoritative number.
 
 ### Mitigations
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/api/v1/penalty-mitigations?projection_id=` | List ranked mitigation options for a projection |
-| POST | `/api/v1/penalty-mitigations?projection_id=` | Compute and persist ranked mitigation options (no request body -- `projection_id` is the only input) |
-| GET | `/api/v1/penalty-mitigations/{mitigation_id}?include=summary` | Single mitigation option read (`404 MITIGATION_OPTION_NOT_FOUND`) |
-| POST | `/api/v1/purchase-orders/{purchase_order_id}/penalty-mitigations/summary` | Trigger/poll the LLM mitigation-summary job (`200`/`202`, same contract as the projection summary above) |
-
-### Delivery-change requests
+Also flat. Every route accepts either a direct `(purchase_order_id,
+projection_date)` pair or a `projection_id` (resolved to that same pair) --
+exactly one of the two shapes, never both, never neither (`422` otherwise).
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/v1/purchase-orders/{purchase_order_id}/delivery-change-requests` | Open a delivery-date negotiation (`reason_code` is `SHORTAGE`\|`DELAY`\|`OTHER`) |
-| GET | `/api/v1/purchase-orders/{purchase_order_id}/delivery-change-requests` | List a PO's delivery-change-request history |
-| POST | `/api/v1/purchase-orders/{purchase_order_id}/delivery-change-requests/{request_id}/response` | Record the retailer's response (`ACCEPTED`\|`COUNTERED`\|`REJECTED`); re-runs the projection engine, so an accepted/countered response can legitimately surface `409 NO_ACTIVE_RULES` if no rule covers the retailer |
+| GET | `/api/v1/penalties/mitigations?projection_id=` or `?purchase_order_id=&projection_date=` `?include=summary` | List ranked mitigation options, optionally with each option's cached mitigation summary |
+| POST | `/api/v1/penalties/mitigations` (body: `projection_id` or `purchase_order_id`+`projection_date`) | Compute and persist ranked mitigation options (synchronous). Does not accept `?include=` -- fetch each option's cached mitigation summary afterward via the `GET` route above |
+| GET | `/api/v1/penalties/mitigations/{mitigation_id}?include=summary` | Single mitigation option read (`404 MITIGATION_OPTION_NOT_FOUND`) |
+| POST | `/api/v1/penalties/mitigations/summary` (body: `purchase_order_id`, `as_of_date?`, `force_regenerate?`) | Trigger/poll the LLM mitigation-summary job (`200`/`202`, same contract as the projection summary above) |
+| GET | `/api/v1/penalties/mitigations/summary?purchase_order_id=&as_of_date=` | Dedicated pure-read poll for the same summary job (`200`, `status: null` if none was ever requested for this PO -- same convention as the projection-summary GET above; unknown `purchase_order_id` is still `404 PO_NOT_FOUND`) |
 
-## Job runs (shared: `penalties` + `cmir`)
+### Actual penalties
 
-Routes in `app/api/v1/penalties/batches.py`. `job_run`/`job_item` live in the
-`process` schema and are shared infrastructure -- one generic endpoint set,
-not one per domain.
+Flat, same reasoning as Projections/Mitigations above.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/v1/job-runs` | Dispatch a batch job; `job_type` selects the domain (`PENALTY_PROJECTION_BATCH` default, or `CMIR_EMAIL_INGEST`) |
+| POST | `/api/v1/penalties/actual-penalties` (body: `purchase_order_id` + ...) | Record an actual (post-delivery) penalty |
+| GET | `/api/v1/penalties/actual-penalties?purchase_order_id=` | List actual penalties, optionally filtered to one PO; omitted lists across every PO |
+| GET | `/api/v1/penalties/actual-penalties/{actual_penalty_id}` | Single actual-penalty read (`404 ACTUAL_PENALTY_NOT_FOUND`) |
+
+## Job runs (`penalties` domain)
+
+Routes in `app/api/v1/job_runs.py`; request schemas in
+`app/schemas/penalties/batches.py`. `job_run`/`job_item` live in the
+`process` schema and are shared infrastructure, but `/job-runs` itself only
+covers the `penalties` domain's batch job types -- CMIR email ingestion is
+triggered exclusively via the dedicated `POST /cmir/email-events` (see the
+CMIR section below), not through `/job-runs`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/v1/job-runs` | Dispatch a batch job; `job_type` selects the batch (`PENALTY_PROJECTION_BATCH` default, `PENALTY_MITIGATION_BATCH`, or `PENALTY_FULL_RUN_BATCH`) |
 | GET | `/api/v1/job-runs/{job_run_id}` | Run status: counts by item status, `total_items`, `is_complete` (`404 JOB_RUN_NOT_FOUND`) |
 | GET | `/api/v1/job-runs/{job_run_id}/items?status=&limit=&offset=` | List the items in one run |
 
@@ -206,13 +275,47 @@ not one per domain.
 this only writes the ledger row -- nothing runs it until a drain happens
 (`JOB_QUEUE_BACKEND=postgres`) or a consumer picks up the dispatched message
 (`JOB_QUEUE_BACKEND=service_bus`); see `docs/JOB-QUEUE-WALKTHROUGH.md`.
-`job_type=CMIR_EMAIL_INGEST` runs synchronously but still returns `202` for
-response-contract uniformity. There is currently no "list all job runs"
-endpoint -- only single-run lookups.
+`job_type=PENALTY_MITIGATION_BATCH` mirrors that same enqueue/dispatch
+shape (`item_type=MITIGATION_RUN` per item), except the batch resolves each
+OPEN purchase order's own *latest existing* penalty projection rather than
+running one fresh -- a purchase order with no projection at all is skipped,
+not errored, the same eligibility `MitigationService.run_for_purchase_order`
+itself enforces for a single PO/date (`app/services/penalties/mitigation/
+service.py`). It takes no `projection_date`/`stacking_mode_override` body
+field (unlike `PENALTY_PROJECTION_BATCH`) since each purchase order is
+evaluated against its own latest projection date, not one shared date.
+
+`job_type=PENALTY_FULL_RUN_BATCH` (`item_type=PENALTY_FULL_RUN` per item)
+runs the requested subset of `projection` -> `projection_summary` ->
+`mitigation` -> `mitigation_summary` for every purchase order matching
+`scope`, always in that fixed dependency order regardless of the order
+`steps` is submitted in:
+
+```json
+{
+  "job_type": "PENALTY_FULL_RUN_BATCH",
+  "steps": ["projection", "projection_summary", "mitigation", "mitigation_summary"],
+  "scope": {"purchase_order_status": "OPEN"},
+  "projection_date": "2026-09-02"
+}
+```
+
+`steps` must be non-empty. `scope` accepts either `purchase_order_status`
+(default `"OPEN"`) or `purchase_order_ids` (a specific list) -- not both;
+providing both is a `422` at the request-validation level, not a service
+error. Eligibility mirrors `PENALTY_MITIGATION_BATCH` exactly when
+`"projection"` is not itself in `steps`: a purchase order with no existing
+projection is skipped, not failed. When `"projection"` IS in `steps`, every
+matching purchase order is eligible. The requested `steps` (and the run's
+resolved `projection_date`) travel on `process.job_item.metadata`, not a
+new column.
+
+There is currently no "list all job runs" endpoint -- only single-run
+lookups.
 
 ## CMIR
 
-Routes in `app/api/v1/cmir.py`, backed by `app.services.cmir.run_service.CMIRRunService`.
+Routes in `app/api/v1/cmir.py`, backed by `app.services.cmir.run_service.CmirRunService`.
 See `docs/prd.md` for the business rules and the README's identity rule
 before touching reviewer/queue code -- `thread_id` is the only identifier
 reviewer/UI actions may key on.
@@ -228,9 +331,8 @@ Routes in `app/api/v1/po_validation.py`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/v1/po-validation/purchase-order-lines` | Ingest PO lines into the validation pipeline (runs CMIR-matching/material-master checks as a side effect); `202` |
-| GET | `/api/v1/purchase-order-lines?status=&limit=&cursor=` | Flat cross-PO line listing (`422 VIEW_NOT_SUPPORTED` -- not implemented on the repository yet) |
-| GET | `/api/v1/purchase-orders/{purchase_order_id}/lines` | Nested single-PO line listing |
+| POST | `/api/v1/po-validation/purchase-order-lines` | Ingest PO lines into the validation pipeline (runs CMIR-matching/material-master checks as a side effect); `202`. Each line also creates and inline-settles one `process.job_item` (`item_type=PO_VALIDATION`) under one `process.job_run` (`job_type=PO_VALIDATION_BATCH`) per call -- `batch_id` in the response *is* that `job_run_id`, queryable via `GET /api/v1/job-runs/{batch_id}` |
+| GET | `/api/v1/purchase-order-lines?purchase_order_id=&status=&limit=&cursor=` | The one `purchase_order_line` listing route, paginated on `updated_at` (replaces what used to be this flat route plus a separate nested `GET /purchase-orders/{purchase_order_id}/lines`). Both `purchase_order_id`/`status` omitted defaults to the "ready" set (`READY_FOR_SO_CREATION`/`READY_FOR_SO_CREATION_PARTIAL`) across every PO; `purchase_order_id` given with `status` omitted returns that PO's lines regardless of status; an explicit `status` filters on that exact `line_status` value, optionally also scoped to one PO |
 
 ## Workflow threads (shared: `cmir` + `po_validation`)
 
@@ -256,7 +358,7 @@ this customer/material while this thread was waiting -- the thread closes to
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/v1/processing-errors?purchase_order_line_id=` | List processing errors for one PO line (`purchase_order_line_id` is required) |
+| GET | `/api/v1/processing-errors?purchase_order_line_id=` | List processing errors for one PO line (`purchase_order_line_id` is required) -- found directly via `processing_error.purchase_order_line_id`, so a line that failed before ever reaching a human interrupt (no `workflow_thread` yet) is still discoverable |
 
 `processing_error` is a `process`-schema table shared across domains
 (generalizes the old `po_line_errors`).

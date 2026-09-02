@@ -68,8 +68,8 @@ Seed penalties demo data and try it out:
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/admin/seed-master-data
 curl -X POST http://127.0.0.1:8000/api/v1/admin/simulate-daily-run
-curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-projections \
-  -H "Content-Type: application/json" -d '{}'
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/projections \
+  -H "Content-Type: application/json" -d '{"purchase_order_id": "<purchase_order_id>"}'
 ```
 
 ### The batch worker
@@ -167,7 +167,7 @@ Main endpoints (base path `/api/v1`):
 |---|---|---|
 | `POST` | `/cmir/email-events` | Start one email ingest batch. |
 | `GET` | `/workflow-threads?domain=cmir` | Reviewer queue: list workflow threads. |
-| `GET` | `/job-runs?job_type=CMIR_EMAIL_INGEST` | Ops view: batch/run rollups (shared job-queue resource). |
+| `GET` | `/job-runs/{job_run_id}` | Ops view: run rollup for one ingest batch (`job_run_id` is the `batch_id` returned by `POST /cmir/email-events`; shared job-queue resource — no filter-by-`job_type` list route exists). |
 | `GET` | `/workflow-threads/{thread_id}` | Get current stage/status for one thread (`?include=snapshot` for the full snapshot). |
 | `POST` | `/workflow-threads/{thread_id}/missing-fields` | Submit missing mandatory fields and resume graph. |
 | `PATCH` | `/workflow-threads/{thread_id}/draft` | Save reviewer draft edits. |

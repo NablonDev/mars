@@ -4,10 +4,11 @@ Every way to set up, run, seed, exercise, and troubleshoot this service.
 For endpoint-by-endpoint reference, see `docs/API.md`.
 This file is about running it.
 
-**Every curl example below needs `-H "X-Internal-Api-Key: $INTERNAL_API_KEY"`
-except `/api/v1/health`.** It's omitted from most of the commands in this file for
-readability -- see `docs/API.md` "Authentication" for the full contract
-(missing/wrong key -> `401`, generic body, nothing echoed back).
+**Every curl example below against a protected route carries
+`-H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"`, except `/api/v1/health`,**
+the one route that needs no key -- see `docs/API.md` "Authentication" for
+the full contract (missing/wrong key -> `401`, generic body, nothing echoed
+back).
 
 **Sections 2 onward cover the API and the single-order paths.** For the
 batch job queue -- every OPEN order, scheduled and run as a group -- see
@@ -91,7 +92,7 @@ won, or start a new one, against the current record.
 #### PO Validation resume returns `MATERIAL_NOT_FOUND` (422)
 The reviewer-submitted/chosen SAP material number has no `material_master` row for
 that plant. This is checked *before* the graph is touched -- nothing was written to
-`common.purchase_order_line`/`process.processing_error` for this attempt. Confirm the
+`purchase_order_line`/`process.processing_error` for this attempt. Confirm the
 material/plant combination against the SAP mirror sync, or ask the reviewer to pick a
 different material.
 
@@ -103,7 +104,7 @@ password (not the normal account password), IMAP enabled on the account,
 
 #### A thread is stuck at `FAILED` with `current_node: persist_email`
 The graph raised before `email_id`/the `workflow_threads` row could be created
-(`CMIRRunService._process_email_thread`'s exception path). Check `agent_runs.error`
+(`CmirRunService._process_email_thread`'s exception path). Check `agent_runs.error`
 for the underlying exception message -- usually a Postgres connectivity issue or a
 constraint violation on `email_events`/`cmir_records`.
 
@@ -264,14 +265,16 @@ build if they disagree.
 **This section describes the *first* squash (down to the two-schema
 `e803d9470f31`/`43d8ced96170` chain) and is now itself superseded.** The
 current migration chain is a *second*, later squash: five revisions,
-`0824321a02a4` (common) -> `ff53dabe6e4c` (process) -> `374aa902b053`
+`0824321a02a4` (shared master/fulfillment tables, unqualified in `public`)
+-> `ff53dabe6e4c` (process) -> `374aa902b053`
 (cmir) -> `4b41f6bcb2f3` (penalties) -> `a5b39c6e2181` (langgraph, head).
 `scripts/ops/repair_pre_squash_db.py` still targets the *old* two-schema
 shape (`fines`/`cmir`/`public`) and imports `FINES_SCHEMA`/`PUBLIC_SCHEMA`
 from `app.db.base` -- constants that no longer exist there (replaced by
-`COMMON_SCHEMA`/`PROCESS_SCHEMA`/`CMIR_SCHEMA`/`PENALTIES_SCHEMA`/
-`LANGGRAPH_SCHEMA`), so the script as written does not run against the
-current codebase. A database stranded on *either* old chain's head today
+`PROCESS_SCHEMA`/`CMIR_SCHEMA`/`PENALTIES_SCHEMA`/`LANGGRAPH_SCHEMA`, plus
+the former `common`-schema tables now living unqualified in `public`), so
+the script as written does not run against the current codebase. A
+database stranded on *either* old chain's head today
 has no in-place repair path verified against the current models -- treat
 drop-and-recreate as the only confirmed option until a new repair script
 (or an update to this one) is written for the current five-schema shape.
@@ -335,41 +338,48 @@ Worth knowing before running it:
   permanently. `scripts/ops/migrate_legacy_cmir_data.py` is the precedent
   for one-off surgery living in `scripts/ops/`.
 
-### The `common`, `process`, `cmir`, `penalties`, and `langgraph` schemas
+### The `public`, `process`, `cmir`, `penalties`, and `langgraph` schemas
 
-On Postgres, this app owns five schemas, not `public`: `common` (shared
-master/fulfillment data used by both domains), `process` (the shared
-job/agent/workflow backbone -- `job_run`, `job_item`, `workflow_thread`,
-`agent`, `agent_run`, `agent_trace`, `human_action`, `processing_error` --
-used by both `cmir`/`po_validation` and `penalties`), `cmir`
-(CMIR/PO-validation-only tables), `penalties` (penalties-only tables), and
-`langgraph` (LangGraph's own checkpoint tables, created empty by its own
-migration and never touched by autogenerate). `public` holds no domain
-tables at all -- see `docs/DATABASE.md`'s "Postgres schema separation"
+On Postgres, this app owns three dedicated schemas plus `langgraph`, and
+uses `public` for its shared tables rather than reserving it: `public`
+(shared master/fulfillment data used by both domains -- `retailer`, `sku`,
+`purchase_order`/`purchase_order_line`, ... -- unqualified, no schema
+override), `process` (the shared job/agent/workflow backbone -- `job_run`,
+`job_item`, `workflow_thread`, `agent`, `agent_run`, `agent_trace`,
+`human_action`, `processing_error` -- used by both `cmir`/`po_validation`
+and `penalties`), `cmir` (CMIR/PO-validation-only tables), `penalties`
+(penalties-only tables), and `langgraph` (LangGraph's own checkpoint
+tables, created empty by its own migration and never touched by
+autogenerate) -- see `docs/DATABASE.md`'s "Postgres schema separation"
 section.
-Each schema name is declared once, in `app/db/base.py` (`COMMON_SCHEMA`/
-`PROCESS_SCHEMA`/`CMIR_SCHEMA`/`PENALTIES_SCHEMA`/`LANGGRAPH_SCHEMA`), and
-every model's `__table_args__` binds to one of them, so nothing in `app/`
-needs to qualify a table name by hand beyond that.
+Each dedicated schema name is declared once, in `app/db/base.py`
+(`PROCESS_SCHEMA`/`CMIR_SCHEMA`/`PENALTIES_SCHEMA`/`LANGGRAPH_SCHEMA`), and
+every model's `__table_args__` binds to one of them; models with no schema
+override resolve to `public` the same way any unqualified SQLAlchemy model
+would, so nothing in `app/` needs to qualify a table name by hand beyond
+that.
 
 Three consequences worth knowing:
 
-- Alembic's own `alembic_version` bookkeeping table lives in `common`
-  (`_version_table_schema` in `alembic/env.py`), not in `public` and not in
-  any one domain's own schema -- it tracks one linear migration history
-  covering every schema this project owns, so it belongs in a schema no
-  single domain owns.
+- Alembic's own `alembic_version` bookkeeping table lives in `public`
+  (`_version_table_schema` in `alembic/env.py` returns `None`), alongside
+  the shared master/fulfillment tables -- it tracks one linear migration
+  history covering every schema this project owns, so it belongs in a
+  schema no single domain owns.
 - `alembic/env.py::ensure_project_schemas_exist` runs `CREATE SCHEMA IF
-  NOT EXISTS` for `common`, `process`, `cmir`, and `penalties` before
-  Alembic touches anything else (`langgraph` creates its own schema via its
-  own migration), so `alembic upgrade head` bootstraps a brand-new empty
-  database with no manual setup.
+  NOT EXISTS` for `process`, `cmir`, and `penalties` before Alembic touches
+  anything else (`langgraph` creates its own schema via its own migration;
+  `public` always already exists on a fresh Postgres database), so
+  `alembic upgrade head` bootstraps a brand-new empty database with no
+  manual setup.
 - SQLite has no schemas at all. `app/db/session.py::apply_sqlite_schema_translation`
-  translates every schema away at the connection level (SQLAlchemy's
-  `schema_translate_map`), which is why the SQLite paths -- the whole test
-  suite, and the `sqlite:////tmp/mars_demo.db` recipe above -- keep working
-  unchanged. Schema translation is not what breaks writes on a
-  migration-built SQLite database; the `now()` defaults above are.
+  translates `process`/`cmir`/`penalties` away at the connection level
+  (SQLAlchemy's `schema_translate_map`) -- `public`'s tables need no
+  translation, they're already unqualified -- which is why the SQLite
+  paths -- the whole test suite, and the `sqlite:////tmp/mars_demo.db`
+  recipe above -- keep working unchanged. Schema translation is not what
+  breaks writes on a migration-built SQLite database; the `now()` defaults
+  above are.
 
 ## 5. Running the API
 
@@ -399,14 +409,13 @@ python scripts/demo/seed_master_data.py --base-url http://localhost:9000/api/v1 
 python scripts/demo/demo_daily_simulation.py               # replays all 4 scenarios, prints the day-by-day trend
 ```
 
-Or hit the endpoints directly (shown here with the required header; every
-other example in this file omits it for readability -- see the note above):
+Or hit the endpoints directly:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/admin/seed-master-data \
-  -H "X-Internal-Api-Key: $INTERNAL_API_KEY"
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"
 curl -X POST http://127.0.0.1:8000/api/v1/admin/simulate-daily-run \
-  -H "X-Internal-Api-Key: $INTERNAL_API_KEY"
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"
 ```
 
 `seed-master-data` creates the master data (retailers, materials, SKUs,
@@ -425,18 +434,23 @@ takes the PO's surrogate UUID, not its business number like `WMT-100234` --
 look it up first with `GET /api/v1/purchase-orders`:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-projections \
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/projections \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"projection_date": "2026-08-05"}'
+  -d '{"purchase_order_id": "<purchase_order_id>", "projection_date": "2026-08-05"}'
 
 # Override the retailer's stacking policy for this run only:
-curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-projections \
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/projections \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"stacking_mode_override": "MAX"}'
+  -d '{"purchase_order_id": "<purchase_order_id>", "stacking_mode_override": "MAX"}'
 
-curl http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-projections   # full dated history
-curl http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-exposure      # latest total only
-curl http://127.0.0.1:8000/api/v1/penalty-projections?status=OPEN                           # flat cross-PO list
+curl "http://127.0.0.1:8000/api/v1/penalties/projections?purchase_order_id=<purchase_order_id>" \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"                                                  # full dated history
+curl "http://127.0.0.1:8000/api/v1/penalties/exposure?purchase_order_id=<purchase_order_id>" \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"                                                  # latest total only
+curl "http://127.0.0.1:8000/api/v1/penalties/projections?status=OPEN" \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"                                                  # flat cross-PO list
 ```
 
 **Every open order, today, is no longer one synchronous call.** The old
@@ -444,7 +458,7 @@ curl http://127.0.0.1:8000/api/v1/penalty-projections?status=OPEN               
 "queue a batch job" -- it's split now: `POST /api/v1/job-runs` (queues an
 async `PENALTY_PROJECTION_BATCH`, see `docs/DEPLOYMENT.md` §1/§3.5 for the
 dispatch/drain mechanics) for actually running every open order, and
-`GET /api/v1/penalty-projections?status=OPEN` (above) for a synchronous
+`GET /api/v1/penalties/projections?status=OPEN` (above) for a synchronous
 cross-PO read of whatever has already been projected. There is no
 single-call synchronous "project every open order right now" endpoint any
 more.
@@ -471,49 +485,64 @@ enqueues and drains in one call; see the note at the top of this file and
 `docs/DEPLOYMENT.md` §6.6 is the build sheet for the nightly job, §10
 tracks it as outstanding.
 
-### Mitigation options are keyed by `projection_id`, not by PO + date directly
+### Mitigation options are keyed by `(purchase_order_id, projection_date)`, or a `projection_id` alias
 
-`POST /api/v1/penalty-mitigations?projection_id=` never computes a
-projection of its own. `MitigationService` resolves `projection_id` to its
-`(purchase_order_id, projection_date)` pair via
-`PenaltyProjectionRepository.get_by_id`, so a `projection_id` has to exist
-first -- it's a specific persisted `penalty_projection` row's own surrogate
-id (one row per PO/rule/date), not a value you construct yourself. The
-order is always projection first, mitigation second:
+`POST /api/v1/penalties/mitigations` never computes a projection of its
+own. It accepts either `purchase_order_id`+`projection_date` directly, or a
+`projection_id` -- resolved to that same pair via
+`PenaltyProjectionRepository.get_by_id` (a specific persisted
+`penalty_projection` row's own surrogate id, one row per PO/rule/date, not a
+value you construct yourself). The order is always projection first,
+mitigation second:
 
 ```bash
 # 1. Project this PO today:
-curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-projections \
-  -H "Content-Type: application/json" -d '{}'
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/projections \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" -d '{"purchase_order_id": "<purchase_order_id>"}'
 
-# 2. Look up a projection_id for that PO/date from its history:
-curl http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-projections
+# 2a. Rank mitigation actions directly against that (purchase_order_id, projection_date):
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/mitigations \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"purchase_order_id": "<purchase_order_id>", "projection_date": "2026-08-05"}'
+
+# 2b. ...or look up a projection_id for that PO/date from its history and use that instead:
+curl "http://127.0.0.1:8000/api/v1/penalties/projections?purchase_order_id=<purchase_order_id>" \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"
 # -> take the `id` off any violation row for the date you want
-
-# 3. Then rank mitigation actions against that projection:
-curl -X POST "http://127.0.0.1:8000/api/v1/penalty-mitigations?projection_id=<projection_id>"
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/mitigations \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" -d '{"projection_id": "<projection_id>"}'
 ```
 
-**A freshly seeded database has projection rows and still needs step 2/3
+**A freshly seeded database has projection rows and still needs step 2
 run explicitly.** `simulate-daily-run` replays each PO's scripted history
 and stops there -- 2026-08-02 to 08-11 for WMT-100234, 08-06 to 08-14 for
 WMT-100511, 08-03 to 08-13 for AMZ-778501, 08-11 to 08-17 for AMZ-780112
 (`app/services/seeding/scenario_data_projection.py`). It is a historical
 time series, not a projection for the current date, so
-`GET /purchase-orders/{id}/penalty-projections` looks perfectly healthy
-while a mitigation call against today's (nonexistent) `projection_id` fails
-`404 PROJECTION_NOT_FOUND`. Pick a `projection_id` from a date the history
-actually covers, or run today's projection first (step 1 above).
+`GET /api/v1/penalties/projections?purchase_order_id=` looks perfectly
+healthy while a mitigation call against today's (nonexistent)
+`projection_date`/`projection_id` fails `404 PROJECTION_NOT_FOUND`. Pick a
+date the history actually covers, or run today's projection first (step 1
+above).
 
 **There is no combined "projection + summary" or "mitigation + summary" or
 "run everything" endpoint any more.** The old chained convenience routes
 (`POST /orders/{id}/projections/runs`, `POST /orders/{id}/mitigation-options/runs`,
 `POST /orders/{id}/fine-runs`) don't exist in the current API -- call each
-step separately: `POST .../penalty-projections`, then
-`POST .../penalty-projections/summary`; `POST /penalty-mitigations?projection_id=`,
-then `POST /purchase-orders/{id}/penalty-mitigations/summary`. `?include=summary`
-on the `GET` routes attaches an already-generated summary to a read, but
-never triggers generation itself (pure read, see `docs/API.md`).
+step separately: `POST /penalties/projections`, then
+`POST /penalties/projections/summary`; `POST /penalties/mitigations`,
+then `POST /penalties/mitigations/summary`. `?include=summary` on the
+`GET` routes attaches an already-generated summary to the response, but
+never triggers generation itself (pure read, see `docs/API.md`); the two
+compute routes (`POST /penalties/projections`, `POST /penalties/mitigations`)
+don't accept `include=` at all -- their response always leaves
+`summary`/`mitigations`/`mitigation_summary` unset. The dedicated
+`GET /penalties/projections/summary` and `GET /penalties/mitigations/summary`
+routes poll the same job without re-fetching the projection/mitigation
+options.
 
 **Without a server:** `scripts/ops/run_mitigation_cli.py` mirrors
 `run_projection_cli.py` for the mitigation side --
@@ -534,43 +563,50 @@ feeds the next call:
 
 ```bash
 RETAILER_ID=$(curl -s -X POST http://127.0.0.1:8000/api/v1/retailers \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"retailer_code": "RET-TGT", "retailer_name": "Target", "stacking_mode": "SUM"}' \
   | jq -r .data.id)
 
 MATERIAL_ID=$(curl -s -X POST http://127.0.0.1:8000/api/v1/materials \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"material_code": "MAT-PED30", "description": "Premium Dog Food 30lb"}' \
   | jq -r .data.id)
 
 PLANT_ID=$(curl -s -X POST http://127.0.0.1:8000/api/v1/plants \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"plant_code": "PLANT-ATL", "plant_name": "Atlanta DC", "country_code": "US"}' \
   | jq -r .data.id)
 
 # A rule has to exist for the retailer or a penalty-projection call returns 422 NO_ACTIVE_RULES:
-curl -X POST http://127.0.0.1:8000/api/v1/penalty-rules \
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/rules \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
   -d "{\"rule_code\": \"RULE-TGT-OTIF\", \"retailer_id\": \"$RETAILER_ID\",
        \"violation_type\": \"OTIF_LATE\", \"calc_type\": \"PERCENT_OF_PO\", \"rate\": 0.03}"
 
 PO_ID=$(curl -s -X POST http://127.0.0.1:8000/api/v1/purchase-orders \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
   -d "{\"purchase_order_number\": \"TGT-1\", \"retailer_id\": \"$RETAILER_ID\",
        \"order_date\": \"2026-09-01\", \"requested_delivery_date\": \"2026-09-10\",
        \"required_ship_date\": \"2026-09-08\",
-       \"lines\": [{\"line_number\": 1, \"material_id\": \"$MATERIAL_ID\", \"plant_id\": \"$PLANT_ID\",
+       \"lines\": [{\"line_number\": \"1\", \"material_id\": \"$MATERIAL_ID\", \"plant_id\": \"$PLANT_ID\",
                     \"ordered_quantity\": 500, \"unit_price\": 20.0}]}" \
   | jq -r .data.id)
 
 # SAP just cut the order (purchase_order_line_id comes off the PO create response's lines[]):
 curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/$PO_ID/confirmations \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"confirmation_number": "CONF-TGT-1-01", "confirmation_date": "2026-09-03T06:00:00", "status": "CONFIRMED",
        "lines": [{"purchase_order_line_id": "<purchase_order_line_id>", "confirmed_quantity": 450}]}'
 
-curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/$PO_ID/penalty-projections \
-  -H "Content-Type: application/json" -d '{}'
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/projections \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" -d "{\"purchase_order_id\": \"$PO_ID\"}"
 ```
 
 `POST .../shipments` and `POST .../demand-exceptions` work the same way --
@@ -581,18 +617,32 @@ again doesn't overwrite the last one, it adds to the timeline
 
 ## 9. Azure OpenAI configuration (for the penalty-projection-summary and penalty-mitigation-summary features)
 
-`POST /purchase-orders/{purchase_order_id}/penalty-projections/summary` and
-`POST /purchase-orders/{purchase_order_id}/penalty-mitigations/summary`
+`POST /penalties/projections/summary` and
+`POST /penalties/mitigations/summary`
 (see `docs/API.md` "Projections"/"Mitigations") are the only things in this
 codebase that call out to an LLM. The mitigation one is a full mirror of
 the projection one -- same bounded tool-calling loop, same
 cache/background-job mechanics -- just explaining a PO's ranked mitigation
 options instead of its projection trace
 (`app/services/penalties/mitigation/summary_service.py`). Everything else
-works with no Azure credentials set at all. Generation runs as a
-background job for both -- the `POST` itself never calls Azure OpenAI
-inline, so missing/bad credentials surface as a `FAILED` status on the same
-route's next poll, not as a failure of the `POST` itself.
+works with no Azure credentials set at all. **`POST .../summary` only
+enqueues** (`get_or_schedule` writes the `process.job_item` row and returns
+`202` with `status=PENDING` immediately -- it never calls Azure OpenAI
+itself). Generation runs later, out of band, as that same queued
+`process.job_item`, not inline with the `POST` -- **nothing drains that
+queue automatically in the default `docker compose up` stack** (see the
+note at the top of this file and §3.6 of `docs/DEPLOYMENT.md`); a worker
+has to actually claim and run it -- `python scripts/ops/run_daily_batch.py
+--drain-only` (or with no flag, which also enqueues), the standalone
+worker container (`docker compose --profile tools run --rm
+fines-projection-worker` -- **not** `--rm worker`; the service is named
+`fines-projection-worker` in `docker-compose.yml` despite an older
+comment nearby still saying `worker`), or the nightly Azure Container Apps
+Job in a deployed environment -- before a `PENDING` row ever becomes
+`READY` or `FAILED`. Until one of those runs, the row sits at `PENDING`
+indefinitely with no LLM call ever made; that is expected, by-design
+behavior, not a bug. Missing/bad credentials surface as a `FAILED` status
+once that drain happens, not as a failure of the `POST` itself.
 
 ```bash
 # Field names/values come from app/core/config/llm.py::AzureOpenAISettings,
@@ -621,12 +671,13 @@ AZURE_OPENAI_MAX_ATTEMPTS=3
 
 ### Why a slow/flaky call surfaces as a background-job `FAILED` status, not a hang or a raw `500`
 
-Generation runs inside `FastAPI.BackgroundTasks`, not inline with the
-`POST`, so a failure -- upstream timeout, rate limit, bad credentials,
-anything `ChatOpenAI.invoke()` can raise -- is caught by
-`ProjectionSummaryService.get_or_schedule` (or, on the mitigation side,
-`MitigationSummaryService.get_or_schedule`) and persisted as a `FAILED`
-row rather than propagating into an HTTP response at all. The real
+Generation runs whenever a worker later claims the queued `job_item` and
+calls `SummaryServiceBase.run_generation` (via `app/workers/dispatch.py`'s
+`run_summary`/`run_mitigation_summary` -- **not** `FastAPI.BackgroundTasks`,
+and not inline with the `POST`), so a failure -- upstream timeout, rate
+limit, bad credentials, anything `ChatOpenAI.invoke()` can raise -- is
+caught there and persisted as a `FAILED` row rather than propagating into
+an HTTP response at all. The real
 exception is logged server-side (`logger.exception(...)`); only a generic,
 client-safe message (coded `PENALTY_PROJECTION_SUMMARY_UPSTREAM_FAILED` /
 `PENALTY_MITIGATION_SUMMARY_UPSTREAM_FAILED`) reaches the row a client can
@@ -637,30 +688,35 @@ With those set (`<purchase_order_id>` is the PO's surrogate UUID, from
 
 ```bash
 # Fast, no LLM call inline -- 200 (cache hit) or 202 (job scheduled):
-curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-projections/summary \
-  -H "Content-Type: application/json" -d '{}'
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/projections/summary \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" -d '{"purchase_order_id": "<purchase_order_id>"}'
 
-# Poll again with the same call until status leaves PENDING, or read it
-# nested under the projection history:
-curl http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-projections?include=summary
+# Poll again with the same call until status leaves PENDING, or read the
+# dedicated summary route directly:
+curl "http://127.0.0.1:8000/api/v1/penalties/projections/summary?purchase_order_id=<purchase_order_id>&as_of_date=2026-08-05" \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"
 
 # Force a fresh LLM call even if today's summary is already cached:
-curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-projections/summary \
-  -H "Content-Type: application/json" -d '{"force_regenerate": true}'
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/projections/summary \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" -d '{"purchase_order_id": "<purchase_order_id>", "force_regenerate": true}'
 ```
 
 The mitigation summary is the same shape against
-`/penalty-mitigations/summary` instead, with the same `as_of_date`/
-`force_regenerate` body fields -- it needs ranked mitigation options to
-already exist for that date (`POST /penalty-mitigations?projection_id=`
-first, see step 7):
+`/penalties/mitigations/summary` instead, with the same
+`purchase_order_id`/`as_of_date`/`force_regenerate` body fields -- it needs
+ranked mitigation options to already exist for that date
+(`POST /penalties/mitigations` first, see step 7):
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-mitigations/summary \
-  -H "Content-Type: application/json" -d '{}'
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/mitigations/summary \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" -d '{"purchase_order_id": "<purchase_order_id>"}'
 
-curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-mitigations/summary \
-  -H "Content-Type: application/json" -d '{"force_regenerate": true}'
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/mitigations/summary \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" -d '{"purchase_order_id": "<purchase_order_id>", "force_regenerate": true}'
 ```
 
 Or the scripted equivalent, which looks up each PO's actual latest
@@ -695,8 +751,8 @@ the first time either is actually called, not at app startup.
 
 ### Known limitation: no request-level rate limiting
 
-`POST .../penalty-projections/summary` and
-`POST .../penalty-mitigations/summary` both validate `as_of_date`
+`POST /penalties/projections/summary` and
+`POST /penalties/mitigations/summary` both validate `as_of_date`
 against the PO's real history -- projection dates for the former,
 mitigation-options dates for the latter (rejects anything before the
 earliest such date or after today, 422) -- specifically so a caller can't
@@ -731,27 +787,33 @@ orders -- look up its UUID via `GET /api/v1/purchase-orders`):
 
 ```bash
 # Ask the retailer for a later delivery date:
-curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/delivery-change-requests \
+curl -X POST http://127.0.0.1:8000/api/v1/delivery-change-requests \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"reason_code": "SHORTAGE", "proposed_delivery_date": "2026-08-14",
+  -d '{"purchase_order_id": "<purchase_order_id>", "reason_code": "SHORTAGE", "proposed_delivery_date": "2026-08-14",
        "notes": "SAP confirms a real cut to 1,850/2,000; requesting 3 extra days."}'
 
-# Retailer accepts the proposed date outright:
-curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/delivery-change-requests/ext_xxxxxxxxxxxx/response \
+# Retailer accepts the proposed date outright (<delivery_change_request_id> is
+# the "id" field from the create response above):
+curl -X POST http://127.0.0.1:8000/api/v1/delivery-change-requests/<delivery_change_request_id>/response \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"decision": "ACCEPTED"}'
 
 # Retailer counters with a date strictly between baseline and proposed:
-curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/delivery-change-requests/ext_xxxxxxxxxxxx/response \
+curl -X POST http://127.0.0.1:8000/api/v1/delivery-change-requests/<delivery_change_request_id>/response \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"decision": "COUNTERED", "countered_delivery_date": "2026-08-12"}'
 
 # Retailer rejects outright -- current_delivery_date/current_required_ship_date are left untouched:
-curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/delivery-change-requests/ext_xxxxxxxxxxxx/response \
+curl -X POST http://127.0.0.1:8000/api/v1/delivery-change-requests/<delivery_change_request_id>/response \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"decision": "REJECTED"}'
 
-curl http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/delivery-change-requests   # full history
+curl "http://127.0.0.1:8000/api/v1/delivery-change-requests?purchase_order_id=<purchase_order_id>" \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"   # full history
 ```
 
 **Without a server** (`scripts/ops/run_po_delivery_change_cli.py`, same
@@ -759,8 +821,8 @@ no-HTTP-server convention as `run_projection_cli.py`/`run_mitigation_cli.py`):
 
 ```bash
 python scripts/ops/run_po_delivery_change_cli.py create --purchase-order-id <uuid> --reason-code SHORTAGE --proposed-delivery-date 2026-08-20
-python scripts/ops/run_po_delivery_change_cli.py respond --request-id ext_xxxxxxxxxxxx --decision ACCEPTED
-python scripts/ops/run_po_delivery_change_cli.py respond --request-id ext_xxxxxxxxxxxx --decision COUNTERED --countered-delivery-date 2026-08-18
+python scripts/ops/run_po_delivery_change_cli.py respond --id <uuid> --decision ACCEPTED
+python scripts/ops/run_po_delivery_change_cli.py respond --id <uuid> --decision COUNTERED --countered-delivery-date 2026-08-18
 python scripts/ops/run_po_delivery_change_cli.py history --purchase-order-id <uuid>
 python scripts/ops/run_po_delivery_change_cli.py expire-sweep
 ```
@@ -785,8 +847,8 @@ each.
 
 #### Create returns `ACTIVE_PO_DELIVERY_CHANGE_REQUEST_EXISTS` (409)
 The PO already has a `PENDING` request -- only one active request per PO at
-a time. Check `GET /purchase-orders/{purchase_order_id}/delivery-change-requests`
-for the pending row's `request_id`, then either respond to it or wait for
+a time. Check `GET /delivery-change-requests?purchase_order_id=`
+for the pending row's `id`, then either respond to it or wait for
 the nightly sweep (or `expire-sweep --as-of ...` ad hoc) to expire it
 before creating another.
 
@@ -797,9 +859,9 @@ default 2). Check the retailer's policy via `GET /retailers` and the
 PO's current required-ship date via `GET /purchase-orders`.
 
 #### Response returns `PO_DELIVERY_CHANGE_REQUEST_NOT_FOUND` (404)
-No `po_delivery_change_request` row exists for that `request_id`.
+No `po_delivery_change_request` row exists for that `id`.
 Confirm the id from the `create` response or the history endpoint -- it's
-the service-generated `ext_...` id, not the PO id.
+the delivery-change request's own surrogate id, not the PO id.
 
 #### Response returns `INVALID_PO_DELIVERY_CHANGE_RESPONSE` (422)
 Either the request is no longer `PENDING` (already responded to, or already
@@ -851,12 +913,12 @@ ruff format app/ scripts/ tests/ alembic/
 |---|---|
 | Start completely fresh (drop and recreate schema) | `alembic downgrade base && alembic upgrade head` |
 | Reset the four demo orders to their initial state | Re-run `alembic downgrade base && alembic upgrade head`, then step 6 again |
-| Check what rules a retailer has | `curl http://127.0.0.1:8000/api/v1/penalty-rules?retailer_id=<uuid>` |
-| See a PO's full projection trend | `curl http://127.0.0.1:8000/api/v1/purchase-orders/<purchase_order_id>/penalty-projections` |
+| Check what rules a retailer has | `curl http://127.0.0.1:8000/api/v1/penalties/rules?retailer_id=<uuid> -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"` |
+| See a PO's full projection trend | `curl "http://127.0.0.1:8000/api/v1/penalties/projections?purchase_order_id=<purchase_order_id>" -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"` |
 | Run one PO for a backfilled date | `python scripts/ops/run_projection_cli.py --purchase-order-id <uuid> --date 2026-08-05` |
 | See the whole system, end to end, in one command | `python scripts/demo/run_end_to_end_demo.py` |
 | Get an LLM summary of why a PO's penalty is what it is | `python scripts/demo/demo_penalty_projection_summary.py --purchase-order-id <uuid>` |
-| Rank mitigation actions for a PO | Project that date first, get a `projection_id` from its history, then `curl -X POST "http://127.0.0.1:8000/api/v1/penalty-mitigations?projection_id=<id>"` (§7) |
+| Rank mitigation actions for a PO | Project that date first, then `curl -X POST http://127.0.0.1:8000/api/v1/penalties/mitigations -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" -d '{"purchase_order_id": "<id>", "projection_date": "<date>"}'` (§7) |
 | Get an LLM summary of a PO's ranked mitigation options | `python scripts/demo/demo_penalty_mitigation_summary.py --purchase-order-id <uuid>` |
 | Repair a database stuck on the old migration chain | No verified repair path today (§4's callout) -- drop and recreate |
 | Add a new violation type | Update `SHORTAGE_VIOLATION_TYPES`/`DELAY_VIOLATION_TYPES` in `app/services/penalties/projection/types.py` |
@@ -897,19 +959,21 @@ ruff format app/ scripts/ tests/ alembic/
 - **`404` from `/health`**: the health route sits under the API prefix
   like everything else -- it's `GET /api/v1/health`. It is also the one
   route that needs no API key.
-- **`404` `PROJECTION_NOT_FOUND` from `POST
-  /penalty-mitigations?projection_id=`**: no `penalty_projection` row
-  exists with that id. Mitigation reads a persisted projection and never
-  computes one, so run `POST /purchase-orders/{id}/penalty-projections`
-  for the date you need, then take a `projection_id` off its history
-  (`GET .../penalty-projections`). On a freshly seeded database this bites
-  even though the PO has plenty of projection rows -- the seeded history
-  stops in mid-August 2026, so today's date has none yet. See step 7.
+- **`404` `PROJECTION_NOT_FOUND` from `POST /penalties/mitigations`**: no
+  `penalty_projection` row exists for the given `projection_id` (or
+  `purchase_order_id`+`projection_date` pair). Mitigation reads a persisted
+  projection and never computes one, so run `POST /penalties/projections`
+  for the date you need, then either pass that `purchase_order_id`+
+  `projection_date` directly or take a `projection_id` off its history
+  (`GET /penalties/projections?purchase_order_id=`). On a freshly seeded
+  database this bites even though the PO has plenty of projection rows --
+  the seeded history stops in mid-August 2026, so today's date has none
+  yet. See step 7.
 - **`409` `NO_MITIGATION_OPTIONS_EXIST` from `POST`/`GET
-  /purchase-orders/{id}/penalty-mitigations/summary`**: no ranked
-  mitigation options exist for that PO/date yet -- run `POST
-  /penalty-mitigations?projection_id=` (which itself needs a projection
-  first, see above) before asking for a summary of them.
+  /penalties/mitigations/summary`**: no ranked mitigation options exist
+  for that PO/date yet -- run `POST /penalties/mitigations` (which itself
+  needs a projection first, see above) before asking for a summary of
+  them.
 - **`409` `NO_ACTIVE_RULES` from a penalty-projection call**: the PO's
   retailer has no active penalty rules yet. Seed master data (step 6) or
   add a rule (step 8) first.
@@ -938,7 +1002,7 @@ ruff format app/ scripts/ tests/ alembic/
 - **`AzureOpenAIConfigError` / the polled job never leaves `FAILED`**:
   one or more of `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT_NAME` isn't
   set -- see step 9. Since generation is now a background job, this
-  surfaces as a `FAILED` status on `GET .../penalty-projections/{id}?include=summary`
+  surfaces as a `FAILED` status on `GET /penalties/projections/{id}?include=summary`
   or the mitigation-option equivalent (both share the same Azure OpenAI
   config), not as an immediate error from the triggering `POST`.
 - **A projection- or mitigation-summary poll reports `status: "FAILED"`**:
