@@ -5,7 +5,7 @@ import unittest
 from app.agents.cmir.nodes import WorkflowNodes
 
 
-class FakeCMIRRepository:
+class FakeCmirRepository:
     def __init__(self, current=None) -> None:
         self.current = current
         self.lookups = []
@@ -29,14 +29,14 @@ def _nodes(cmir_repository=None):
         extractor=None,
         validator=None,
         email_repository=None,
-        cmir_repository=cmir_repository or FakeCMIRRepository(),
+        cmir_repository=cmir_repository or FakeCmirRepository(),
         action_log_repository=FakeActionLogRepository(),
     )
 
 
 class IdentifyExistingCmirTests(unittest.TestCase):
     def test_looks_up_current_record_by_customer_and_material_ref(self) -> None:
-        cmir_repository = FakeCMIRRepository(current=None)
+        cmir_repository = FakeCmirRepository(current=None)
         nodes = _nodes(cmir_repository)
 
         result = nodes.identify_existing_cmir(
@@ -53,7 +53,7 @@ class IdentifyExistingCmirTests(unittest.TestCase):
 
     def test_returns_found_record_under_existing_cmir_key(self) -> None:
         existing = {"id": 42, "customer_identity": "Acme Manufacturing Ltd", "brand": "AcmePlast"}
-        nodes = _nodes(FakeCMIRRepository(current=existing))
+        nodes = _nodes(FakeCmirRepository(current=existing))
 
         result = nodes.identify_existing_cmir(
             {
@@ -122,7 +122,7 @@ class HandleVersionConflictTests(unittest.TestCase):
             extractor=None,
             validator=None,
             email_repository=None,
-            cmir_repository=FakeCMIRRepository(),
+            cmir_repository=FakeCmirRepository(),
             action_log_repository=action_log,
         )
 

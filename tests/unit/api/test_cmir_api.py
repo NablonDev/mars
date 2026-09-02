@@ -1,130 +1,93 @@
+"""API tests for `app/api/v1/cmir.py` (`POST /cmir/email-events`,
+`POST /internal/process-email`) -- Phase 7b route redesign.
+
+Was `tests/unit/api/test_cmir_api.py`'s `unittest.TestCase` against the
+pre-restructure `/ingest/emails`/`/threads/{id}/*` routes and the since-removed
+`app.core.exceptions.ServiceError`; rewritten against the new routes, the
+collapsed `AppError` hierarchy, and the `{success, message, data, error}`
+envelope. Thread-lifecycle routes (`missing-fields`/`draft`/`decisions`) now
+live on `app/api/v1/workflow_threads.py` -- see
+`tests/unit/api/test_workflow_threads_api.py`.
+"""
+
 from __future__ import annotations
 
-import unittest
-
-from fastapi.testclient import TestClient
-
-from app.api.dependencies import require_internal_api_key
-from app.core.exceptions import ServiceError
-from app.main import create_app
+import pytest
 
 
-class FakeRunService:
+class FakeCmirRunService:
+    """Implements the `CmirRunService` methods `app/api/v1/cmir.py` calls."""
+
     def start_email_ingest(self, **kwargs):
         return {
-            "batch_id": "batch_01",
-            "status": "running",
+            "batch_id": "11111111-1111-1111-1111-111111111111",
+            "status": "ready_for_queue",
             "total_threads": 1,
             "threads": [
                 {
-                    "batch_id": "batch_01",
-                    "agent_run_id": "00000000-0000-0000-0000-000000001042",
-                    "thread_id": "thread_01J4A",
+                    "batch_id": "11111111-1111-1111-1111-111111111111",
+                    "agent_run_id": None,
+                    "thread_id": None,
                     "email_id": "9c76f0b3-1e8d-4f31-9d17-15f42ad8f970",
-                    "stage": "AWAITING_APPROVAL",
-                    "status": "waiting_approval",
-                    "current_node": "review_extracted_cmir",
-                    "pending_action_id": "00000000-0000-0000-0000-000000003001",
-                    "updated_at": "2026-07-30T10:30:00+00:00",
+                    "source_message_id": "msg-001",
+                    "sender": "customer@example.com",
+                    "subject": "CMIR Request 1",
+                    "stage": "NEW",
+                    "status": "new",
+                    "current_node": None,
+                    "pending_action_id": None,
+                    "updated_at": None,
                 }
             ],
         }
 
-    def list_runs(self, **kwargs):
-        return {"items": [], "next_cursor": None}
-
-    def get_stage(self, thread_id):
-        if thread_id == "missing":
-            raise ServiceError(
-                "THREAD_NOT_FOUND",
-                "Unknown thread_id.",
-                status_code=404,
-                details={"thread_id": thread_id},
-            )
+    def process_queued_email(self, *, batch_id, email, queue_message_id, email_id=None):
         return {
-            "batch_id": "batch_01",
+            "batch_id": batch_id,
             "agent_run_id": "00000000-0000-0000-0000-000000001042",
-            "thread_id": thread_id,
+            "thread_id": None,
+            "email_id": str(email_id),
+            "stage": "COMPLETED_APPROVED",
+            "status": "completed_approved",
+            "current_node": None,
+            "pending_action_id": None,
+            "updated_at": None,
+        }
+
+
+@pytest.fixture
+def cmir_run_service():
+    return FakeCmirRunService()
+
+
+def test_create_email_events_returns_accepted_batch_payload(client):
+    response = client.post("/api/v1/cmir/email-events", json={})
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["success"] is True
+    assert body["data"]["batch_id"] == "11111111-1111-1111-1111-111111111111"
+    assert body["data"]["threads"][0]["email_id"] == "9c76f0b3-1e8d-4f31-9d17-15f42ad8f970"
+
+
+def test_create_email_events_rejects_non_gmail_source(client):
+    response = client.post("/api/v1/cmir/email-events", json={"source": "outlook"})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_process_queued_email_wraps_result_in_envelope(client):
+    response = client.post(
+        "/api/v1/internal/process-email",
+        json={
+            "batch_id": "11111111-1111-1111-1111-111111111111",
             "email_id": "9c76f0b3-1e8d-4f31-9d17-15f42ad8f970",
-            "stage": "AWAITING_APPROVAL",
-            "status": "waiting_approval",
-            "current_node": "review_extracted_cmir",
-            "pending_action_id": "00000000-0000-0000-0000-000000003001",
-            "updated_at": "2026-07-30T10:30:00+00:00",
-        }
+            "queue_message_id": "msg-1",
+            "email": {"sender": "a@b.com", "subject": "s", "body": "b"},
+        },
+    )
 
-    def get_snapshot(self, thread_id):
-        return {
-            "batch_id": "batch_01",
-            "agent_run_id": "00000000-0000-0000-0000-000000001042",
-            "thread_id": thread_id,
-            "email": {
-                "email_id": "9c76f0b3-1e8d-4f31-9d17-15f42ad8f970",
-                "sender": "customer@example.com",
-                "subject": "CMIR Request 1",
-                "source_message_id": "msg-001",
-            },
-            "stage": "AWAITING_APPROVAL",
-            "editable_fields": ["brand"],
-            "cmir": {"brand": "Brand A"},
-            "history": [],
-            "updated_at": "2026-07-30T10:30:00+00:00",
-        }
-
-    def submit_missing_fields(self, thread_id, **kwargs):
-        return self.get_stage(thread_id)
-
-    def update_draft(self, thread_id, **kwargs):
-        return {
-            "batch_id": "batch_01",
-            "agent_run_id": "00000000-0000-0000-0000-000000001042",
-            "thread_id": thread_id,
-            "stage": "AWAITING_APPROVAL",
-            "status": "waiting_approval",
-            "pending_action_id": "00000000-0000-0000-0000-000000003003",
-            "message": "Draft saved. Review again.",
-        }
-
-    def submit_decision(self, thread_id, **kwargs):
-        return self.get_stage(thread_id)
-
-
-class ApiContractTests(unittest.TestCase):
-    def setUp(self) -> None:
-        app = create_app(FakeRunService())
-        # This suite builds its own app/client rather than using conftest's
-        # `app` fixture, so it needs its own explicit override -- it tests
-        # the CMIR contract, not the auth gate (see test_internal_api_key.py).
-        app.dependency_overrides[require_internal_api_key] = lambda: None
-        self.client = TestClient(app)
-
-    def test_ingest_emails_returns_accepted_batch_payload(self) -> None:
-        response = self.client.post("/api/v1/ingest/emails", json={})
-
-        self.assertEqual(response.status_code, 202)
-        self.assertEqual(response.json()["batch_id"], "batch_01")
-        self.assertEqual(response.json()["threads"][0]["thread_id"], "thread_01J4A")
-
-    def test_get_thread_stage_uses_prd_error_contract(self) -> None:
-        response = self.client.get("/api/v1/threads/missing/stage")
-
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json()["error"]["code"], "THREAD_NOT_FOUND")
-
-    def test_update_draft_route_returns_review_again_message(self) -> None:
-        response = self.client.post(
-            "/api/v1/threads/thread_01J4A/update",
-            json={
-                "actor": "reviewer@company.com",
-                "fields": {"brand": "Brand A"},
-                "expected_updated_at": "2026-07-30T10:30:00+00:00",
-            },
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["pending_action_id"], "00000000-0000-0000-0000-000000003003")
-        self.assertEqual(response.json()["message"], "Draft saved. Review again.")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    assert response.status_code == 200, response.text
+    body = response.json()["data"]
+    assert body["stage"] == "COMPLETED_APPROVED"

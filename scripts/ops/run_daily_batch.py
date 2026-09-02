@@ -3,12 +3,20 @@ Nightly batch runner: the concurrent, queue-backed replacement for
 `scripts/ops/run_projection_cli.py --all-open --with-summary` on the
 Azure Container Apps Job schedule. Supersedes that script's `--all-open`
 batch path without modifying or removing it -- `run_projection_cli.py
---order-id ...` remains the ad-hoc/single-order tool.
+--purchase-order-id ...` remains the ad-hoc/single-PO tool.
+
+Was written against the pre-restructure `app.repositories.job_queue`/
+`app.repositories.order` -- rewritten against the Phase 2/3
+`common`/`process`/`penalties` repositories and
+`app.workers.penalty_projection`/`penalty_mitigation` (the `fine_projection`/
+`fine_mitigation` rename).
 
 Sequence: acquire a Postgres advisory lock -> reclaim stale job_item rows
--> sweep and recover any stranded PENDING fine-projection-summary ledger rows (see
-app.workers.fine_projection) -> enqueue today's ORDER_RUN items -> drain the queue
--> release the lock -> print a summary.
+-> sweep and recover any stranded PENDING penalty-projection-summary ledger
+rows (see app.workers.penalty_projection) -> sweep the mitigation-summary
+side (see app.workers.penalty_mitigation) -> expire stale PO
+delivery-change requests -> enqueue today's ORDER_RUN items -> drain the
+queue -> release the lock -> print a summary.
 
 Exit-code semantics: see docs/JOB-QUEUE-WALKTHROUGH.md §4.1 -- in short,
 exit 0 whenever the run completed (even with DEAD items, or because a
@@ -40,15 +48,15 @@ from app.core.config import LLMConfig, get_settings
 from app.core.logging import configure_logging
 from app.db.session import Database
 from app.queue.factory import build_job_queue
-from app.repositories.job_queue import JobQueueRepository
-from app.repositories.order import OrderRepository
-from app.workers.fine_mitigation import sweep_stranded_pending_mitigation_summaries
-from app.workers.fine_projection import (
+from app.repositories.common.purchase_order import PurchaseOrderRepository
+from app.repositories.process.job_queue import JobQueueRepository
+from app.workers.loop import process_jobs
+from app.workers.penalty_mitigation import sweep_stranded_pending_mitigation_summaries
+from app.workers.penalty_projection import (
     enqueue_daily_run,
     sweep_expired_po_delivery_change_requests,
     sweep_stranded_pending_projection_summaries,
 )
-from app.workers.loop import process_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +74,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--date",
-        help="Projection date, YYYY-MM-DD (default: today in settings.penalty_business_timezone)",
+        help="Projection date, YYYY-MM-DD (default: today in settings.summary.business_timezone)",
     )
     parser.add_argument(
         "--stacking-mode",
@@ -76,7 +84,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--concurrency",
         type=int,
-        help="Override job_queue_worker_concurrency for this run only",
+        help="Override job_queue.worker_concurrency for this run only",
     )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
@@ -92,7 +100,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Report how many OPEN orders would be enqueued; take no lock, write nothing",
+        help="Report how many OPEN purchase orders would be enqueued; take no lock, write nothing",
     )
     parser.add_argument(
         "--fail-on-dead",
@@ -112,21 +120,26 @@ def main() -> int:
 
     settings = get_settings()
     if args.concurrency is not None:
-        settings.job_queue_worker_concurrency = args.concurrency
+        settings.job_queue.worker_concurrency = args.concurrency
 
-    configure_logging(settings.log_level)
+    configure_logging(settings.app.log_level)
 
     database = Database(
-        settings.database_url,
-        pool_size=settings.db_pool_size,
-        max_overflow=settings.db_max_overflow,
-        pool_timeout=settings.db_pool_timeout,
+        settings.database.url,
+        pool_size=settings.database.pool_size,
+        max_overflow=settings.database.max_overflow,
+        pool_timeout=settings.database.pool_timeout,
     )
 
     if args.dry_run:
         with database.session() as session:
-            order_count = len(OrderRepository(session).list_orders(order_status="OPEN"))
-        print(f"[dry-run] would enqueue {order_count} ORDER_RUN item(s); no lock taken, nothing written.")
+            purchase_order_count = len(
+                PurchaseOrderRepository(session).list_purchase_orders(order_status="OPEN")
+            )
+        print(
+            f"[dry-run] would enqueue {purchase_order_count} ORDER_RUN item(s); "
+            "no lock taken, nothing written."
+        )
         return 0
 
     job_dispatcher, job_source = build_job_queue(settings, database)
@@ -153,24 +166,24 @@ def main() -> int:
             )
             return 0
 
-        reclaimed = job_source.reclaim_stale(settings.job_queue_visibility_timeout_seconds)
+        reclaimed = job_source.reclaim_stale(settings.job_queue.visibility_timeout_seconds)
         if reclaimed:
             logger.info("Reclaimed %s stale job_item(s).", reclaimed)
 
         # Runs regardless of --enqueue-only/--drain-only: a recovered row
         # becomes an ordinary PENDING job_item, picked up by whichever
-        # phase actually drains (see app.workers.fine_projection).
+        # phase actually drains (see app.workers.penalty_projection).
         sweep_result = sweep_stranded_pending_projection_summaries(job_dispatcher, database, settings)
         if sweep_result.recovered_count:
             logger.info(
-                "Recovered %s stranded PENDING fine-projection-summary ledger row(s) (job_run_id=%s).",
+                "Recovered %s stranded PENDING penalty-projection-summary ledger row(s) (job_run_id=%s).",
                 sweep_result.recovered_count,
                 sweep_result.job_run_id,
             )
         print(f"Recovery sweep: recovered {sweep_result.recovered_count} stranded PENDING summary row(s).")
 
         # Same durability gap, mitigation-summary side (see
-        # app.workers.fine_mitigation) -- mitigation itself is on-demand only (no
+        # app.workers.penalty_mitigation) -- mitigation itself is on-demand only (no
         # nightly ORDER_RUN-equivalent for it), so this only ever finds
         # something if a mitigation-summary request crashed between its
         # ledger write and its job_item write.
@@ -179,7 +192,7 @@ def main() -> int:
         )
         if mitigation_sweep_result.recovered_count:
             logger.info(
-                "Recovered %s stranded PENDING fine-mitigation-summary ledger row(s) (job_run_id=%s).",
+                "Recovered %s stranded PENDING penalty-mitigation-summary ledger row(s) (job_run_id=%s).",
                 mitigation_sweep_result.recovered_count,
                 mitigation_sweep_result.job_run_id,
             )
@@ -189,8 +202,8 @@ def main() -> int:
         )
 
         # Expire PENDING PO delivery-change requests past their SLA and
-        # re-trigger projection for each affected order (see
-        # app.workers.fine_projection.sweep_expired_po_delivery_change_requests).
+        # re-trigger projection for each affected purchase order (see
+        # app.workers.penalty_projection.sweep_expired_po_delivery_change_requests).
         # No job_dispatcher involved -- the status flip and re-trigger happen
         # inline, no LLM call needed.
         po_delivery_change_sweep_result = sweep_expired_po_delivery_change_requests(database)
@@ -214,7 +227,7 @@ def main() -> int:
             )
             print(
                 f"Enqueued job_run_id={result.job_run_id}: {result.enqueued_count} new "
-                f"ORDER_RUN item(s) of {result.order_count} OPEN order(s)."
+                f"ORDER_RUN item(s) of {result.purchase_order_count} OPEN purchase order(s)."
             )
             if result.no_open_orders_note:
                 print(f"WARNING: {result.no_open_orders_note}")
@@ -252,7 +265,7 @@ def main() -> int:
             print(
                 f"{summary.dead_total} item(s) ended DEAD this run (terminal -- will not be "
                 f"retried by re-running the job). See job_item.last_error_code via "
-                f"GET /batches/{{job_run_id}}/items?status=DEAD for detail."
+                f"GET /job-runs/{{job_run_id}}/items?status=DEAD for detail."
             )
             if args.fail_on_dead:
                 return 1

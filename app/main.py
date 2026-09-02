@@ -14,26 +14,26 @@ from app.core.logging import configure_logging
 from app.core.middleware import AccessLogMiddleware, RequestIdMiddleware
 from app.db.session import Database
 from app.queue.factory import build_job_queue
-from app.services.cmir_run_service import CMIRRunService
-from app.services.po_validation_service import PoValidationService
+from app.services.cmir.run_service import CmirRunService
+from app.services.po_validation.service import PoValidationService
 
 
 def create_app(
-    service: CMIRRunService | None = None,
+    service: CmirRunService | None = None,
     po_service: PoValidationService | None = None,
     settings: Settings | None = None,
 ) -> FastAPI:
     resolved = settings or get_settings()
-    configure_logging(resolved.log_level)
+    configure_logging(resolved.app.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         """Create process-wide DB and queue resources and dispose them on shutdown."""
         app.state.database = Database(
-            resolved.database_url,
-            pool_size=resolved.db_pool_size,
-            max_overflow=resolved.db_max_overflow,
-            pool_timeout=resolved.db_pool_timeout,
+            resolved.database.url,
+            pool_size=resolved.database.pool_size,
+            max_overflow=resolved.database.max_overflow,
+            pool_timeout=resolved.database.pool_timeout,
         )
         app.state.job_queue = build_job_queue(resolved, app.state.database)
         # CMIR/PO-validation services carry their own composition root
@@ -52,12 +52,12 @@ def create_app(
             Container.close()
 
     app = FastAPI(
-        title=resolved.project_name,
-        version=resolved.version,
+        title=resolved.app.project_name,
+        version=resolved.app.version,
         lifespan=lifespan,
-        docs_url="/docs" if resolved.docs_enabled else None,
-        redoc_url="/redoc" if resolved.docs_enabled else None,
-        openapi_url="/openapi.json" if resolved.docs_enabled else None,
+        docs_url="/docs" if resolved.app.docs_enabled else None,
+        redoc_url="/redoc" if resolved.app.docs_enabled else None,
+        openapi_url="/openapi.json" if resolved.app.docs_enabled else None,
     )
     app.state.service = service
     app.state.po_service = po_service

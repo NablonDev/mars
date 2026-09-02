@@ -7,7 +7,6 @@ from langgraph.types import Command
 
 from app.agents.po_validation.graph import build_po_validation_graph
 from app.agents.po_validation.nodes import PoValidationNodes
-from app.schemas.po_validation import MaterialMasterRecord
 
 INTERRUPT_KEY = "__interrupt__"
 
@@ -17,23 +16,26 @@ class FakeTraceRepo:
         pass
 
 
-class FakePoLineRepository:
+class FakePurchaseOrderRepository:
     def __init__(self) -> None:
         self.statuses: dict = {}
 
-    def update_status(self, po_line_id, status):
-        self.statuses[po_line_id] = status
+    def update_line_status(self, purchase_order_line_id, line_status):
+        self.statuses[purchase_order_line_id] = line_status
 
 
-class FakeMaterialMasterRepository:
+class FakeMasterDataRepository:
+    """Mirrors app.repositories.common.master_data.MasterDataRepository's dict
+    shape (find_material_master returns a plain dict, not an ORM row)."""
+
     def __init__(self, records: dict) -> None:
         self.records = records
 
-    def find(self, sap_material_number, plant):
-        return self.records.get((sap_material_number, plant))
+    def find_material_master(self, sap_material_number, plant_id):
+        return self.records.get((sap_material_number, plant_id))
 
 
-class FakeCMIRRepository:
+class FakeCmirRepository:
     def __init__(self, match=None) -> None:
         self.match = match
         self.created = []
@@ -46,13 +48,14 @@ class FakeCMIRRepository:
         return len(self.created)
 
 
-class FakePoLineErrorRepository:
+class FakeProcessingErrorRepository:
     def __init__(self) -> None:
         self.logged = []
 
-    def log(self, error):
-        self.logged.append(error)
-        return len(self.logged)
+    def log(self, error_type, **kwargs):
+        entry = {"error_type": error_type, **kwargs}
+        self.logged.append(entry)
+        return entry
 
 
 def _po_line(**overrides):
@@ -62,6 +65,7 @@ def _po_line(**overrides):
         "customer_id": "CUST-1",
         "customer_material_code": "ACME-MAT-1",
         "plant": "1000",
+        "plant_id": "1000",
         "order_quantity": 100,
         "uom": "EA",
     }
@@ -69,17 +73,26 @@ def _po_line(**overrides):
     return line
 
 
+def _material_master(sap_material_number, plant_id, available_quantity, follow_up_material_id=None):
+    return {
+        "sap_material_number": sap_material_number,
+        "plant_id": plant_id,
+        "available_quantity": available_quantity,
+        "follow_up_material_id": follow_up_material_id,
+    }
+
+
 class PoValidationWorkflowTests(unittest.TestCase):
-    def _build_graph(self, *, cmir_match=None, material_records=None, po_line_errors=None):
-        self.po_lines = FakePoLineRepository()
-        self.material_master = FakeMaterialMasterRepository(material_records or {})
-        self.cmir_repository = FakeCMIRRepository(match=cmir_match)
-        self.po_line_errors = po_line_errors or FakePoLineErrorRepository()
+    def _build_graph(self, *, cmir_match=None, material_records=None, processing_errors=None):
+        self.purchase_orders = FakePurchaseOrderRepository()
+        self.master_data = FakeMasterDataRepository(material_records or {})
+        self.cmir_repository = FakeCmirRepository(match=cmir_match)
+        self.processing_errors = processing_errors or FakeProcessingErrorRepository()
         nodes = PoValidationNodes(
-            po_line_repository=self.po_lines,
-            material_master_repository=self.material_master,
+            purchase_order_repository=self.purchase_orders,
+            master_data_repository=self.master_data,
             cmir_repository=self.cmir_repository,
-            po_line_error_repository=self.po_line_errors,
+            processing_error_repository=self.processing_errors,
         )
         return build_po_validation_graph(nodes, MemorySaver(), FakeTraceRepo())
 
@@ -89,9 +102,7 @@ class PoValidationWorkflowTests(unittest.TestCase):
     def test_touchless_path_when_quantity_sufficient(self) -> None:
         graph = self._build_graph(
             cmir_match={"material_identity": "MAT-1"},
-            material_records={
-                ("MAT-1", "1000"): MaterialMasterRecord("MAT-1", "1000", available_quantity=500)
-            },
+            material_records={("MAT-1", "1000"): _material_master("MAT-1", "1000", 500)},
         )
         state = graph.invoke(
             {
@@ -104,15 +115,13 @@ class PoValidationWorkflowTests(unittest.TestCase):
         )
 
         self.assertNotIn(INTERRUPT_KEY, state)
-        self.assertEqual(self.po_lines.statuses["line-1"], "READY_FOR_SO_CREATION")
+        self.assertEqual(self.purchase_orders.statuses["line-1"], "READY_FOR_SO_CREATION")
 
     def test_qty_mismatch_offers_one_hop_substitute_and_proceed_anyway(self) -> None:
         graph = self._build_graph(
             cmir_match={"material_identity": "MAT-1"},
             material_records={
-                ("MAT-1", "1000"): MaterialMasterRecord(
-                    "MAT-1", "1000", available_quantity=40, follow_up_material_number="MAT-SUB"
-                )
+                ("MAT-1", "1000"): _material_master("MAT-1", "1000", 40, follow_up_material_id="MAT-SUB")
             },
         )
         state = graph.invoke(
@@ -134,12 +143,12 @@ class PoValidationWorkflowTests(unittest.TestCase):
         state = graph.invoke(Command(resume={"decision": "proceed_anyway"}), config=self._config("t2"))
 
         self.assertNotIn(INTERRUPT_KEY, state)
-        self.assertEqual(self.po_lines.statuses["line-2"], "READY_FOR_SO_CREATION_PARTIAL")
+        self.assertEqual(self.purchase_orders.statuses["line-2"], "READY_FOR_SO_CREATION_PARTIAL")
 
     def test_qty_mismatch_mark_stale(self) -> None:
         graph = self._build_graph(
             cmir_match={"material_identity": "MAT-1"},
-            material_records={("MAT-1", "1000"): MaterialMasterRecord("MAT-1", "1000", available_quantity=1)},
+            material_records={("MAT-1", "1000"): _material_master("MAT-1", "1000", 1)},
         )
         graph.invoke(
             {
@@ -153,16 +162,14 @@ class PoValidationWorkflowTests(unittest.TestCase):
         state = graph.invoke(Command(resume={"decision": "mark_stale"}), config=self._config("t3"))
 
         self.assertNotIn(INTERRUPT_KEY, state)
-        self.assertEqual(self.po_lines.statuses["line-3"], "DISCONTINUED")
+        self.assertEqual(self.purchase_orders.statuses["line-3"], "DISCONTINUED")
 
     def test_use_substitute_that_is_still_short_re_triggers_mismatch(self) -> None:
         graph = self._build_graph(
             cmir_match={"material_identity": "MAT-1"},
             material_records={
-                ("MAT-1", "1000"): MaterialMasterRecord(
-                    "MAT-1", "1000", available_quantity=10, follow_up_material_number="MAT-SUB"
-                ),
-                ("MAT-SUB", "1000"): MaterialMasterRecord("MAT-SUB", "1000", available_quantity=5),
+                ("MAT-1", "1000"): _material_master("MAT-1", "1000", 10, follow_up_material_id="MAT-SUB"),
+                ("MAT-SUB", "1000"): _material_master("MAT-SUB", "1000", 5),
             },
         )
         graph.invoke(
@@ -185,10 +192,8 @@ class PoValidationWorkflowTests(unittest.TestCase):
         graph = self._build_graph(
             cmir_match={"material_identity": "MAT-1"},
             material_records={
-                ("MAT-1", "1000"): MaterialMasterRecord(
-                    "MAT-1", "1000", available_quantity=10, follow_up_material_number="MAT-SUB"
-                ),
-                ("MAT-SUB", "1000"): MaterialMasterRecord("MAT-SUB", "1000", available_quantity=999),
+                ("MAT-1", "1000"): _material_master("MAT-1", "1000", 10, follow_up_material_id="MAT-SUB"),
+                ("MAT-SUB", "1000"): _material_master("MAT-SUB", "1000", 999),
             },
         )
         graph.invoke(
@@ -203,14 +208,12 @@ class PoValidationWorkflowTests(unittest.TestCase):
         state = graph.invoke(Command(resume={"decision": "use_substitute"}), config=self._config("t5"))
 
         self.assertNotIn(INTERRUPT_KEY, state)
-        self.assertEqual(self.po_lines.statuses["line-5"], "READY_FOR_SO_CREATION")
+        self.assertEqual(self.purchase_orders.statuses["line-5"], "READY_FOR_SO_CREATION")
 
     def test_no_cmir_match_routes_to_manual_entry_then_loops_back(self) -> None:
         graph = self._build_graph(
             cmir_match=None,
-            material_records={
-                ("MAT-100", "1000"): MaterialMasterRecord("MAT-100", "1000", available_quantity=500)
-            },
+            material_records={("MAT-100", "1000"): _material_master("MAT-100", "1000", 500)},
         )
         state = graph.invoke(
             {
@@ -232,11 +235,11 @@ class PoValidationWorkflowTests(unittest.TestCase):
         )
 
         self.assertNotIn(INTERRUPT_KEY, state)
-        self.assertEqual(self.po_lines.statuses["line-6"], "READY_FOR_SO_CREATION")
+        self.assertEqual(self.purchase_orders.statuses["line-6"], "READY_FOR_SO_CREATION")
         self.assertEqual(len(self.cmir_repository.created), 1)
         self.assertEqual(self.cmir_repository.created[0]["material_identity"], "MAT-100")
 
-    def test_lookup_failure_routes_to_handle_error_and_logs_one_po_line_error(self) -> None:
+    def test_lookup_failure_routes_to_handle_error_and_logs_one_processing_error(self) -> None:
         graph = self._build_graph(
             cmir_match={"material_identity": "MAT-MISSING"},
             material_records={},  # no material_master row -> check_material_master raises
@@ -252,10 +255,11 @@ class PoValidationWorkflowTests(unittest.TestCase):
         )
 
         self.assertNotIn(INTERRUPT_KEY, state)
-        self.assertEqual(self.po_lines.statuses["line-7"], "FAILED")
-        self.assertEqual(len(self.po_line_errors.logged), 1)
-        self.assertEqual(self.po_line_errors.logged[0].error_type, "LOOKUP_FAILURE")
-        self.assertEqual(self.po_line_errors.logged[0].node_name, "check_material_master")
+        self.assertEqual(self.purchase_orders.statuses["line-7"], "FAILED")
+        self.assertEqual(len(self.processing_errors.logged), 1)
+        self.assertEqual(self.processing_errors.logged[0]["error_type"], "LOOKUP_FAILURE")
+        self.assertEqual(self.processing_errors.logged[0]["node_name"], "check_material_master")
+        self.assertEqual(self.processing_errors.logged[0]["purchase_order_line_id"], "line-7")
 
 
 if __name__ == "__main__":

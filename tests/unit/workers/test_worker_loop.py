@@ -6,9 +6,16 @@ always a small in-test fake standing in for `app.workers.dispatch.execute_job`,
 per the injectable seam `process_jobs`/`_process_job` expose specifically
 for this purpose.
 
-`enqueue_daily_run` moved to `app/workers/fine_projection.py` (it's
-fine_projection-specific, not domain-agnostic loop machinery) -- its tests
-moved with it, to `tests/unit/workers/test_worker_fine_projection.py`.
+`enqueue_daily_run` moved to `app/workers/penalty_projection.py` (it's
+penalty-projection-specific, not domain-agnostic loop machinery) -- its
+tests moved with it, to `tests/unit/workers/test_worker_penalty_projection.py`.
+
+Was written against the pre-restructure `ClaimedJob` (`order_id`/
+`projection_date`/`task_type` carried directly) and the 14-leaf exception
+hierarchy (`OrderNotFoundError`, `NoActiveRulesError`, ...) -- rewritten
+against the domain-agnostic `ClaimedJob` (`item_type`/`dedupe_key` only)
+and the Phase 6 collapsed 6-category exception hierarchy, each
+parametrized by `code:str` (see `app.core.exceptions`'s module docstring).
 """
 
 from __future__ import annotations
@@ -17,7 +24,6 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import date
 from uuid import uuid4
 
 import pytest
@@ -25,12 +31,10 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from app.core.config import Settings
 from app.core.exceptions import (
+    BusinessRuleError,
     ExternalServiceError,
-    InvalidAsOfDateError,
-    NoActiveRulesError,
-    NoProjectionExistsError,
-    OrderNotFoundError,
-    ToolLoopExhaustedError,
+    NotFoundError,
+    ValidationError,
 )
 from app.core.rate_limit import RateLimitGate, looks_like_rate_limit
 from app.queue.types import ClaimedJob
@@ -161,9 +165,8 @@ class FakeJobSource:
 
 
 def _make_job(
-    order_id: str = "ORD-1",
-    projection_date: date = date(2026, 8, 13),
-    task_type: str = "ORDER_RUN",
+    dedupe_key: str = "PO-1:2026-08-13:ORDER_RUN",
+    item_type: str = "ORDER_RUN",
     *,
     attempt_count: int = 1,
     max_attempts: int = 5,
@@ -171,11 +174,8 @@ def _make_job(
     return ClaimedJob(
         job_item_id=uuid4(),
         job_run_id=uuid4(),
-        order_id=order_id,
-        projection_date=projection_date,
-        task_type=task_type,
-        stacking_mode_override=None,
-        force_regenerate_summary=False,
+        item_type=item_type,
+        dedupe_key=dedupe_key,
         attempt_count=attempt_count,
         max_attempts=max_attempts,
     )
@@ -183,20 +183,36 @@ def _make_job(
 
 def _fast_settings(**overrides):
     """Settings tuned so time-based loop behavior (polling, idle backoff)
-    is fast enough for tests, overridable per-test."""
-    defaults = {
-        "job_queue_worker_concurrency": 3,
-        "job_queue_batch_size": 10,
-        "job_queue_poll_interval_seconds": 1,
-        "job_queue_idle_poll_max_seconds": 4,
-        "job_queue_item_deadline_seconds": 5,
-        "job_queue_backoff_base_seconds": 10,
-        "job_queue_backoff_cap_seconds": 1000,
-        "job_queue_backoff_jitter_seconds": 0,
-        "llm_rate_limit_backoff_seconds": 1,
+    is fast enough for tests, overridable per-test.
+
+    Overrides use the pre-restructure flat field names for call-site
+    compatibility -- this function is the one place translating them into
+    the nested job_queue/llm/database groups Settings now uses.
+    """
+    job_queue_overrides = {
+        "worker_concurrency": 3,
+        "batch_size": 10,
+        "poll_interval_seconds": 1,
+        "idle_poll_max_seconds": 4,
+        "item_deadline_seconds": 5,
+        "backoff_base_seconds": 10,
+        "backoff_cap_seconds": 1000,
+        "backoff_jitter_seconds": 0,
     }
-    defaults.update(overrides)
-    return Settings(**defaults)
+    llm_overrides = {"rate_limit_backoff_seconds": 1}
+    database_overrides: dict[str, int] = {}
+
+    for key, value in overrides.items():
+        if key.startswith("job_queue_"):
+            job_queue_overrides[key.removeprefix("job_queue_")] = value
+        elif key.startswith("llm_"):
+            llm_overrides[key.removeprefix("llm_")] = value
+        elif key.startswith("db_"):
+            database_overrides[key.removeprefix("db_")] = value
+        else:
+            raise ValueError(f"Unrecognized _fast_settings override: {key}")
+
+    return Settings(job_queue=job_queue_overrides, llm=llm_overrides, database=database_overrides)
 
 
 # ---------------------------------------------------------------------
@@ -207,13 +223,16 @@ def _fast_settings(**overrides):
 @pytest.mark.parametrize(
     "exc,expected",
     [
-        (OrderNotFoundError("ORD-1"), Classification.DEAD_LETTER),
-        (NoActiveRulesError("no active rules"), Classification.DEAD_LETTER),
-        (NoProjectionExistsError("no projection"), Classification.DEAD_LETTER),
-        (InvalidAsOfDateError("bad date"), Classification.DEAD_LETTER),
+        (NotFoundError(code="PO_NOT_FOUND", message="ORD-1"), Classification.DEAD_LETTER),
+        (BusinessRuleError(code="NO_ACTIVE_RULES", message="no active rules"), Classification.DEAD_LETTER),
+        (BusinessRuleError(code="NO_PROJECTION_EXISTS", message="no projection"), Classification.DEAD_LETTER),
+        (ValidationError(code="INVALID_AS_OF_DATE", message="bad date"), Classification.DEAD_LETTER),
         (ValueError("bad rule data"), Classification.DEAD_LETTER),
-        (ExternalServiceError("upstream down"), Classification.NACK),
-        (ToolLoopExhaustedError("exhausted", domain="projection"), Classification.NACK),
+        (ExternalServiceError(code="EXTERNAL_SERVICE_ERROR", message="upstream down"), Classification.NACK),
+        (
+            ExternalServiceError(code="PENALTY_PROJECTION_SUMMARY_UPSTREAM_FAILED", message="exhausted"),
+            Classification.NACK,
+        ),
         (OperationalError("SELECT 1", {}, Exception("connection reset")), Classification.NACK),
         (DBAPIError("SELECT 1", {}, Exception("db gone away")), Classification.NACK),
         (RuntimeError("totally unexpected bug"), Classification.NACK),
@@ -259,14 +278,16 @@ def test_looks_like_rate_limit_walks_the_cause_chain():
         try:
             raise RuntimeError("429 Too Many Requests")
         except RuntimeError as inner:
-            raise ToolLoopExhaustedError("upstream failed", domain="projection") from inner
-    except ToolLoopExhaustedError as outer:
+            raise ExternalServiceError(
+                code="PENALTY_PROJECTION_SUMMARY_UPSTREAM_FAILED", message="upstream failed"
+            ) from inner
+    except ExternalServiceError as outer:
         assert looks_like_rate_limit(outer) is True
 
 
 def test_looks_like_rate_limit_false_for_unrelated_errors():
     assert looks_like_rate_limit(RuntimeError("connection reset by peer")) is False
-    assert looks_like_rate_limit(OrderNotFoundError("ORD-1")) is False
+    assert looks_like_rate_limit(NotFoundError(code="PO_NOT_FOUND", message="ORD-1")) is False
 
 
 # ---------------------------------------------------------------------
@@ -322,10 +343,12 @@ def test_process_job_recognizes_rate_limit_failure_and_updates_the_shared_gate()
     settings = _fast_settings(llm_rate_limit_backoff_seconds=1)
 
     def _rate_limited(job, database, settings, llm, heartbeat):
-        raise ExternalServiceError("429 Too Many Requests from upstream")
+        raise ExternalServiceError(
+            code="EXTERNAL_SERVICE_ERROR", message="429 Too Many Requests from upstream"
+        )
 
     outcome = _process_job(
-        _make_job("ORD-1"),
+        _make_job("PO-1:2026-08-13:ORDER_RUN"),
         job_source=job_source,
         database=None,
         settings=settings,
@@ -358,7 +381,7 @@ def test_process_job_honors_a_rate_limit_pause_set_by_another_call():
 
     begin = time.monotonic()
     outcome = _process_job(
-        _make_job("ORD-2"),
+        _make_job("PO-2:2026-08-13:ORDER_RUN"),
         job_source=job_source,
         database=None,
         settings=_fast_settings(),
@@ -392,23 +415,23 @@ def _process(job, job_source, execute_job_fn, settings=None, shutdown=None):
         rate_limit_gate=RateLimitGate(),
         execute_job_fn=execute_job_fn,
         startup_jitter_max_seconds=0,
-        deadline_seconds=resolved_settings.job_queue_item_deadline_seconds,
+        deadline_seconds=resolved_settings.job_queue.item_deadline_seconds,
         shutdown_event=shutdown or threading.Event(),
     )
 
 
-def test_process_job_dispatches_task_type_to_execute_job_fn_and_acks_on_success():
+def test_process_job_dispatches_item_type_to_execute_job_fn_and_acks_on_success():
     job_source = FakeJobSource()
-    seen_task_types = []
+    seen_item_types = []
 
     def _execute(job, database, settings, llm, heartbeat):
-        seen_task_types.append(job.task_type)
+        seen_item_types.append(job.item_type)
 
-    job = _make_job(task_type="PROJECTION_SUMMARY_REGEN")
+    job = _make_job(item_type="PROJECTION_SUMMARY_REGEN")
     outcome = _process(job, job_source, _execute)
 
     assert outcome == "succeeded"
-    assert seen_task_types == ["PROJECTION_SUMMARY_REGEN"]
+    assert seen_item_types == ["PROJECTION_SUMMARY_REGEN"]
     ack_calls = job_source.calls_for("ack")
     assert len(ack_calls) == 1
     assert ack_calls[0].job is job
@@ -421,7 +444,7 @@ def test_process_job_retryable_failure_nacks_with_growing_backoff():
     settings = _fast_settings(job_queue_backoff_base_seconds=10, job_queue_backoff_jitter_seconds=0)
 
     def _fail(job, database, settings, llm, heartbeat):
-        raise ExternalServiceError("upstream 502")
+        raise ExternalServiceError(code="EXTERNAL_SERVICE_ERROR", message="upstream 502")
 
     retry_delays = []
     for attempt in (1, 2, 3):
@@ -437,7 +460,7 @@ def test_process_job_non_retryable_failure_kills_on_first_occurrence():
     job_source = FakeJobSource()
 
     def _fail(job, database, settings, llm, heartbeat):
-        raise OrderNotFoundError(job.order_id)
+        raise NotFoundError(code="PO_NOT_FOUND", message=f"No purchase order found for {job.dedupe_key!r}")
 
     job = _make_job(attempt_count=1, max_attempts=5)
     outcome = _process(job, job_source, _fail)
@@ -445,7 +468,7 @@ def test_process_job_non_retryable_failure_kills_on_first_occurrence():
     assert outcome == "dead_lettered"
     kill_calls = job_source.calls_for("dead_letter")
     assert len(kill_calls) == 1
-    assert kill_calls[0].kwargs["error_code"] == "ORDER_NOT_FOUND"
+    assert kill_calls[0].kwargs["error_code"] == "PO_NOT_FOUND"
     assert not job_source.calls_for("nack")
 
 
@@ -526,7 +549,7 @@ def test_process_job_heartbeat_returning_false_abandons_the_item():
 
 
 def test_check_pool_headroom_warns_when_concurrency_exceeds_pool_capacity(caplog):
-    settings = Settings(job_queue_worker_concurrency=20, db_pool_size=5, db_max_overflow=10)
+    settings = Settings(job_queue={"worker_concurrency": 20}, database={"pool_size": 5, "max_overflow": 10})
 
     with caplog.at_level(logging.WARNING, logger="app.workers.loop"):
         _check_pool_headroom(settings)
@@ -535,7 +558,7 @@ def test_check_pool_headroom_warns_when_concurrency_exceeds_pool_capacity(caplog
 
 
 def test_check_pool_headroom_silent_when_capacity_is_sufficient(caplog):
-    settings = Settings(job_queue_worker_concurrency=5, db_pool_size=5, db_max_overflow=10)
+    settings = Settings(job_queue={"worker_concurrency": 5}, database={"pool_size": 5, "max_overflow": 10})
 
     with caplog.at_level(logging.WARNING, logger="app.workers.loop"):
         _check_pool_headroom(settings)
@@ -673,7 +696,7 @@ def test_process_jobs_shutdown_releases_in_flight_items_without_consuming_an_att
 
 
 def test_process_jobs_drain_mode_exits_once_queue_is_empty():
-    job_source = FakeJobSource(batches=[[_make_job("ORD-ONE")], []])
+    job_source = FakeJobSource(batches=[[_make_job("PO-ONE:2026-08-13:ORDER_RUN")], []])
     settings = _fast_settings()
     processed = []
 
@@ -683,12 +706,12 @@ def test_process_jobs_drain_mode_exits_once_queue_is_empty():
         settings,
         None,
         mode="drain",
-        execute_job_fn=lambda job, *a, **k: processed.append(job.order_id),
+        execute_job_fn=lambda job, *a, **k: processed.append(job.dedupe_key),
         startup_jitter_max_seconds=0,
         install_signal_handler=False,
     )
 
-    assert processed == ["ORD-ONE"]
+    assert processed == ["PO-ONE:2026-08-13:ORDER_RUN"]
     assert summary.succeeded == 1
     assert job_source.calls_for("ack")
 

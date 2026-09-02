@@ -6,13 +6,10 @@ from typing import Literal
 from langgraph.types import interrupt
 
 from app.agents.po_validation.state import POGraphState
-from app.repositories.cmir import PostgresCMIRRepository
-from app.repositories.po_validation import (
-    PostgresMaterialMasterRepository,
-    PostgresPoLineErrorRepository,
-    PostgresPoLineRepository,
-)
-from app.schemas.po_validation import PoLineError
+from app.repositories.cmir.cmir_record import CmirRecordRepository
+from app.repositories.common.master_data import MasterDataRepository
+from app.repositories.common.purchase_order import PurchaseOrderRepository
+from app.repositories.process.workflow import ProcessingErrorRepository
 
 
 def _capture_errors(error_type: str):
@@ -46,30 +43,31 @@ class PoValidationNodes:
     """LangGraph node functions for the PO Validation Agent.
 
     Mirrors app/agents/cmir/nodes.py: every collaborator is injected, and nodes
-    only touch their own domain data (po_lines, material_master, cmir_records,
-    po_line_errors). agent_runs / workflow_threads / pending_human_actions
+    only touch their own domain data (common.purchase_order_line,
+    common.material_master, cmir.cmir_record, process.processing_error).
+    process.agent_run / process.workflow_thread / process.human_action
     transitions are handled by PoValidationService after each graph.invoke(),
-    exactly like CMIRRunService._handle_graph_state.
+    exactly like CmirRunService._handle_graph_state.
     """
 
     def __init__(
         self,
         *,
-        po_line_repository: PostgresPoLineRepository,
-        material_master_repository: PostgresMaterialMasterRepository,
-        cmir_repository: PostgresCMIRRepository,
-        po_line_error_repository: PostgresPoLineErrorRepository,
+        purchase_order_repository: PurchaseOrderRepository,
+        master_data_repository: MasterDataRepository,
+        cmir_repository: CmirRecordRepository,
+        processing_error_repository: ProcessingErrorRepository,
     ) -> None:
-        self._po_line_repository = po_line_repository
-        self._material_master_repository = material_master_repository
+        self._purchase_order_repository = purchase_order_repository
+        self._master_data_repository = master_data_repository
         self._cmir_repository = cmir_repository
-        self._po_line_error_repository = po_line_error_repository
+        self._processing_error_repository = processing_error_repository
 
     # ---- validation steps ---- #
 
     @_capture_errors("SYSTEM_ERROR")
     def persist_po_line(self, state: POGraphState) -> POGraphState:
-        self._po_line_repository.update_status(state["po_line_id"], "VALIDATING")
+        self._purchase_order_repository.update_line_status(state["po_line_id"], "VALIDATING")
         return {}
 
     @_capture_errors("LOOKUP_FAILURE")
@@ -88,18 +86,19 @@ class PoValidationNodes:
         sap_material_number = state["sap_material_number"]
         if sap_material_number is None:
             raise LookupError("check_material_master reached with no sap_material_number recorded")
-        material = self._material_master_repository.find(sap_material_number, po_line["plant"])
+        plant_id = po_line["plant_id"]
+        material = self._master_data_repository.find_material_master(sap_material_number, plant_id)
         if material is None:
             raise LookupError(
-                f"material_master has no row for material={sap_material_number} plant={po_line['plant']}"
+                f"material_master has no row for material={sap_material_number} plant_id={plant_id}"
             )
-        sufficient = material.available_quantity >= po_line["order_quantity"]
+        sufficient = material["available_quantity"] >= po_line["order_quantity"]
         return {
             "material": {
-                "sap_material_number": material.sap_material_number,
-                "plant": material.plant,
-                "available_quantity": material.available_quantity,
-                "follow_up_material_number": material.follow_up_material_number,
+                "sap_material_number": material["sap_material_number"],
+                "plant_id": material["plant_id"],
+                "available_quantity": material["available_quantity"],
+                "follow_up_material_id": material["follow_up_material_id"],
             },
             "quantity_sufficient": sufficient,
         }
@@ -126,23 +125,38 @@ class PoValidationNodes:
     def human_qty_mismatch_decision(self, state: POGraphState) -> POGraphState:
         material = state["material"]
         po_line = state["po_line"]
+        # material_master.follow_up_material_id is a FK to common.material.id (a
+        # plant-agnostic material identity), not a per-plant SAP material number --
+        # a real restructure, not a rename (see app.models.common.material.MaterialMaster).
+        # Resolving it to a substitute sap_material_number at this same plant would need
+        # a "find_material_master by (material_id, plant_id)" repository method that
+        # doesn't exist yet (MasterDataRepository only looks up by sap_material_number) --
+        # out of scope for this repair (repositories are read-only this phase). Surfaced
+        # as-is (stringified) under the same "suggested_substitute_material_code" key
+        # PoValidationService.submit_qty_mismatch_decision already reads, so the
+        # use_substitute path still round-trips end to end; flagged as an open gap.
+        follow_up_material_id = material.get("follow_up_material_id")
         answer = interrupt(
             {
                 "reason": "qty_mismatch_decision",
                 "po_line_id": state["po_line_id"],
                 "candidate": {
                     "sap_material_number": material["sap_material_number"],
-                    "plant": material["plant"],
+                    "plant_id": material["plant_id"],
                     "available_quantity": material["available_quantity"],
                     "shortfall": po_line["order_quantity"] - material["available_quantity"],
-                    "suggested_substitute_material_code": material.get("follow_up_material_number"),
+                    "suggested_substitute_material_code": (
+                        str(follow_up_material_id) if follow_up_material_id else None
+                    ),
                 },
             }
         )
         decision = answer["decision"]
         result: POGraphState = {"decision": decision}
         if decision == "use_substitute":
-            substitute = answer.get("substitute_material_code") or material.get("follow_up_material_number")
+            substitute = answer.get("substitute_material_code") or (
+                str(follow_up_material_id) if follow_up_material_id else None
+            )
             result["sap_material_number"] = substitute
         return result
 
@@ -163,31 +177,31 @@ class PoValidationNodes:
         return {}
 
     def mark_ready_for_so_creation(self, state: POGraphState) -> POGraphState:
-        self._po_line_repository.update_status(state["po_line_id"], "READY_FOR_SO_CREATION")
+        self._purchase_order_repository.update_line_status(state["po_line_id"], "READY_FOR_SO_CREATION")
         return {}
 
     def mark_ready_for_so_creation_partial(self, state: POGraphState) -> POGraphState:
-        self._po_line_repository.update_status(state["po_line_id"], "READY_FOR_SO_CREATION_PARTIAL")
+        self._purchase_order_repository.update_line_status(
+            state["po_line_id"], "READY_FOR_SO_CREATION_PARTIAL"
+        )
         return {}
 
     def mark_discontinued(self, state: POGraphState) -> POGraphState:
-        self._po_line_repository.update_status(state["po_line_id"], "DISCONTINUED")
+        self._purchase_order_repository.update_line_status(state["po_line_id"], "DISCONTINUED")
         return {}
 
     def handle_error(self, state: POGraphState) -> POGraphState:
         error = state.get("error") or {}
-        self._po_line_error_repository.log(
-            PoLineError(
-                po_line_id=state["po_line_id"],
-                error_type=error.get("error_type", "SYSTEM_ERROR"),
-                node_name=error.get("node_name", "unknown"),
-                agent_run_id=state.get("run_id"),
-                error_code=error.get("error_code"),
-                error_message=error.get("error_message"),
-                raw_error_detail=error,
-            )
+        self._processing_error_repository.log(
+            error.get("error_type", "SYSTEM_ERROR"),
+            agent_run_id=state.get("run_id"),
+            purchase_order_line_id=state["po_line_id"],
+            error_code=error.get("error_code"),
+            error_message=error.get("error_message"),
+            node_name=error.get("node_name", "unknown"),
+            raw_error_detail=error,
         )
-        self._po_line_repository.update_status(state["po_line_id"], "FAILED")
+        self._purchase_order_repository.update_line_status(state["po_line_id"], "FAILED")
         return {}
 
     # ---- routing functions ---- #

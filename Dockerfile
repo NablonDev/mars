@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Build context is the REPO ROOT:
-#   docker build -t mars-fines:dev .
+#   docker build -t mars-platform:dev .
 
 # ---------------------------------------------------------------------------
 # Builder: resolve and install production dependencies into a venv.

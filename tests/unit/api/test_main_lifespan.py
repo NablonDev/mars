@@ -13,6 +13,7 @@ import pytest
 import app.main as main_module
 from app.core.config import Settings
 from app.main import create_app
+from tests.conftest import TEST_INTERNAL_API_KEY
 
 
 class _FakeJobQueue:
@@ -28,7 +29,7 @@ class _FakeJobQueue:
         self.close_calls += 1
 
 
-class _FakeCMIRRunService:
+class _FakeCmirRunService:
     """Stand-in passed to `create_app(service=...)` so lifespan's `if
     app.state.service is None: build_service()` branch is skipped --
     `build_service()` -> `Container.build()` opens a real Postgres-backed
@@ -40,7 +41,7 @@ class _FakeCMIRRunService:
 
 
 class _FakePoValidationService:
-    """Same purpose as `_FakeCMIRRunService`, for `app.state.po_service` /
+    """Same purpose as `_FakeCmirRunService`, for `app.state.po_service` /
     `build_po_validation_service()`."""
 
 
@@ -50,7 +51,7 @@ def test_lifespan_closes_the_job_queue_on_shutdown(monkeypatch: pytest.MonkeyPat
 
     from fastapi.testclient import TestClient
 
-    app = create_app(_FakeCMIRRunService(), _FakePoValidationService())
+    app = create_app(_FakeCmirRunService(), _FakePoValidationService())
 
     with TestClient(app) as client:
         assert app.state.job_queue == (fake_queue, fake_queue)
@@ -74,7 +75,7 @@ def test_lifespan_builds_the_queue_once_and_reuses_it(monkeypatch: pytest.Monkey
 
     from fastapi.testclient import TestClient
 
-    app = create_app(_FakeCMIRRunService(), _FakePoValidationService())
+    app = create_app(_FakeCmirRunService(), _FakePoValidationService())
 
     with TestClient(app) as client:
         client.get("/api/v1/health")
@@ -85,15 +86,19 @@ def test_lifespan_builds_the_queue_once_and_reuses_it(monkeypatch: pytest.Monkey
 
 
 def test_docs_enabled_defaults_to_true(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("DOCS_ENABLED", raising=False)
+    monkeypatch.delenv("APP_DOCS_ENABLED", raising=False)
 
-    assert Settings(_env_file=None).docs_enabled is True
+    assert Settings(_env_file=None).app.docs_enabled is True
 
 
 def test_create_app_does_not_mount_docs_routes_by_default() -> None:
     """No `with` block, so lifespan never runs -- this only checks the
     FastAPI app object's own docs/redoc/openapi routing, not a live server."""
-    app = create_app(settings=Settings(_env_file=None, docs_enabled=False))
+    app = create_app(
+        settings=Settings(
+            _env_file=None, app={"internal_api_key": TEST_INTERNAL_API_KEY, "docs_enabled": False}
+        )
+    )
 
     assert app.docs_url is None
     assert app.redoc_url is None
@@ -101,7 +106,11 @@ def test_create_app_does_not_mount_docs_routes_by_default() -> None:
 
 
 def test_create_app_mounts_docs_routes_when_explicitly_enabled() -> None:
-    app = create_app(settings=Settings(_env_file=None, docs_enabled=True))
+    app = create_app(
+        settings=Settings(
+            _env_file=None, app={"internal_api_key": TEST_INTERNAL_API_KEY, "docs_enabled": True}
+        )
+    )
 
     assert app.docs_url == "/docs"
     assert app.redoc_url == "/redoc"

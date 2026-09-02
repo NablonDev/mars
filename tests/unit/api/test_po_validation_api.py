@@ -1,38 +1,42 @@
+"""API tests for `app/api/v1/po_validation.py` (`POST /po-validation/
+purchase-order-lines`, `GET /purchase-order-lines`) -- Phase 7b route
+redesign, then consolidated further (this pass) into the one
+`GET /purchase-order-lines?purchase_order_id=&status=` route, folding in
+what used to be the separate nested `GET /purchase-orders/{purchase_order_id}
+/lines`.
+
+Was `tests/unit/api/test_po_validation_api.py`'s `unittest.TestCase` against
+the pre-restructure `/ingest/po-lines`/`/po-lines`/`/threads/{id}/*` routes
+and the since-removed `app.core.exceptions.ServiceError`; rewritten against
+the new routes, the collapsed `AppError` hierarchy, and the
+`{success, message, data, error}` envelope. Thread-lifecycle routes
+(`qty-mismatch-decision`/`manual-cmir-entry`, now generic `decisions`) and
+`GET /po-lines/{id}/errors` (now `GET /processing-errors`) moved to
+`app/api/v1/workflow_threads.py`/`app/api/v1/processing_errors.py` -- see
+`tests/unit/api/test_workflow_threads_api.py`/`test_processing_errors_api.py`.
+
+`GET /purchase-order-lines` was `VIEW_NOT_SUPPORTED` (no repository query
+existed) until Gap 3's `PurchaseOrderRepository.list_lines_by_status` --
+`FakePoValidationService.list_ready_lines` now returns a real-shaped
+listing rather than raising, matching `PoValidationService`'s current
+behavior; see `tests/unit/services/test_po_validation_service.py` and
+`tests/unit/repositories/test_purchase_order_line_listing.py` for coverage
+of the real repository/service logic this fake stands in for.
+"""
+
 from __future__ import annotations
 
-import unittest
+from uuid import UUID
 
-from fastapi.testclient import TestClient
-
-from app.api.dependencies import require_internal_api_key
-from app.core.exceptions import ServiceError
-from app.main import create_app
-
-
-class FakeCMIRRunService:
-    """Minimal CMIR fake so routes shared with the PO router don't touch the real Container."""
-
-    def get_snapshot(self, thread_id):
-        if thread_id == "thread_cmir_1":
-            return {
-                "batch_id": "batch_01",
-                "agent_run_id": "00000000-0000-0000-0000-000000000001",
-                "thread_id": thread_id,
-                "email": {"email_id": "e1", "sender": "a@b.com", "subject": "CMIR"},
-                "stage": "AWAITING_APPROVAL",
-                "editable_fields": [],
-                "cmir": {},
-                "history": [],
-                "updated_at": "2026-08-09T10:00:00+00:00",
-            }
-        raise ServiceError(
-            "THREAD_NOT_FOUND", "Unknown thread_id.", status_code=404, details={"thread_id": thread_id}
-        )
+import pytest
 
 
 class FakePoValidationService:
+    """Implements the `PoValidationService` methods `app/api/v1/po_validation.py` calls."""
+
     def __init__(self) -> None:
-        self.ingested = []
+        self.ingested: list[list[dict]] = []
+        self.list_calls: list[dict] = []
 
     def ingest_po_lines(self, lines):
         self.ingested.append(lines)
@@ -41,7 +45,7 @@ class FakePoValidationService:
             "total_lines": len(lines),
             "lines": [
                 {
-                    "po_line_id": "po_line_1",
+                    "po_line_id": "22222222-2222-2222-2222-222222222222",
                     "batch_id": "batch_po_01",
                     "po_number": line["po_number"],
                     "po_line_number": line["po_line_number"],
@@ -53,159 +57,120 @@ class FakePoValidationService:
             ],
         }
 
-    def list_ready_lines(self, **kwargs):
-        return {"items": [{"id": "po_line_1", "status": "READY_FOR_SO_CREATION"}], "next_cursor": None}
+    def list_ready_lines(self, *, purchase_order_id=None, status=None, limit=50, cursor=None):
+        self.list_calls.append({"purchase_order_id": purchase_order_id, "status": status})
+        return {
+            "items": [
+                {
+                    "id": "33333333-3333-3333-3333-333333333333",
+                    "purchase_order_id": str(purchase_order_id)
+                    if purchase_order_id is not None
+                    else "44444444-4444-4444-4444-444444444444",
+                    "line_number": "10",
+                    "ordered_quantity": 100.0,
+                    "unit_price": 0.0,
+                    "line_status": status or "READY_FOR_SO_CREATION",
+                }
+            ],
+            "next_cursor": None,
+        }
 
-    def get_errors(self, po_line_id):
-        if po_line_id == "missing":
-            raise ServiceError("VALIDATION_ERROR", "Unknown po_line_id.", status_code=422, details={})
-        return {"items": []}
 
-    def get_snapshot(self, thread_id):
-        if thread_id == "thread_po_1":
-            return {
-                "agent_run_id": "00000000-0000-0000-0000-000000000042",
-                "thread_id": thread_id,
-                "po_line_id": "po_line_1",
-                "po_number": "PO-1",
-                "po_line_number": "10",
-                "customer_material_code": "ACME-MAT-1",
-                "order_quantity": 100,
-                "stage": "AWAITING_QTY_MISMATCH_DECISION",
-                "candidate": {
-                    "sap_material_number": "MAT-1",
+@pytest.fixture
+def po_validation_service():
+    return FakePoValidationService()
+
+
+def test_create_purchase_order_lines_returns_accepted_batch(client):
+    response = client.post(
+        "/api/v1/po-validation/purchase-order-lines",
+        json={
+            "lines": [
+                {
+                    "po_number": "PO-1",
+                    "po_line_number": "10",
+                    "customer_id": "CUST-1",
+                    "customer_material_code": "ACME-MAT-1",
                     "plant": "1000",
-                    "available_quantity": 40,
-                    "shortfall": 60,
-                    "suggested_substitute_material_code": "MAT-SUB",
-                },
-                "editable_fields": ["substitute_material_code"],
-                "history": [],
-                "updated_at": "2026-08-09T10:00:00+00:00",
-            }
-        raise ServiceError(
-            "THREAD_NOT_FOUND", "Unknown thread_id.", status_code=404, details={"thread_id": thread_id}
-        )
+                    "order_quantity": 100,
+                }
+            ]
+        },
+    )
 
-    def submit_qty_mismatch_decision(self, thread_id, **kwargs):
-        return {
-            "batch_id": "batch_po_01",
-            "agent_run_id": "00000000-0000-0000-0000-000000000042",
-            "thread_id": thread_id,
-            "po_line_id": "po_line_1",
-            "stage": "READY_FOR_SO_CREATION_PARTIAL",
-            "status": "ready_for_so_creation_partial",
-            "current_node": None,
-            "pending_action_id": None,
-            "updated_at": "2026-08-09T10:01:00+00:00",
-        }
-
-    def submit_manual_cmir_entry(self, thread_id, **kwargs):
-        return {
-            "batch_id": "batch_po_01",
-            "agent_run_id": "00000000-0000-0000-0000-000000000042",
-            "thread_id": thread_id,
-            "po_line_id": "po_line_1",
-            "stage": "READY_FOR_SO_CREATION",
-            "status": "ready_for_so_creation",
-            "current_node": None,
-            "pending_action_id": None,
-            "updated_at": "2026-08-09T10:01:00+00:00",
-        }
+    assert response.status_code == 202, response.text
+    body = response.json()["data"]
+    assert body["batch_id"] == "batch_po_01"
+    assert body["lines"][0]["status"] == "READY_FOR_SO_CREATION"
+    assert body["lines"][0]["thread_id"] is None
 
 
-class PoValidationApiTests(unittest.TestCase):
-    def setUp(self) -> None:
-        app = create_app(FakeCMIRRunService(), FakePoValidationService())
-        # This suite builds its own app/client rather than using conftest's
-        # `app` fixture, so it needs its own explicit override -- it tests
-        # the PO Validation contract, not the auth gate (see test_internal_api_key.py).
-        app.dependency_overrides[require_internal_api_key] = lambda: None
-        self.client = TestClient(app)
+def test_list_purchase_order_lines_flat_view_returns_items(client):
+    response = client.get("/api/v1/purchase-order-lines", params={"status": "READY_FOR_SO_CREATION"})
 
-    def test_ingest_po_lines_returns_accepted_batch(self) -> None:
-        response = self.client.post(
-            "/api/v1/ingest/po-lines",
-            json={
-                "lines": [
-                    {
-                        "po_number": "PO-1",
-                        "po_line_number": "10",
-                        "customer_id": "CUST-1",
-                        "customer_material_code": "ACME-MAT-1",
-                        "plant": "1000",
-                        "order_quantity": 100,
-                    }
-                ]
-            },
-        )
-
-        self.assertEqual(response.status_code, 202)
-        body = response.json()
-        self.assertEqual(body["batch_id"], "batch_po_01")
-        self.assertEqual(body["lines"][0]["status"], "READY_FOR_SO_CREATION")
-        self.assertIsNone(body["lines"][0]["thread_id"])
-
-    def test_list_po_lines(self) -> None:
-        response = self.client.get("/api/v1/po-lines?status=READY_FOR_SO_CREATION")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["items"][0]["id"], "po_line_1")
-
-    def test_get_po_line_errors_unknown_line(self) -> None:
-        response = self.client.get("/api/v1/po-lines/missing/errors")
-
-        self.assertEqual(response.status_code, 422)
-        self.assertEqual(response.json()["error"]["code"], "VALIDATION_ERROR")
-
-    def test_qty_mismatch_decision_route(self) -> None:
-        response = self.client.post(
-            "/api/v1/threads/thread_po_1/qty-mismatch-decision",
-            json={
-                "actor": "csr@company.com",
-                "decision": "proceed_anyway",
-                "expected_updated_at": "2026-08-09T10:00:00+00:00",
-            },
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["stage"], "READY_FOR_SO_CREATION_PARTIAL")
-
-    def test_manual_cmir_entry_route(self) -> None:
-        response = self.client.post(
-            "/api/v1/threads/thread_po_1/manual-cmir-entry",
-            json={
-                "actor": "csr@company.com",
-                "sap_material_number": "MAT-100",
-                "description": "Legacy SKU",
-                "expected_updated_at": "2026-08-09T10:00:00+00:00",
-            },
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["stage"], "READY_FOR_SO_CREATION")
-
-    def test_snapshot_dispatches_to_po_service_for_po_thread(self) -> None:
-        response = self.client.get("/api/v1/threads/thread_po_1/snapshot")
-
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertEqual(body["po_line_id"], "po_line_1")
-        self.assertEqual(body["candidate"]["suggested_substitute_material_code"], "MAT-SUB")
-
-    def test_snapshot_falls_back_to_cmir_service_for_cmir_thread(self) -> None:
-        response = self.client.get("/api/v1/threads/thread_cmir_1/snapshot")
-
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertEqual(body["email"]["email_id"], "e1")
-
-    def test_snapshot_unknown_thread_returns_404(self) -> None:
-        response = self.client.get("/api/v1/threads/does-not-exist/snapshot")
-
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json()["error"]["code"], "THREAD_NOT_FOUND")
+    assert response.status_code == 200, response.text
+    body = response.json()["data"]
+    assert body["items"][0]["line_status"] == "READY_FOR_SO_CREATION"
+    assert body["next_cursor"] is None
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_list_purchase_order_lines_flat_view_defaults_with_no_status(client):
+    response = client.get("/api/v1/purchase-order-lines")
+
+    assert response.status_code == 200, response.text
+
+
+@pytest.fixture
+def retailer(client):
+    return client.post(
+        "/api/v1/retailers", json={"retailer_code": "RET-POV", "retailer_name": "PO Validation Co"}
+    ).json()["data"]
+
+
+@pytest.fixture
+def purchase_order_with_line(client, retailer):
+    resp = client.post(
+        "/api/v1/purchase-orders",
+        json={
+            "purchase_order_number": "PO-POV-001",
+            "retailer_id": retailer["id"],
+            "order_date": "2026-08-01",
+            "requested_delivery_date": "2026-08-10",
+            "required_ship_date": "2026-08-08",
+            "lines": [{"line_number": "10", "ordered_quantity": 100, "unit_price": 5.0}],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["data"]
+
+
+def test_list_purchase_order_lines_scoped_to_one_purchase_order(
+    client, purchase_order_with_line, po_validation_service
+):
+    """`GET /purchase-order-lines?purchase_order_id=` replaces the old
+    nested `GET /purchase-orders/{purchase_order_id}/lines` route -- the
+    router still 404s via `require_purchase_order` before ever calling
+    `PoValidationService.list_ready_lines` (see
+    `tests/unit/services/test_po_validation_service.py` for the real
+    `purchase_order_id`-scoping behavior this fake stands in for)."""
+    purchase_order_id = purchase_order_with_line["id"]
+
+    response = client.get("/api/v1/purchase-order-lines", params={"purchase_order_id": purchase_order_id})
+
+    assert response.status_code == 200, response.text
+    body = response.json()["data"]
+    assert body["items"][0]["purchase_order_id"] == purchase_order_id
+    assert po_validation_service.list_calls[-1] == {
+        "purchase_order_id": UUID(purchase_order_id),
+        "status": None,
+    }
+
+
+def test_list_purchase_order_lines_for_unknown_order_returns_404(client):
+    response = client.get(
+        "/api/v1/purchase-order-lines",
+        params={"purchase_order_id": "00000000-0000-0000-0000-000000000000"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PO_NOT_FOUND"

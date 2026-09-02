@@ -1,9 +1,17 @@
-"""Shared polling/error-formatting helpers for the httpx-based demo scripts.
+"""Shared auth/error-formatting/poll helpers for the httpx-based demo
+scripts.
 
-Extracted from `demo_fine_projection_summary.py` and `run_end_to_end_demo.py`, which
-both defined `_error_message`/`_poll_until_ready` and the
-`POLL_INTERVAL_SECONDS`/`POLL_TIMEOUT_SECONDS` constants verbatim -- kept
-here once so the two scripts stop carrying duplicate copies.
+Was shared by `demo_fine_projection_summary.py` and `run_end_to_end_demo.py`,
+which both defined `_error_message`/`_poll_until_ready` verbatim -- kept here
+once so the two scripts stop carrying duplicate copies.
+
+`_poll_until_ready` is shared again as of this pass: both domains now expose
+a dedicated per-(purchase_order_id, as_of_date) summary-read route
+(`GET /penalties/projections/summary`, `GET /penalties/mitigations/summary`)
+with the identical `{purchase_order_id, as_of_date, status, summary,
+error_message}` response shape, so one function covers both --
+`demo_penalty_projection_summary.py`/`demo_penalty_mitigation_summary.py`
+each pass their own `summary_path`.
 """
 
 import os
@@ -23,10 +31,10 @@ def _auth_headers() -> dict[str, str]:
     raw env var rather than app.core.config.Settings (which they
     deliberately don't import -- they only need httpx).
     """
-    key = os.environ.get("INTERNAL_API_KEY")
+    key = os.environ.get("APP_INTERNAL_API_KEY")
     if not key:
         print(
-            "INTERNAL_API_KEY is not set in this shell -- export the same value "
+            "APP_INTERNAL_API_KEY is not set in this shell -- export the same value "
             "the running server was started with.",
             file=sys.stderr,
         )
@@ -35,49 +43,53 @@ def _auth_headers() -> dict[str, str]:
 
 
 def _error_message(resp: httpx.Response) -> str:
-    """Handles both this app's `{"error": {"message": ...}}` envelope
-    (app/core/exceptions.py) and the plain `{"detail": ...}` shape a few
-    not-yet-migrated routes still raise via bare `HTTPException` --
-    see the reviewer's carried-over note in PROGRESS.local.md."""
+    """Reads this app's `{success, message, data, error}` envelope
+    (app/core/envelope.py) -- every error response (`AppError`, FastAPI's
+    own `RequestValidationError`/`HTTPException`, and the unhandled-
+    exception catch-all) is shaped through it (app/core/exceptions.py)."""
     try:
         body = resp.json()
     except ValueError:
         return resp.text
-    if isinstance(body, dict) and "error" in body:
-        return body["error"].get("message", resp.text)
-    if isinstance(body, dict) and "detail" in body:
-        return str(body["detail"])
+    if isinstance(body, dict) and body.get("error"):
+        return body["error"].get("details") or body.get("message", resp.text)
+    if isinstance(body, dict) and "message" in body:
+        return str(body["message"])
     return resp.text
 
 
 def _poll_until_ready(
-    base_url: str,
-    order_id: str,
-    as_of_date: str,
-    summary_path: str = "projection-summary",
+    base_url: str, summary_path: str, purchase_order_id: str, as_of_date: str
 ) -> dict | None:
-    """Polls `GET .../{summary_path}` until the job leaves PENDING, or gives
-    up after POLL_TIMEOUT_SECONDS. Returns the job body (status READY or
-    FAILED) or None on timeout.
+    """Poll `GET {base_url}/{summary_path}?purchase_order_id=&as_of_date=`
+    until its `status` leaves `PENDING` (or the timeout elapses). Shared by
+    `demo_penalty_projection_summary.py` (`summary_path="penalties/
+    projections/summary"`) and `demo_penalty_mitigation_summary.py`
+    (`summary_path="penalties/mitigations/summary"`).
 
-    `summary_path` defaults to the fine-projection-summary endpoint the two
-    original callers use; `demo_fine_mitigation_summary.py` passes
-    "mitigation-summary" instead. Both endpoints return the same
-    status/summary/error_message envelope (ProjectionSummaryStatusResponse
-    and MitigationSummaryStatusResponse are field-for-field identical), so
-    one poller covers both."""
+    `status: None` (no summary job on record yet for this exact
+    `(purchase_order_id, as_of_date)`) is a normal `200`, not a `404` --
+    treated the same as `PENDING` here too: keep polling, since the
+    triggering `POST` just enqueued the job this same call is meant to
+    observe. Still tolerates a `404` defensively (an unknown
+    `purchase_order_id`, or another genuine caller error) by treating it
+    the same as PENDING for one cycle rather than raising outright --
+    `raise_for_status()` below still surfaces it if it persists past the
+    timeout.
+    """
     deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
     headers = _auth_headers()
     while time.monotonic() < deadline:
         resp = httpx.get(
-            f"{base_url}/orders/{order_id}/{summary_path}",
-            params={"as_of_date": as_of_date},
+            f"{base_url}/{summary_path}",
+            params={"purchase_order_id": purchase_order_id, "as_of_date": as_of_date},
             headers=headers,
             timeout=30,
         )
-        resp.raise_for_status()
-        job = resp.json()
-        if job["status"] != "PENDING":
-            return job
+        if resp.status_code != 404:
+            resp.raise_for_status()
+            body = resp.json()["data"]
+            if body["status"] not in (None, "PENDING"):
+                return body
         time.sleep(POLL_INTERVAL_SECONDS)
     return None

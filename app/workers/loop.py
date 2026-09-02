@@ -20,11 +20,10 @@ from app.agents.providers.azure_openai import AzureOpenAIChatClient
 from app.core.config import Settings
 from app.core.exceptions import (
     AppError,
+    BusinessRuleError,
     ExternalServiceError,
-    InvalidAsOfDateError,
-    NoActiveRulesError,
-    NoProjectionExistsError,
-    OrderNotFoundError,
+    NotFoundError,
+    ValidationError,
 )
 from app.core.rate_limit import RateLimitGate, looks_like_rate_limit
 from app.db.session import Database
@@ -38,11 +37,18 @@ logger = logging.getLogger(__name__)
 _DEFAULT_STARTUP_JITTER_SECONDS = 2.0
 _DEFAULT_SHUTDOWN_GRACE_SECONDS = 30.0
 
+# Phase 6 collapsed the 14 leaf `AppError` subclasses this tuple used to
+# name individually (`OrderNotFoundError`, `NoActiveRulesError`,
+# `NoProjectionExistsError`, `InvalidAsOfDateError`, ...) into 6 high-level
+# categories parametrized by a `code:str` -- see app/core/exceptions.py's
+# module docstring. Every one of those old classes mapped to one of the
+# three categories below (404/422/409-business-rule); classification is now
+# by category, not by a bespoke leaf type, and doesn't need updating again
+# when a new `code=` value is added under an existing category.
 _NON_RETRYABLE_APP_ERRORS: tuple[type[AppError], ...] = (
-    OrderNotFoundError,
-    NoActiveRulesError,
-    NoProjectionExistsError,
-    InvalidAsOfDateError,
+    NotFoundError,
+    ValidationError,
+    BusinessRuleError,
 )
 
 
@@ -176,7 +182,7 @@ def _run_with_deadline(
         raise _ItemDeadlineExceededError(
             f"job_item_id={job.job_item_id} exceeded the "
             f"{deadline_seconds}s item deadline "
-            f"(job_queue_item_deadline_seconds)"
+            f"(job_queue.item_deadline_seconds)"
         )
 
     if "error" in outcome:
@@ -240,11 +246,11 @@ def _process_job(
             return "abandoned"
 
         if looks_like_rate_limit(exc):
-            rate_limit_gate.note_rate_limit_hit(settings.llm_rate_limit_backoff_seconds)
+            rate_limit_gate.note_rate_limit_hit(settings.llm.rate_limit_backoff_seconds)
             logger.warning(
                 "Rate-limit signal for job_item_id=%s; pausing shared LLM gate for %ss",
                 job.job_item_id,
-                settings.llm_rate_limit_backoff_seconds,
+                settings.llm.rate_limit_backoff_seconds,
             )
 
         error_message = str(exc)
@@ -283,9 +289,9 @@ def _process_job(
 
         retry_in_seconds = compute_backoff_seconds(
             job.attempt_count,
-            base=settings.job_queue_backoff_base_seconds,
-            cap=settings.job_queue_backoff_cap_seconds,
-            jitter=settings.job_queue_backoff_jitter_seconds,
+            base=settings.job_queue.backoff_base_seconds,
+            cap=settings.job_queue.backoff_cap_seconds,
+            jitter=settings.job_queue.backoff_jitter_seconds,
         )
         job_source.nack(
             job,
@@ -336,12 +342,12 @@ def _record_result(
 
 
 def _check_pool_headroom(settings: Settings) -> None:
-    pool_capacity = settings.db_pool_size + settings.db_max_overflow
-    if settings.job_queue_worker_concurrency > pool_capacity:
+    pool_capacity = settings.database.pool_size + settings.database.max_overflow
+    if settings.job_queue.worker_concurrency > pool_capacity:
         logger.warning(
-            "job_queue_worker_concurrency=%s exceeds DB capacity=%s; "
+            "job_queue.worker_concurrency=%s exceeds DB capacity=%s; "
             "workers may block waiting for a DB session",
-            settings.job_queue_worker_concurrency,
+            settings.job_queue.worker_concurrency,
             pool_capacity,
         )
 
@@ -398,28 +404,28 @@ def process_jobs(
 
     try:
         if reclaim_stale_first:
-            reclaimed = job_source.reclaim_stale(settings.job_queue_visibility_timeout_seconds)
+            reclaimed = job_source.reclaim_stale(settings.job_queue.visibility_timeout_seconds)
             if reclaimed:
                 logger.info(
                     "Reclaimed %s stale job_item(s) before claiming new work",
                     reclaimed,
                 )
 
-        idle_backoff = float(settings.job_queue_poll_interval_seconds)
+        idle_backoff = float(settings.job_queue.poll_interval_seconds)
         futures: dict[Future, ClaimedJob] = {}
 
         # Avoid context-manager shutdown here: its implicit wait could
         # exceed the explicit shutdown grace period below.
-        executor = ThreadPoolExecutor(max_workers=settings.job_queue_worker_concurrency)
+        executor = ThreadPoolExecutor(max_workers=settings.job_queue.worker_concurrency)
         try:
             while not shutdown_event.is_set():
                 batch: list[ClaimedJob] = job_source.claim_batch(
                     worker_id,
-                    settings.job_queue_batch_size,
+                    settings.job_queue.batch_size,
                 )
 
                 if batch:
-                    idle_backoff = float(settings.job_queue_poll_interval_seconds)
+                    idle_backoff = float(settings.job_queue.poll_interval_seconds)
                     for job in batch:
                         future = executor.submit(
                             _process_job,
@@ -432,7 +438,7 @@ def process_jobs(
                             rate_limit_gate=rate_limit_gate,
                             execute_job_fn=execute_job_fn,
                             startup_jitter_max_seconds=startup_jitter_max_seconds,
-                            deadline_seconds=float(settings.job_queue_item_deadline_seconds),
+                            deadline_seconds=float(settings.job_queue.item_deadline_seconds),
                             shutdown_event=shutdown_event,
                         )
                         futures[future] = job
@@ -447,7 +453,7 @@ def process_jobs(
                     if shutdown_event.wait(timeout=idle_backoff):
                         break
                     idle_backoff = min(
-                        float(settings.job_queue_idle_poll_max_seconds),
+                        float(settings.job_queue.idle_poll_max_seconds),
                         idle_backoff * 2,
                     )
 

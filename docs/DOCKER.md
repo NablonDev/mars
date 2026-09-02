@@ -16,19 +16,19 @@ no-op.
 
 ```bash
 # API -- default CMD, no override needed
-docker run --rm -p 8000:8000 --env-file .env mars-fines:dev
+docker run --rm -p 8000:8000 --env-file .env mars-platform:dev
 
 # Nightly batch job -- explicit override
-docker run --rm --env-file .env mars-fines:dev \
+docker run --rm --env-file .env mars-platform:dev \
   python scripts/ops/run_daily_batch.py
 
 # Migration job -- explicit override
-docker run --rm --env-file .env mars-fines:dev \
+docker run --rm --env-file .env mars-platform:dev \
   alembic upgrade head
 ```
 
 The API command still works spelled out explicitly too (`docker run ...
-mars-fines:dev uvicorn app.main:app --host 0.0.0.0 --port 8000`) -- an
+mars-platform:dev uvicorn app.main:app --host 0.0.0.0 --port 8000`) -- an
 explicit `command:`/CLI argument always overrides the image's `CMD`,
 never conflicts with it. `docker-compose.yml`'s `api` service does
 exactly that, for local-dev readability.
@@ -39,7 +39,7 @@ From the repo root (`Dockerfile` and `docker-compose.yml` both live at the
 repo root):
 
 ```bash
-docker build -t mars-fines:dev .
+docker build -t mars-platform:dev .
 ```
 
 Multi-stage: a `builder` stage installs dependencies into a venv, and a
@@ -94,8 +94,8 @@ docker compose --profile tools run --rm worker
 - `api`: builds `Dockerfile` with the repo root as context, waits
   for `db`'s healthcheck, publishes `8000:8000`. `DATABASE_URL` is set to
   `postgresql+psycopg://mars:mars@db:5432/mars` -- the `+psycopg` (v3)
-  driver prefix `app/core/config.py::Settings.database_url` expects, not
-  the psycopg2-style bare `postgresql://`.
+  driver prefix `app/core/config/database.py::DatabaseSettings.url` expects,
+  not the psycopg2-style bare `postgresql://`.
 - `migrate`: same image, runs `alembic upgrade head` once. Given
   `profiles: ["tools"]` so a plain `up` never runs it.
 - `worker`: same image, runs `scripts/ops/run_daily_batch.py` once and
@@ -106,7 +106,7 @@ docker compose --profile tools run --rm worker
   scripts/ops/run_daily_batch.py --drain-only`.
 - `AZURE_OPENAI_*` vars are passed through from the host shell
   (`${AZURE_OPENAI_API_KEY:-}` etc.), never hardcoded. Leave them unset on
-  the host to run everything except the fine-projection-summary endpoint, same as
+  the host to run everything except the penalty-projection-summary endpoint, same as
   bare-metal (`docs/RUNBOOK.md` step 9).
 
 ## Verification performed
@@ -117,12 +117,12 @@ Dockerfile above (paths below predate the `docker/` -> repo-root move; see
 layout):
 
 ```
-$ docker build -f docker/Dockerfile -t mars-fines:dev .
+$ docker build -f docker/Dockerfile -t mars-platform:dev .
 ...
-#20 naming to docker.io/library/mars-fines:dev done
+#20 naming to docker.io/library/mars-platform:dev done
 Build succeeded. Image size: 502MB.
 
-$ docker run --rm mars-fines:dev ls -la /app
+$ docker run --rm mars-platform:dev ls -la /app
 total 28
 drwxr-xr-x 1 appuser appuser 4096 ... .
 drwxr-xr-x 1 root    root    4096 ... ..
@@ -133,17 +133,17 @@ drwxr-xr-x 1 appuser appuser 4096 ... app
 drwxr-xr-x 1 appuser appuser 4096 ... scripts
 # No .env, no tests/, no docs/ -- as required.
 
-$ docker run --rm mars-fines:dev whoami
+$ docker run --rm mars-platform:dev whoami
 appuser
 
-$ docker run --rm mars-fines:dev python -c "import app.main; print('ok')"
+$ docker run --rm mars-platform:dev python -c "import app.main; print('ok')"
 ok
 ```
 
 The import check succeeded with **no env vars set at all** -- not just
 import resolution, `Settings()` also loaded cleanly, because every
-`Settings` field in `app/core/config.py` has a default (including
-`azure_openai_*` defaulting to `""`). This confirms both that the module
+`Settings` field in `app/core/config/` has a default (including
+`llm.*` defaulting to `""`). This confirms both that the module
 path resolves and that a completely bare `docker run` won't crash on
 missing config; it will only fail at the point something actually calls
 Azure OpenAI, same as bare-metal (`docs/RUNBOOK.md` step 9).
@@ -159,7 +159,7 @@ Re-checked after moving `docker/Dockerfile` -> `Dockerfile` and
 context). `docker compose config --quiet` passes against the current
 `docker-compose.yml` (`context: .`, `dockerfile: Dockerfile`).
 
-A plain `docker build -t mars-fines:restructure .` against the current
+A plain `docker build -t mars-platform:restructure .` against the current
 `Dockerfile`/`.dockerignore` as committed **does not** currently succeed,
 for two reasons that predate this move and are unrelated to it:
 
@@ -182,17 +182,17 @@ caches, `.env`) for a local-only test build, then reverted to the
 as-committed (broken) content before finishing:
 
 ```
-$ docker build -t mars-fines:restructure2 .
+$ docker build -t mars-platform:restructure2 .
 ...
-#17 naming to docker.io/library/mars-fines:restructure2 done
+#17 naming to docker.io/library/mars-platform:restructure2 done
 
-$ docker run --rm mars-fines:restructure2 python -c "import app.main; print('ok')"
+$ docker run --rm mars-platform:restructure2 python -c "import app.main; print('ok')"
 ok
 
-$ docker run --rm mars-fines:restructure2 ls -la /app/scripts
+$ docker run --rm mars-platform:restructure2 ls -la /app/scripts
 demo/  ops/
 
-$ docker run --rm mars-fines:restructure2 whoami
+$ docker run --rm mars-platform:restructure2 whoami
 appuser
 ```
 
@@ -207,14 +207,14 @@ Re-run after adding the default `CMD`, proving the no-argument case now
 starts the API and an explicit override still works:
 
 ```
-$ docker build -f docker/Dockerfile -t mars-fines:cmd .
+$ docker build -f docker/Dockerfile -t mars-platform:cmd .
 ...
-#20 naming to docker.io/library/mars-fines:cmd done
+#20 naming to docker.io/library/mars-platform:cmd done
 
-$ docker inspect mars-fines:cmd --format '{{json .Config.Cmd}}'
+$ docker inspect mars-platform:cmd --format '{{json .Config.Cmd}}'
 ["uvicorn","app.main:app","--host","0.0.0.0","--port","8000"]
 
-$ docker run --rm -d -p 18000:8000 mars-fines:cmd
+$ docker run --rm -d -p 18000:8000 mars-platform:cmd
 <container id>
 $ docker logs <container id>
 {"message": "Started server process [1]"}
@@ -235,10 +235,10 @@ same thing the earlier `import app.main` check did, one level up: the
 process actually starts and serves traffic with zero arguments.
 
 ```
-$ docker run --rm mars-fines:cmd alembic --help
+$ docker run --rm mars-platform:cmd alembic --help
 usage: alembic [-h] [--version] [-c CONFIG] [-n NAME] [-x X] [--raiseerr] [-q] ...
 
-$ docker run --rm mars-fines:cmd python -c "print('explicit override works')"
+$ docker run --rm mars-platform:cmd python -c "print('explicit override works')"
 explicit override works
 ```
 

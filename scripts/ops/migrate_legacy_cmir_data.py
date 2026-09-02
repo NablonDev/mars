@@ -491,7 +491,7 @@ def _parse_args() -> argparse.Namespace:
         "--source-dsn", default=DEFAULT_SOURCE_DSN, help="Legacy cmir_db DSN (plain postgresql://)"
     )
     parser.add_argument(
-        "--target-dsn", default=None, help="Override target DSN (default: settings.database_url)"
+        "--target-dsn", default=None, help="Override target DSN (default: settings.database.url)"
     )
     parser.add_argument("--dry-run", action="store_true", help="Report counts only, write nothing")
     parser.add_argument(
@@ -503,7 +503,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = _parse_args()
-    target_dsn = args.target_dsn or checkpoint_dsn(get_settings().database_url)
+    target_dsn = args.target_dsn or checkpoint_dsn(get_settings().database.url)
     migrate(args.source_dsn, target_dsn, dry_run=args.dry_run, force=args.force)
 
 

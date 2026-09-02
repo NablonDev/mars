@@ -1,1 +1,1 @@
-"""Mars Petcare -- Projected Fines System."""
+"""Mars Petcare Backend -- CMIR Email Resolution, PO Validation, and Projected Penalties & Mitigation"""

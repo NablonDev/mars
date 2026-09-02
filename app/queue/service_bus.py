@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -22,7 +22,8 @@ from app.db.session import Database
 from app.models.enums import JobItemStatus
 from app.queue.interfaces import JobDispatcher, JobSource
 from app.queue.types import ClaimedJob, claimed_job_from_row
-from app.repositories.job_queue import JobQueueRepository
+from app.repositories.process.job_queue import JobQueueRepository
+from app.utils.clock import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +53,8 @@ class ServiceBusJobQueue(JobDispatcher, JobSource):
         message_factory: Callable[[str], Any] | None = None,
     ) -> None:
         self._database = database
-        self._queue_name = settings.job_queue_service_bus_queue_name
-        self._max_wait_seconds = settings.job_queue_service_bus_max_wait_seconds
+        self._queue_name = settings.job_queue.service_bus_queue_name
+        self._max_wait_seconds = settings.job_queue.service_bus_max_wait_seconds
 
         if client is None or message_factory is None:
             client, message_factory = self._build_real_client(settings)
@@ -74,10 +75,13 @@ class ServiceBusJobQueue(JobDispatcher, JobSource):
     @staticmethod
     def _build_real_client(settings: Settings) -> tuple[Any, Callable[[str], Any]]:
         """Build the authenticated Service Bus client."""
-        if not settings.job_queue_service_bus_namespace:
+        if not settings.job_queue.service_bus_namespace:
             raise ValidationError(
-                "JOB_QUEUE_BACKEND=service_bus requires JOB_QUEUE_SERVICE_BUS_NAMESPACE "
-                "to be set (e.g. 'mars-fines.servicebus.windows.net')."
+                code="SERVICE_BUS_NAMESPACE_NOT_CONFIGURED",
+                message=(
+                    "JOB_QUEUE_BACKEND=service_bus requires JOB_QUEUE_SERVICE_BUS_NAMESPACE "
+                    "to be set (e.g. 'mars-fines.servicebus.windows.net')."
+                ),
             )
 
         try:
@@ -85,15 +89,18 @@ class ServiceBusJobQueue(JobDispatcher, JobSource):
             from azure.servicebus import ServiceBusClient, ServiceBusMessage
         except ImportError as exc:
             raise ValidationError(
-                "JOB_QUEUE_BACKEND=service_bus requires the 'azure-servicebus' and "
-                "'azure-identity' packages, which are declared in "
-                "pyproject.toml/requirements.txt but are not importable in this "
-                "environment -- reinstall dependencies (e.g. `uv sync`) before "
-                "selecting this backend."
+                code="SERVICE_BUS_SDK_NOT_INSTALLED",
+                message=(
+                    "JOB_QUEUE_BACKEND=service_bus requires the 'azure-servicebus' and "
+                    "'azure-identity' packages, which are declared in "
+                    "pyproject.toml/requirements.txt but are not importable in this "
+                    "environment -- reinstall dependencies (e.g. `uv sync`) before "
+                    "selecting this backend."
+                ),
             ) from exc
 
         client = ServiceBusClient(
-            fully_qualified_namespace=settings.job_queue_service_bus_namespace,
+            fully_qualified_namespace=settings.job_queue.service_bus_namespace,
             credential=DefaultAzureCredential(),
         )
         return client, ServiceBusMessage
@@ -107,7 +114,7 @@ class ServiceBusJobQueue(JobDispatcher, JobSource):
         message = self._message_factory(str(job_item_id))
 
         if delay_seconds > 0:
-            scheduled_time_utc = datetime.now(UTC) + timedelta(seconds=delay_seconds)
+            scheduled_time_utc = utc_now() + timedelta(seconds=delay_seconds)
             with self._lock:
                 self._sender.schedule_messages(message, scheduled_time_utc)
         else:

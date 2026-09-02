@@ -1,9 +1,11 @@
-"""A batch that enqueues nothing because every order is DELIVERED looks
+"""A batch that enqueues nothing because every PO is DELIVERED looks
 identical in the logs to a broken batch. These pin the diagnostic that tells
-the two apart.
+the two apart. Was tests/unit/repositories/test_no_open_orders_diagnostic.py
+against app.repositories.order -- relocated to
+app.repositories.common.purchase_order, no behavior change.
 """
 
-from app.repositories.order import describe_no_open_orders
+from app.repositories.common.purchase_order import describe_no_open_orders
 
 
 def test_returns_none_when_orders_are_open():
@@ -20,7 +22,7 @@ def test_explains_when_orders_exist_but_none_are_open():
     note = describe_no_open_orders({"DELIVERED": 4})
 
     assert note is not None
-    assert "4 order(s) exist" in note
+    assert "4 purchase order(s) exist" in note
     assert "DELIVERED=4" in note
 
 
@@ -29,7 +31,7 @@ def test_breakdown_lists_every_status_sorted():
 
     assert note is not None
     assert "CANCELLED=1, DELIVERED=3" in note
-    assert "4 order(s) exist" in note
+    assert "4 purchase order(s) exist" in note
 
 
 def test_zero_open_count_is_treated_as_no_open_orders():

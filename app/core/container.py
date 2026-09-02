@@ -15,27 +15,27 @@ from app.agents.cmir.nodes import WorkflowNodes
 from app.agents.po_validation.graph import build_po_validation_graph
 from app.agents.po_validation.nodes import PoValidationNodes
 from app.core.config import EmailConfig, LLMConfig, ServiceBusConfig, Settings, get_settings
+from app.db.base import LANGGRAPH_SCHEMA
 from app.db.session import Database, checkpoint_dsn
 from app.queue.cmir_mail_producer import ServiceBusMailQueue
-from app.repositories.action_log import PostgresActionLogRepository
-from app.repositories.cmir import PostgresCMIRRepository
-from app.repositories.email import PostgresEmailRepository
-from app.repositories.observability import (
-    PostgresAgentRunRepository,
-    PostgresAgentTraceRepository,
-    PostgresHITLActionRepository,
-    PostgresHITLStateRepository,
-    PostgresPendingHumanActionRepository,
-    PostgresWorkflowThreadRepository,
+from app.repositories.cmir.action_log import ActionLogRepository
+from app.repositories.cmir.cmir_record import CmirRecordRepository
+from app.repositories.cmir.email import EmailRepository
+from app.repositories.common.master_data import MasterDataRepository
+from app.repositories.common.purchase_order import PurchaseOrderRepository
+from app.repositories.process.agent_registry import (
+    AgentRegistryRepository,
+    AgentRunRepository,
+    AgentTraceRepository,
 )
-from app.repositories.po_validation import (
-    PostgresMaterialMasterRepository,
-    PostgresPoLineErrorRepository,
-    PostgresPoLineRepository,
+from app.repositories.process.workflow import (
+    HumanActionRepository,
+    ProcessingErrorRepository,
+    WorkflowThreadRepository,
 )
 from app.services.cli_human_review import CLIHumanReviewPort
-from app.services.cmir_extractor import AzureOpenAICMIRExtractor
-from app.services.cmir_validation import CMIRValidator
+from app.services.cmir.extractor import AzureOpenAICmirExtractor
+from app.services.cmir.validation import CmirValidator
 from app.services.email_reader import GmailImapReader
 
 logger = logging.getLogger(__name__)
@@ -49,18 +49,19 @@ class Container:
     email_reader: GmailImapReader
     human_review: CLIHumanReviewPort
     graph: Any
-    agent_runs: PostgresAgentRunRepository
-    hitl_actions: PostgresHITLActionRepository
-    hitl_state: PostgresHITLStateRepository
-    workflow_threads: PostgresWorkflowThreadRepository
-    pending_human_actions: PostgresPendingHumanActionRepository
-    email_repository: PostgresEmailRepository
-    cmir_repository: PostgresCMIRRepository
+    agent_registry: AgentRegistryRepository
+    agent_runs: AgentRunRepository
+    agent_traces: AgentTraceRepository
+    workflow_threads: WorkflowThreadRepository
+    human_actions: HumanActionRepository
+    email_repository: EmailRepository
+    cmir_repository: CmirRecordRepository
+    action_log_repository: ActionLogRepository
     service_bus_queue: ServiceBusMailQueue
     po_validation_graph: Any
-    po_lines: PostgresPoLineRepository
-    material_master: PostgresMaterialMasterRepository
-    po_line_errors: PostgresPoLineErrorRepository
+    purchase_orders: PurchaseOrderRepository
+    master_data: MasterDataRepository
+    processing_errors: ProcessingErrorRepository
     _resource_stack: ExitStack
 
     _instance: ClassVar[Container | None] = None
@@ -74,25 +75,34 @@ class Container:
         resources = ExitStack()
 
         database = Database(
-            config.database_url,
-            pool_size=config.db_pool_size,
-            max_overflow=config.db_max_overflow,
-            pool_timeout=config.db_pool_timeout,
+            config.database.url,
+            pool_size=config.database.pool_size,
+            max_overflow=config.database.max_overflow,
+            pool_timeout=config.database.pool_timeout,
         )
+        # One process-lifetime session for this composition root's repositories.
+        # Container.build() is itself a long-lived singleton (see _instance below),
+        # not a per-request scope, so it owns and closes exactly one session here
+        # rather than the project's usual per-request Session (see
+        # postgres-conventions: "one session per request/use-case, provided via
+        # Depends").
+        session = database.new_session()
+        resources.callback(session.close)
+
         email_reader = GmailImapReader(EmailConfig.from_settings(config))
-        extractor = AzureOpenAICMIRExtractor(LLMConfig.from_settings(config))
-        validator = CMIRValidator()
+        validator = CmirValidator()
 
-        email_repository = PostgresEmailRepository(database)
-        cmir_repository = PostgresCMIRRepository(database)
-        action_log_repository = PostgresActionLogRepository(database)
+        email_repository = EmailRepository(session)
+        cmir_repository = CmirRecordRepository(session)
+        action_log_repository = ActionLogRepository(session)
 
-        agent_run_repository = PostgresAgentRunRepository(database)
-        agent_trace_repository = PostgresAgentTraceRepository(database)
-        hitl_action_repository = PostgresHITLActionRepository(database)
-        hitl_state_repository = PostgresHITLStateRepository(database)
-        workflow_thread_repository = PostgresWorkflowThreadRepository(database)
-        pending_action_repository = PostgresPendingHumanActionRepository(database)
+        agent_registry_repository = AgentRegistryRepository(session)
+        agent_run_repository = AgentRunRepository(session)
+        agent_trace_repository = AgentTraceRepository(session)
+        workflow_thread_repository = WorkflowThreadRepository(session)
+        human_action_repository = HumanActionRepository(session)
+
+        extractor = AzureOpenAICmirExtractor(LLMConfig.from_settings(config), agent_registry_repository)
 
         human_review = CLIHumanReviewPort()
         service_bus_queue = ServiceBusMailQueue(ServiceBusConfig.from_settings(config))
@@ -104,29 +114,30 @@ class Container:
             email_repository=email_repository,
             cmir_repository=cmir_repository,
             action_log_repository=action_log_repository,
-            workflow_thread_repository=workflow_thread_repository,
         )
 
         logger.info("Initializing LangGraph PostgreSQL Checkpointer...")
         # Previous implementation using MemorySaver kept for easy rollback.
         # checkpointer = MemorySaver()
         checkpointer = resources.enter_context(
-            PostgresSaver.from_conn_string(checkpoint_dsn(config.database_url))
+            PostgresSaver.from_conn_string(
+                checkpoint_dsn(config.database.url, LANGGRAPH_SCHEMA)
+            )
         )
         checkpointer.setup()
         logger.info("Checkpoint tables verified.")
         graph = build_graph(nodes, checkpointer, agent_trace_repository)
         logger.info("Graph compiled with PostgreSQL Checkpointer.")
 
-        po_line_repository = PostgresPoLineRepository(database)
-        material_master_repository = PostgresMaterialMasterRepository(database)
-        po_line_error_repository = PostgresPoLineErrorRepository(database)
+        purchase_order_repository = PurchaseOrderRepository(session)
+        master_data_repository = MasterDataRepository(session)
+        processing_error_repository = ProcessingErrorRepository(session)
 
         po_validation_nodes = PoValidationNodes(
-            po_line_repository=po_line_repository,
-            material_master_repository=material_master_repository,
+            purchase_order_repository=purchase_order_repository,
+            master_data_repository=master_data_repository,
             cmir_repository=cmir_repository,
-            po_line_error_repository=po_line_error_repository,
+            processing_error_repository=processing_error_repository,
         )
         # Shares the same PostgresSaver checkpointer/connection as the CMIR graph;
         # checkpoint thread_ids are namespaced ("thread_po_...") so the two graphs
@@ -141,18 +152,19 @@ class Container:
             email_reader=email_reader,
             human_review=human_review,
             graph=graph,
+            agent_registry=agent_registry_repository,
             agent_runs=agent_run_repository,
-            hitl_actions=hitl_action_repository,
-            hitl_state=hitl_state_repository,
+            agent_traces=agent_trace_repository,
             workflow_threads=workflow_thread_repository,
-            pending_human_actions=pending_action_repository,
+            human_actions=human_action_repository,
             email_repository=email_repository,
             cmir_repository=cmir_repository,
+            action_log_repository=action_log_repository,
             service_bus_queue=service_bus_queue,
             po_validation_graph=po_validation_graph,
-            po_lines=po_line_repository,
-            material_master=material_master_repository,
-            po_line_errors=po_line_error_repository,
+            purchase_orders=purchase_order_repository,
+            master_data=master_data_repository,
+            processing_errors=processing_error_repository,
             _resource_stack=resources,
         )
         return cls._instance

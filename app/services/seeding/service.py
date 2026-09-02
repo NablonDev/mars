@@ -1,34 +1,60 @@
-"""Orchestrates master-data, fine_projection, and fine_mitigation seeding
-as one idempotent operation, and replays the four worked-example scenarios
-day by day."""
+"""Orchestrates master-data, penalty-projection, and penalty-mitigation
+seeding as one idempotent operation, and replays the four worked-example
+scenarios day by day.
+
+Was `app/services/seeding/service.py`'s `FineSeedingService` (renamed
+`PenaltySeedingService`). Rewritten against the Phase 2 `common`/
+`penalties`/`process` repositories.
+
+`_truncate_seeded_tables`'s FK-safe ordering is new, hand-derived work this
+phase had to do (Phase 2 didn't -- and couldn't -- resolve it, since two of
+the truncate methods it calls, `PenaltyProjectionRepository.truncate_all`/
+`ActualPenaltyRepository.truncate_all`, didn't exist until this phase added
+them). See `force-seeding-error.txt` at the repo root for the exact class
+of bug a wrong order here reproduces (a `job_item` row still referencing
+a row this deletes).
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.repositories.fine_master_data import MasterDataRepository
-from app.repositories.fine_mitigation.mitigation import MitigationRepository
-from app.repositories.fine_projection.po_delivery_change_request import PoDeliveryChangeRequestRepository
-from app.repositories.fine_rule import FineRuleRepository
-from app.repositories.job_queue import JobQueueRepository
-from app.repositories.order import OrderRepository
-from app.services.fine_projection.po_delivery_change import PoDeliveryChangeRequestService
-from app.services.fine_projection.service import FineProjectionService
-from app.services.seeding import fine_mitigation as fine_mitigation_seed
-from app.services.seeding import fine_projection as fine_projection_seed
+from app.repositories.common.delivery_change_request import PoDeliveryChangeRequestRepository
+from app.repositories.common.fulfillment import FulfillmentRepository
+from app.repositories.common.master_data import MasterDataRepository
+from app.repositories.common.purchase_order import PurchaseOrderRepository
+from app.repositories.penalties.job_context import (
+    PenaltyJobItemContextRepository,
+    PenaltyJobRunContextRepository,
+)
+from app.repositories.penalties.mitigation import MitigationInputRepository
+from app.repositories.penalties.projection import ActualPenaltyRepository, PenaltyProjectionRepository
+from app.repositories.penalties.rule import PenaltyRuleRepository
+from app.repositories.penalties.summary import PenaltySummaryRepository
+from app.repositories.process.job_queue import JobQueueRepository
+from app.services.penalties.delivery_change import PoDeliveryChangeRequestService
+from app.services.penalties.projection.service import ProjectionService
 from app.services.seeding import master_data as master_data_seed
+from app.services.seeding import mitigation as mitigation_seed
+from app.services.seeding import projection as projection_seed
 
 
 @dataclass
-class FineSeedingService:
+class PenaltySeedingService:
     master_data: MasterDataRepository
-    rules: FineRuleRepository
-    orders: OrderRepository
-    projection_service: FineProjectionService
-    mitigation: MitigationRepository
-    po_delivery_change_service: PoDeliveryChangeRequestService
-    po_delivery_change_requests: PoDeliveryChangeRequestRepository
+    rules: PenaltyRuleRepository
+    purchase_orders: PurchaseOrderRepository
+    fulfillment: FulfillmentRepository
+    projection_service: ProjectionService
+    mitigation_inputs: MitigationInputRepository
+    delivery_change_service: PoDeliveryChangeRequestService
+    delivery_change_requests: PoDeliveryChangeRequestRepository
+    penalty_summaries: PenaltySummaryRepository
+    penalty_projections: PenaltyProjectionRepository
+    actual_penalties: ActualPenaltyRepository
     job_queue: JobQueueRepository
+    penalty_job_item_context: PenaltyJobItemContextRepository
+    penalty_job_run_context: PenaltyJobRunContextRepository
 
     def seed_master_data(self, force: bool = False) -> dict:
         """Idempotent by default: safe to call repeatedly, skips anything
@@ -42,36 +68,49 @@ class FineSeedingService:
 
         counts: dict[str, int] = {}
         counts.update(master_data_seed.seed(self.master_data))
-        counts.update(fine_projection_seed.seed(self.rules, self.orders))
-        counts.update(fine_mitigation_seed.seed(self.mitigation))
+        counts.update(
+            projection_seed.seed(self.rules, self.purchase_orders, self.fulfillment, self.master_data)
+        )
+        counts.update(mitigation_seed.seed(self.mitigation_inputs, self.purchase_orders))
         return counts
 
     def _truncate_seeded_tables(self) -> None:
         """FK-safe truncate order: children before the parents they
         reference.
 
-        mitigation_input/mitigation_option/mitigation_summary,
-        po_delivery_change_request, job_item/job_run, and every sales_order
-        fact/outcome table (order_confirmation, production_schedule,
-        shipment, demand_exception, actual_fine, projected_fine,
-        projection_summary) must be cleared before sales_order itself;
-        sales_order and fine_rule must both be cleared before the
-        retailer/sku/location/carrier master data they reference. See the
-        individual repositories' truncate_all() docstrings for exactly what
-        each step covers."""
-        self.mitigation.truncate_all()
-        self.po_delivery_change_requests.truncate_all()
+        `penalty_summary`, `penalty_job_item_context`/
+        `penalty_job_run_context`, `mitigation_input`/`mitigation_option`,
+        `po_delivery_change_request`, `penalty_projection`,
+        `actual_penalty`, `job_item`/`job_run`, and every fulfillment fact
+        (`order_confirmation`, `production_schedule`, `shipment`,
+        `demand_exception`, ...) must be cleared before `purchase_order`
+        itself; `purchase_order` and `penalty_rule` must both be cleared
+        before the retailer/material/plant/carrier master data they
+        reference. See the individual repositories' `truncate_all()`
+        docstrings for exactly what each step covers."""
+        self.penalty_summaries.truncate_all()
+        self.penalty_job_item_context.truncate_all()
+        self.penalty_job_run_context.truncate_all()
+        self.mitigation_inputs.truncate_all()  # also clears mitigation_option
+        self.delivery_change_requests.truncate_all()
+        self.penalty_projections.truncate_all()
+        self.actual_penalties.truncate_all()
         self.job_queue.truncate_all()
-        self.orders.truncate_all()
         self.rules.truncate_all()
+        self.fulfillment.truncate_all()
+        self.purchase_orders.truncate_all()
         self.master_data.truncate_all()
 
     def simulate_daily_run(self) -> list[dict]:
         """Walks all four scenarios day by day: writes each day's facts,
         runs the projection, and marks the order DELIVERED after its final
         day. Also interleaves one PO delivery-change-request negotiation
-        outcome per order -- see fine_projection_seed.simulate_daily_run's
+        outcome per order -- see `projection_seed.simulate_daily_run`'s
         docstring."""
-        return fine_projection_seed.simulate_daily_run(
-            self.orders, self.projection_service, self.po_delivery_change_service
+        return projection_seed.simulate_daily_run(
+            self.purchase_orders,
+            self.fulfillment,
+            self.master_data,
+            self.projection_service,
+            self.delivery_change_service,
         )

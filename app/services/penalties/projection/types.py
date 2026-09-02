@@ -1,0 +1,134 @@
+"""Enums and data structures for the penalty-projection engine.
+
+Moved unchanged from `app/services/fine_projection/types.py` (Phase 3 --
+services move/folder-split). Per the approved plan's explicit Phase 3 flag,
+this pure-calc engine's contract (a single scalar `order_qty`/`unit_price`
+per snapshot, not a per-line list) does NOT change in this pass --
+re-architecting it to be line-aware is out of scope. `order_id` stays a
+`str` field: `ProjectionService.build_snapshot` now populates it with
+`str(purchase_order_id)` (a stringified UUID) rather than a business key,
+but the dataclass shape itself is untouched.
+
+`PenaltyRule`/`PenaltyRuleTier` below are the pure, framework-free
+counterparts of the ORM models of the same name
+(`app.models.penalties.rule.PenaltyRule`/`PenaltyRuleTier`) -- this is the
+same deliberate same-name-different-module pattern already used for
+`MitigationOption` (see `app/repositories/penalties/mitigation.py`'s module
+docstring): the pure dataclass and the ORM model share a name and are told
+apart by import path/alias, not by inventing a different name for one of
+them. This was the last piece of the `fine`/`fines` -> `penalty`/`penalties`
+domain rename still outstanding in this package.
+"""
+
+from dataclasses import dataclass
+from datetime import date
+from enum import Enum
+from uuid import UUID
+
+
+class ProductionStatus(Enum):
+    ON_TRACK = "ON_TRACK"
+    AT_RISK = "AT_RISK"
+    BEHIND = "BEHIND"
+
+
+class AppointmentStatus(Enum):
+    SCHEDULED = "SCHEDULED"
+    RESCHEDULED = "RESCHEDULED"
+    MISSED = "MISSED"
+    COMPLETED = "COMPLETED"
+
+
+class CalcType(Enum):
+    PER_UNIT = "PER_UNIT"
+    PERCENT_OF_PO = "PERCENT_OF_PO"
+    FLAT_FEE = "FLAT_FEE"
+    TIERED = "TIERED"
+
+
+@dataclass
+class PenaltyRuleTier:
+    """Defines a tier rate for the range [band_min, band_max)."""
+
+    band_min: float
+    band_max: float
+    rate: float
+
+
+# Which violation types are priced off the shortage model vs. the delay
+# model. Extend this if a retailer introduces a new violation category.
+SHORTAGE_VIOLATION_TYPES = {"SHORT_SHIP", "FILL_RATE"}
+DELAY_VIOLATION_TYPES = {"OTIF_LATE", "ASN_LATE"}
+# ASN_LATE uses the delay model as an approximation because the engine
+# does not yet have a dedicated ASN-submission-timing input.
+
+
+@dataclass
+class PenaltyRule:
+    rule_id: str
+    violation_type: str  # e.g. "SHORT_SHIP", "OTIF_LATE", "FILL_RATE"
+    calc_type: CalcType
+    rate: float = 0.0  # meaning depends on calc_type; unused when tiers is set
+    threshold_pct: float = 0.0  # FRACTION, e.g. 0.02 for 2% -- never a whole-number percent.
+    cap_amount: float | None = None
+    tiers: list[PenaltyRuleTier] | None = None  # required when calc_type == TIERED
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.threshold_pct <= 1.0:
+            raise ValueError(
+                f"Rule {self.rule_id}: threshold_pct={self.threshold_pct!r} is out of range. "
+                "This field is a fraction (0.02 for 2%), not a whole-number percent (2.0). "
+                "A value outside [0, 1] almost always means the wrong unit was loaded."
+            )
+        if self.calc_type == CalcType.TIERED and not self.tiers:
+            raise ValueError(f"Rule {self.rule_id}: calc_type=TIERED requires tiers to be set")
+
+
+@dataclass
+class OrderSnapshot:
+    """Order state captured as of the projection date."""
+
+    order_id: str
+    projection_date: date
+    order_qty: int
+    unit_price: float
+    requested_delivery_date: date
+    required_ship_date: date
+
+    confirmed_qty: int  # latest SAP ATP / Cut Order Report figure
+    production_status: ProductionStatus
+    demand_exception_flagged: bool = False  # early warning, before any confirmed cut
+
+    expected_ship_date: date | None = None  # explicit rescheduled ship date, if known.
+    actual_ship_date: date | None = None  # set once physically departed
+    appointment_status: AppointmentStatus = AppointmentStatus.SCHEDULED
+    carrier_reliability_score: float = 90.0
+    expected_transit_days: int = 2
+
+
+@dataclass
+class ViolationProjection:
+    violation_type: str
+    rule_id: str
+    probability: float
+    penalty_amount: float
+    expected_penalty_amount: float
+    # The persisted `penalties.penalty_projection` row's own surrogate id --
+    # unset (`None`) for a violation not yet round-tripped through
+    # `PenaltyProjectionRepository.save_result` (e.g. the reconstruction
+    # `app.services.penalties.mitigation.service._build_projection_result`
+    # does for engine input only). `ProjectionService.run_for_purchase_order`
+    # fills it in immediately after persisting, for the API response.
+    id: UUID | None = None
+
+
+@dataclass
+class ProjectionResult:
+    order_id: str
+    projection_date: date
+    days_to_delivery: int
+    shortage_probability: float
+    delay_probability: float
+    violations: list[ViolationProjection]
+    total_expected_penalty_amount: float
+    stacking_mode: str

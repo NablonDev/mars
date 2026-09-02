@@ -28,22 +28,22 @@ def real_auth_client(app) -> TestClient:
 
 
 def test_missing_key_returns_401(real_auth_client: TestClient) -> None:
-    resp = real_auth_client.get("/api/v1/orders")
+    resp = real_auth_client.get("/api/v1/purchase-orders")
 
     assert resp.status_code == 401
 
 
 def test_wrong_key_returns_401(real_auth_client: TestClient) -> None:
-    resp = real_auth_client.get("/api/v1/orders", headers={HEADER_NAME: WRONG_KEY})
+    resp = real_auth_client.get("/api/v1/purchase-orders", headers={HEADER_NAME: WRONG_KEY})
 
     assert resp.status_code == 401
 
 
 def test_correct_key_passes_through_to_the_real_handler(real_auth_client: TestClient) -> None:
-    resp = real_auth_client.get("/api/v1/orders", headers={HEADER_NAME: TEST_INTERNAL_API_KEY})
+    resp = real_auth_client.get("/api/v1/purchase-orders", headers={HEADER_NAME: TEST_INTERNAL_API_KEY})
 
     assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.json()["data"] == []
 
 
 def test_health_requires_no_key_at_all(real_auth_client: TestClient) -> None:
@@ -64,27 +64,28 @@ def test_non_ascii_key_header_returns_401_not_500(real_auth_client: TestClient) 
     dependency rather than fail earlier in test setup.
     """
     resp = real_auth_client.get(
-        "/api/v1/orders", headers=[(HEADER_NAME.encode("ascii"), "café-ñ-not-the-key".encode("latin-1"))]
+        "/api/v1/purchase-orders",
+        headers=[(HEADER_NAME.encode("ascii"), "café-ñ-not-the-key".encode("latin-1"))],
     )
 
     assert resp.status_code == 401
 
 
 def test_401_body_never_echoes_the_submitted_or_expected_key(real_auth_client: TestClient) -> None:
-    resp = real_auth_client.get("/api/v1/orders", headers={HEADER_NAME: WRONG_KEY})
+    resp = real_auth_client.get("/api/v1/purchase-orders", headers={HEADER_NAME: WRONG_KEY})
 
     assert resp.status_code == 401
     assert WRONG_KEY not in resp.text
     assert TEST_INTERNAL_API_KEY not in resp.text
-    assert get_settings().internal_api_key not in resp.text
+    assert get_settings().app.internal_api_key not in resp.text
 
 
 def test_missing_key_body_never_echoes_the_expected_key(real_auth_client: TestClient) -> None:
-    resp = real_auth_client.get("/api/v1/orders")
+    resp = real_auth_client.get("/api/v1/purchase-orders")
 
     assert resp.status_code == 401
     assert TEST_INTERNAL_API_KEY not in resp.text
-    assert get_settings().internal_api_key not in resp.text
+    assert get_settings().app.internal_api_key not in resp.text
 
 
 def test_dependency_rejects_a_missing_header_directly() -> None:
@@ -101,7 +102,9 @@ def test_dependency_rejects_a_missing_header_directly() -> None:
 def test_dependency_accepts_the_configured_key_directly() -> None:
     settings = get_settings()
 
-    assert require_internal_api_key(x_internal_api_key=settings.internal_api_key, settings=settings) is None
+    assert (
+        require_internal_api_key(x_internal_api_key=settings.app.internal_api_key, settings=settings) is None
+    )
 
 
 def test_dependency_rejects_a_non_ascii_key_directly() -> None:
@@ -121,14 +124,14 @@ def test_settings_fails_loudly_when_internal_api_key_is_unset(monkeypatch: pytes
     """No default is allowed to silently accept requests: an absent
     INTERNAL_API_KEY must fail Settings construction, not fall back to
     something that would pass validation and disable the gate."""
-    monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
+    monkeypatch.delenv("APP_INTERNAL_API_KEY", raising=False)
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
 
 def test_settings_rejects_a_blank_internal_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("INTERNAL_API_KEY", "   ")
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", "   ")
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
@@ -137,14 +140,14 @@ def test_settings_rejects_a_blank_internal_api_key(monkeypatch: pytest.MonkeyPat
 def test_settings_rejects_the_env_example_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:
     """A fresh `cp .env.example .env` must fail startup, not silently run
     with a well-known, publicly-visible secret."""
-    monkeypatch.setenv("INTERNAL_API_KEY", "replace-with-a-generated-secret")
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", "replace-with-a-generated-secret")
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
 
 def test_settings_rejects_a_too_short_internal_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("INTERNAL_API_KEY", "short-but-not-blank")
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", "short-but-not-blank")
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
@@ -153,10 +156,12 @@ def test_settings_rejects_a_too_short_internal_api_key(monkeypatch: pytest.Monke
 def test_settings_accepts_a_real_looking_internal_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """64 hex characters -- the shape secrets.token_hex(32) produces, which is
     what .env.example tells operators to generate."""
-    monkeypatch.setenv("INTERNAL_API_KEY", "3f8a1c94e27b06d5af13e8c72b409d61fa5e2d78c0b34917e6da85f2c71b0348")
+    monkeypatch.setenv(
+        "APP_INTERNAL_API_KEY", "3f8a1c94e27b06d5af13e8c72b409d61fa5e2d78c0b34917e6da85f2c71b0348"
+    )
 
     assert (
-        Settings(_env_file=None).internal_api_key
+        Settings(_env_file=None).app.internal_api_key
         == "3f8a1c94e27b06d5af13e8c72b409d61fa5e2d78c0b34917e6da85f2c71b0348"
     )
 
@@ -166,7 +171,7 @@ def test_settings_rejects_a_urlsafe_key_despite_equal_entropy(monkeypatch: pytes
     the floor is a character count, so it is rejected. Pinned deliberately: the
     minimum enforces an encoding, not a strength, and the error message has to
     say which generator to use."""
-    monkeypatch.setenv("INTERNAL_API_KEY", "x" * 43)
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", "x" * 43)
 
     with pytest.raises(ValidationError, match="token_hex"):
         Settings(_env_file=None)

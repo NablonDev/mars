@@ -9,9 +9,10 @@ from sqlalchemy import JSON, DateTime, MetaData, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+PROCESS_SCHEMA = "process"
 CMIR_SCHEMA = "cmir"
-FINES_SCHEMA = "fines"
-PUBLIC_SCHEMA = "public"
+PENALTIES_SCHEMA = "penalties"
+LANGGRAPH_SCHEMA = "langgraph"
 
 # Keep index names aligned with the names used by Alembic migrations.
 INDEX_NAMING_CONVENTION = {

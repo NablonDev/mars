@@ -19,7 +19,7 @@ def build_job_queue(
     Both capabilities are returned separately so callers depend only on the
     protocol required by their operation.
     """
-    backend = settings.job_queue_backend
+    backend = settings.job_queue.backend
 
     if backend == JobQueueBackend.POSTGRES:
         queue = PostgresJobQueue(database)
@@ -29,4 +29,7 @@ def build_job_queue(
         service_bus_queue = ServiceBusJobQueue(database, settings)
         return service_bus_queue, service_bus_queue
 
-    raise ValidationError(f"Unknown job_queue_backend={backend!r}; expected one of {tuple(JobQueueBackend)}.")
+    raise ValidationError(
+        code="UNKNOWN_JOB_QUEUE_BACKEND",
+        message=f"Unknown job_queue.backend={backend}; expected one of {tuple(JobQueueBackend)}.",
+    )

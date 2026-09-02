@@ -1,0 +1,53 @@
+"""API endpoints for `common.purchase_order`/`purchase_order_line` header/line
+CRUD.
+
+Header/line kept split per the ERP schema -- a purchase order is created with
+its lines in one request, and its lines are exposed separately as a nested
+listing (`app/api/v1/po_validation.py`'s `GET /purchase-orders/{id}/lines`).
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Query, status
+
+from app.api.dependencies import get_purchase_order_repository
+from app.core.envelope import Envelope, success_envelope
+from app.repositories.common.purchase_order import PurchaseOrderRepository
+from app.schemas.common.purchase_orders import (
+    PurchaseOrderLineResponse,
+    PurchaseOrderRequest,
+    PurchaseOrderResponse,
+)
+
+router = APIRouter(tags=["purchase-orders"])
+
+
+def _to_response(purchase_orders: PurchaseOrderRepository, po: dict) -> PurchaseOrderResponse:
+    lines = [PurchaseOrderLineResponse.model_validate(line) for line in purchase_orders.list_lines(po["id"])]
+    return PurchaseOrderResponse.model_validate({**po, "lines": lines})
+
+
+@router.post(
+    "/purchase-orders",
+    response_model=Envelope[PurchaseOrderResponse],
+    status_code=status.HTTP_201_CREATED,
+)
+def create_purchase_order(
+    body: PurchaseOrderRequest,
+    purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
+) -> Envelope[PurchaseOrderResponse]:
+    fields = body.model_dump(exclude={"lines"})
+    purchase_order_number = fields.pop("purchase_order_number")
+    po = purchase_orders.create_purchase_order(purchase_order_number, **fields)
+    for line in body.lines:
+        purchase_orders.add_line(purchase_order_id=po["id"], **line.model_dump())
+    return success_envelope(_to_response(purchase_orders, po), message="Purchase order created.")
+
+
+@router.get("/purchase-orders", response_model=Envelope[list[PurchaseOrderResponse]])
+def list_purchase_orders(
+    order_status: str | None = Query(default=None),
+    purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
+) -> Envelope[list[PurchaseOrderResponse]]:
+    rows = [_to_response(purchase_orders, po) for po in purchase_orders.list_purchase_orders(order_status)]
+    return success_envelope(rows)

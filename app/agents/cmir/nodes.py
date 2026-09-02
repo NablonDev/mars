@@ -5,14 +5,13 @@ from typing import Literal
 from langgraph.types import interrupt
 
 from app.agents.cmir.state import GraphState
-from app.repositories.action_log import PostgresActionLogRepository
-from app.repositories.cmir import CMIRVersionConflict, PostgresCMIRRepository
-from app.repositories.email import PostgresEmailRepository
-from app.repositories.observability import PostgresWorkflowThreadRepository
-from app.schemas.cmir import CMIR, CMIRStatus, EmailMessage, WorkflowThread
-from app.services.cmir_extractor import AzureOpenAICMIRExtractor
-from app.services.cmir_merge import merge_with_active
-from app.services.cmir_validation import CMIRValidator
+from app.repositories.cmir.action_log import ActionLogRepository
+from app.repositories.cmir.cmir_record import CmirRecordRepository, CmirVersionConflict
+from app.repositories.cmir.email import EmailRepository
+from app.schemas.cmir import Cmir, CmirStatus, EmailMessage
+from app.services.cmir.extractor import AzureOpenAICmirExtractor
+from app.services.cmir.merge import merge_with_active
+from app.services.cmir.validation import CmirValidator
 from app.services.email_reader import GmailImapReader
 
 ACTOR = "AI Agent"
@@ -24,17 +23,23 @@ class WorkflowNodes:
     Every method is a single, small step. All collaborators are injected
     (Dependency Inversion) so the graph never talks to IMAP, Postgres or
     Azure OpenAI directly - only through the collaborators passed in here.
+
+    No `workflow_thread_repository` collaborator here (unlike the
+    pre-restructure version of this class): `process.workflow_thread` rows
+    are now created lazily, exactly once per run, at the first human
+    interrupt -- exclusively by `CmirRunService._handle_graph_state` (see
+    that method's docstring). Nothing in this graph creates one eagerly any
+    more, so there is nothing for a node to inject that repository into.
     """
 
     def __init__(
         self,
         email_reader: GmailImapReader,
-        extractor: AzureOpenAICMIRExtractor,
-        validator: CMIRValidator,
-        email_repository: PostgresEmailRepository,
-        cmir_repository: PostgresCMIRRepository,
-        action_log_repository: PostgresActionLogRepository,
-        workflow_thread_repository: PostgresWorkflowThreadRepository | None = None,
+        extractor: AzureOpenAICmirExtractor,
+        validator: CmirValidator,
+        email_repository: EmailRepository,
+        cmir_repository: CmirRecordRepository,
+        action_log_repository: ActionLogRepository,
     ) -> None:
         self._email_reader = email_reader
         self._extractor = extractor
@@ -42,7 +47,6 @@ class WorkflowNodes:
         self._email_repository = email_repository
         self._cmir_repository = cmir_repository
         self._action_log_repository = action_log_repository
-        self._workflow_thread_repository = workflow_thread_repository
 
     # ---- extraction / persistence steps ---- #
 
@@ -50,23 +54,12 @@ class WorkflowNodes:
         email = EmailMessage(**state["email"])
         email_id = state.get("email_id")
         if email_id is None:
-            email_id = self._email_repository.save(email)
-        thread_id = state.get("thread_id")
-        if thread_id and self._workflow_thread_repository is not None:
-            self._workflow_thread_repository.create(
-                WorkflowThread(
-                    thread_id=thread_id,
-                    agent_run_id=state["run_id"],
-                    batch_id=state["batch_id"],
-                    email_id=email_id,
-                    source_message_id=email.source_message_id,
-                    sender=email.sender,
-                    subject=email.subject,
-                    status="running",
-                    current_node="persist_email",
-                    stage="INGESTING",
-                    latest_snapshot={"email": state["email"], "cmir": state.get("cmir", {})},
-                )
+            email_id = self._email_repository.save(
+                sender=email.sender,
+                subject=email.subject,
+                raw_content=email.body,
+                source_message_id=email.source_message_id,
+                source_imap_id=email.imap_id,
             )
         self._action_log_repository.log(email_id, "Email Received", ACTOR, {"sender": email.sender})
         return {"email_id": email_id}
@@ -77,7 +70,7 @@ class WorkflowNodes:
         return {"cmir": cmir.model_dump()}
 
     def identify_existing_cmir(self, state: GraphState) -> GraphState:
-        """Look up the current active cmir_records row for this entity, if any.
+        """Look up the current active cmir_record row for this entity, if any.
 
         Runs on every pass through this part of the graph, including a loop back
         from collect_missing_fields -- a mandatory field (e.g. customer_identity)
@@ -85,7 +78,7 @@ class WorkflowNodes:
         is what lets prepare_diff/validate_cmir see an accurate existing record and
         diff instead of one computed against a blank identity.
         """
-        cmir = CMIR(**state["cmir"])
+        cmir = Cmir(**state["cmir"])
         existing = self._cmir_repository.get_current(
             cmir.customer_identity, cmir.target_customer_material_ref
         )
@@ -101,7 +94,7 @@ class WorkflowNodes:
         to detect a conflicting concurrent write.
         """
         existing = state.get("existing_cmir")
-        proposed = CMIR(**state["cmir"])
+        proposed = Cmir(**state["cmir"])
         merged, diff = merge_with_active(existing, proposed)
         return {
             "cmir": merged.model_dump(),
@@ -110,17 +103,19 @@ class WorkflowNodes:
         }
 
     def validate_cmir(self, state: GraphState) -> GraphState:
-        cmir = CMIR(**state["cmir"])
+        cmir = Cmir(**state["cmir"])
         cmir = self._validator.validate(cmir)
         return {"cmir": cmir.model_dump()}
 
     def persist_ai_result(self, state: GraphState) -> GraphState:
-        cmir = CMIR(**state["cmir"])
-        self._email_repository.update_extraction(state["email_id"], cmir)
+        cmir = Cmir(**state["cmir"])
+        self._email_repository.update_extraction(
+            state["email_id"], cmir.model_dump(), cmir.missing_fields, cmir.status
+        )
 
         action = (
             "Pending Human Action"
-            if cmir.status == CMIRStatus.PENDING_HUMAN_ACTION.value
+            if cmir.status == CmirStatus.PENDING_HUMAN_ACTION.value
             else "Extraction Complete"
         )
         self._action_log_repository.log(
@@ -140,7 +135,7 @@ class WorkflowNodes:
                 "missing_fields": cmir_dict["missing_fields"],
             }
         )
-        merged = CMIR(**cmir_dict)
+        merged = Cmir(**cmir_dict)
         for field_name, value in answers.items():
             setattr(merged, field_name, value)
         return {"cmir": merged.model_dump()}
@@ -165,7 +160,7 @@ class WorkflowNodes:
     def persist_cmir(self, state: GraphState) -> GraphState:
         """Attempt to commit the approved (merged) draft as the new current version.
 
-        Does not raise on a version conflict -- it catches CMIRVersionConflict and
+        Does not raise on a version conflict -- it catches CmirVersionConflict and
         reports the outcome through cmir_write_result instead, so
         route_after_persist_cmir can send the graph to handle_version_conflict rather
         than crashing the run. cmir_version_token is whatever prepare_diff captured
@@ -173,15 +168,15 @@ class WorkflowNodes:
         re-checks it (and, as the real backstop, the database's own partial unique
         index) at commit time.
         """
-        cmir = CMIR(**state["cmir"])
+        cmir = Cmir(**state["cmir"])
         try:
             self._cmir_repository.supersede_and_insert(
                 customer_identity=cmir.customer_identity,
                 target_customer_material_ref=cmir.target_customer_material_ref,
-                merged=cmir,
+                merged=cmir.model_dump(),
                 expected_current_id=state.get("cmir_version_token"),
             )
-        except CMIRVersionConflict:
+        except CmirVersionConflict:
             return {"cmir_write_result": "conflict"}
         self._action_log_repository.log(state["email_id"], "CMIR Created", ACTOR, {"status": cmir.status})
         return {"cmir_write_result": "committed"}
@@ -199,9 +194,9 @@ class WorkflowNodes:
         """Record that persist_cmir's write was rejected by a concurrent update.
 
         Reached only via a routing decision after persist_cmir catches
-        CMIRVersionConflict (see app.repositories.cmir) -- this node itself doesn't
-        need to know how that was detected, only that it happened, so it stays
-        decoupled from persist_cmir's exact implementation.
+        CmirVersionConflict (see app.repositories.cmir.cmir_record) -- this node
+        itself doesn't need to know how that was detected, only that it happened,
+        so it stays decoupled from persist_cmir's exact implementation.
         """
         cmir = state["cmir"]
         self._action_log_repository.log(

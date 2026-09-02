@@ -3,17 +3,18 @@ app/repositories/fine_mitigation/mitigation.py (DB round-trip), run against in-m
 SQLite (see tests/conftest.py)."""
 
 from datetime import date
+from uuid import uuid4
 
 from sqlalchemy import select
 
 from app.models import MitigationInput
-from app.repositories.fine_mitigation.mitigation import MitigationRepository
-from app.services.fine_mitigation import MitigationEngine, MitigationInputs, ShortageCause
-from app.services.fine_projection import (
+from app.repositories.penalties.mitigation import MitigationInputRepository
+from app.services.penalties.mitigation import MitigationEngine, MitigationInputs, ShortageCause
+from app.services.penalties.projection import (
     SHORTAGE_VIOLATION_TYPES,
     CalcType,
-    FineRule,
     OrderSnapshot,
+    PenaltyRule,
     ProductionStatus,
     ProjectionEngine,
 )
@@ -188,7 +189,7 @@ def test_paid_option_that_costs_more_than_it_saves_still_loses_to_accept():
 
 
 def test_split_shipment_zeroes_only_the_delay_component():
-    """Mixed shortage+delay order: SPLIT_SHIPMENT's projected_fine_after
+    """Mixed shortage+delay order: SPLIT_SHIPMENT's projected_penalty_after
     must equal only the shortage-side violation, proving the delay
     component (OTIF_LATE) was zeroed and the shortage component wasn't."""
     projection = ProjectionEngine().project(MIXED_SHORTAGE_DELAY_SNAPSHOT, MIXED_SHORTAGE_DELAY_RULES)
@@ -197,11 +198,13 @@ def test_split_shipment_zeroes_only_the_delay_component():
     )
     split = _options_by_action(options)["SPLIT_SHIPMENT"]
 
-    shortage_only_fine = sum(
-        v.expected_fine for v in projection.violations if v.violation_type in SHORTAGE_VIOLATION_TYPES
+    shortage_only_penalty = sum(
+        v.expected_penalty_amount
+        for v in projection.violations
+        if v.violation_type in SHORTAGE_VIOLATION_TYPES
     )
-    assert split.projected_fine_after == round(shortage_only_fine, 2)
-    assert split.projected_fine_after < projection.total_expected_fine
+    assert split.projected_penalty_after == round(shortage_only_penalty, 2)
+    assert split.projected_penalty_after < projection.total_expected_penalty_amount
     assert split.action_cost == MIXED_SHORTAGE_DELAY_INPUTS.split_shipment_handling_cost
 
 
@@ -216,7 +219,7 @@ def test_faster_carrier_hard_excluded_when_no_delay_type_rule_applies():
         confirmed_qty=1000,
         production_status=ProductionStatus.ON_TRACK,
     )
-    rules = [FineRule("RULE-NO-DELAY", "SHORT_SHIP", CalcType.PER_UNIT, rate=3.0, threshold_pct=0.0)]
+    rules = [PenaltyRule("RULE-NO-DELAY", "SHORT_SHIP", CalcType.PER_UNIT, rate=3.0, threshold_pct=0.0)]
     inputs = MitigationInputs(
         order_id="MIT-NO-DELAY-RULE",
         express_carrier_cost=100.0,
@@ -231,37 +234,44 @@ def test_faster_carrier_hard_excluded_when_no_delay_type_rule_applies():
 
 
 # ---------------------------------------------------------------------
-# Repository-level (DB) tests
+# Repository-level (DB) tests -- was against the old MitigationRepository
+# (business-string order_id); now MitigationInputRepository, keyed by the
+# UUID surrogate purchase_order_id (see app/repositories/penalties/mitigation.py).
 # ---------------------------------------------------------------------
 
 
 def test_get_inputs_returns_defaults_when_absent(db_session):
-    repo = MitigationRepository(db_session)
+    repo = MitigationInputRepository(db_session)
 
-    inputs = repo.get_inputs("NO-SUCH-ORDER")
+    missing_id = uuid4()
+    inputs = repo.get_inputs(missing_id)
 
-    assert inputs == MitigationInputs(order_id="NO-SUCH-ORDER")
+    assert inputs == MitigationInputs(order_id=str(missing_id))
 
 
-def test_upsert_then_get_round_trips(services, db_session):
-    services.master_data.add_retailer("RET-MIT", "Mitigation Test Co", None)
-    services.master_data.add_sku("SKU-MIT", "MAT-MIT", None)
-    services.master_data.add_location("LOC-MIT", None, None)
-    services.orders.create_order(
-        order_id="ORD-MIT",
-        retailer_id="RET-MIT",
-        sku_id="SKU-MIT",
-        ship_from_location_id="LOC-MIT",
-        order_qty=100,
-        unit_price=5.0,
+def test_upsert_then_get_round_trips(repos, db_session):
+    retailer = repos.master_data.add_retailer("RET-MIT", "Mitigation Test Co", None)
+    material = repos.master_data.add_material("MAT-MIT", None)
+    plant = repos.master_data.add_plant("PLANT-MIT", None, None)
+    purchase_order = repos.purchase_orders.create_purchase_order(
+        purchase_order_number="ORD-MIT",
+        retailer_id=retailer["id"],
         order_date=date(2026, 8, 1),
         requested_delivery_date=date(2026, 8, 10),
         required_ship_date=date(2026, 8, 8),
     )
-    repo = MitigationRepository(db_session)
+    repos.purchase_orders.add_line(
+        purchase_order_id=purchase_order["id"],
+        line_number="10",
+        ordered_quantity=100,
+        unit_price=5.0,
+        material_id=material["id"],
+        plant_id=plant["id"],
+    )
+    purchase_order_id = purchase_order["id"]
 
-    repo.upsert_inputs(
-        order_id="ORD-MIT",
+    repos.mitigation_inputs.upsert_inputs(
+        purchase_order_id=purchase_order_id,
         shortage_cause="LABOR_CAPACITY",
         shortage_cause_confirmed=True,
         capacity_boost_cost_per_unit=2.50,
@@ -273,16 +283,20 @@ def test_upsert_then_get_round_trips(services, db_session):
         split_shipment_handling_cost=25.0,
     )
 
-    inserted = repo.get_inputs("ORD-MIT")
+    inserted = repos.mitigation_inputs.get_inputs(purchase_order_id)
     assert inserted.shortage_cause == ShortageCause.LABOR_CAPACITY
     assert inserted.capacity_boost_cost_per_unit == 2.50
 
     # Idempotent: calling again with a changed field updates in place,
-    # rather than raising a duplicate-key error on order_id.
-    repo.upsert_inputs(order_id="ORD-MIT", capacity_boost_cost_per_unit=9.99)
-    updated = repo.get_inputs("ORD-MIT")
+    # rather than raising a duplicate-key error on purchase_order_id.
+    repos.mitigation_inputs.upsert_inputs(
+        purchase_order_id=purchase_order_id, capacity_boost_cost_per_unit=9.99
+    )
+    updated = repos.mitigation_inputs.get_inputs(purchase_order_id)
     assert updated.capacity_boost_cost_per_unit == 9.99
     assert updated.shortage_cause == ShortageCause.LABOR_CAPACITY  # untouched fields survive
 
-    rows = db_session.scalars(select(MitigationInput).where(MitigationInput.order_id == "ORD-MIT")).all()
+    rows = db_session.scalars(
+        select(MitigationInput).where(MitigationInput.purchase_order_id == purchase_order_id)
+    ).all()
     assert len(rows) == 1  # updated in place, not duplicated

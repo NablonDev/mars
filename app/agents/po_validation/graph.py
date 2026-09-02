@@ -6,13 +6,13 @@ from langgraph.graph import END, StateGraph
 from app.agents.po_validation.nodes import PoValidationNodes
 from app.agents.po_validation.state import POGraphState
 from app.core.tracing import traced
-from app.repositories.observability import PostgresAgentTraceRepository
+from app.repositories.process.agent_registry import AgentTraceRepository
 
 
 def build_po_validation_graph(
     nodes: PoValidationNodes,
     checkpointer: BaseCheckpointSaver,
-    trace_repo: PostgresAgentTraceRepository,
+    trace_repo: AgentTraceRepository,
 ):
     """Wires the node functions into the PO Validation graph (PRD §6.1).
 

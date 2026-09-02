@@ -1,134 +1,170 @@
+"""Integration tests for `CmirRecordRepository` against a real Postgres
+instance -- unlike the unit suite, which stubs the Session itself (see
+tests/unit/repositories/test_cmir_repositories.py).
+
+Was against `PostgresCMIRRepository`/`CMIRRepository` (`app/repositories/cmir.py`,
+a per-call `Database`-session repository keyed by `app.schemas.cmir.Cmir`).
+Relocated onto `app.repositories.cmir.cmir_record.CmirRecordRepository`
+(injected-`Session` pattern, `merged` passed as a plain dict -- see that
+module's docstring for why it no longer depends on the `Cmir` schema).
+
+Skips cleanly (not an error) when `DATABASE_URL` isn't pointed at a
+reachable Postgres instance, same convention as
+tests/integration/test_job_queue_postgres.py.
+"""
+
 from __future__ import annotations
 
-import os
-import unittest
 from uuid import uuid4
 
-from sqlalchemy import make_url, text
+import pytest
+from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
-import app.models  # noqa: F401 -- import every ORM model so Base.metadata is fully populated
-from app.db.base import Base
+from app.core.config import get_settings
 from app.db.session import Database
-from app.repositories.cmir import CMIRVersionConflict, PostgresCMIRRepository
-from app.schemas.cmir import CMIR
-
-_DEFAULT_TEST_DATABASE_URL = "postgresql+psycopg://cmir_user:cmir_pass@localhost:5432/cmir_db"
+from app.repositories.cmir.cmir_record import CmirRecordRepository, CmirVersionConflict
 
 
-def _test_database_url() -> str:
-    return os.getenv("DATABASE_URL", _DEFAULT_TEST_DATABASE_URL)
+def _connect_or_none() -> Database | None:
+    settings = get_settings()
+    if not settings.database.url.startswith("postgresql"):
+        return None
+
+    db = Database(settings.database.url)
+    try:
+        with db.engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except OperationalError:
+        db.dispose()
+        return None
+    return db
 
 
-class PostgresCMIRRepositoryIntegrationTests(unittest.TestCase):
-    """Exercises PostgresCMIRRepository against a real Postgres connection and a
-    real SQLAlchemy session -- unlike the unit suite, which stubs the Session
-    itself (see tests/unit/repositories/test_cmir_repositories.py).
+@pytest.fixture(scope="module")
+def pg_database():
+    db = _connect_or_none()
+    if db is None:
+        pytest.skip(
+            "No reachable Postgres DATABASE_URL configured -- skipping CMIR-repository Postgres "
+            "integration tests."
+        )
+    db.create_all_tables()
+    yield db
+    db.dispose()
 
-    Requires a reachable Postgres at DATABASE_URL (the docker-compose `db`
-    service works out of the box: `docker compose up -d db`). Skips rather
-    than failing when no database is reachable, so `python -m unittest
-    discover -s tests` still runs without a live Postgres connection, per
-    this repo's existing testing convention (see CLAUDE.local.md).
-    """
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        database_url = _test_database_url()
-        cls.database = Database(database_url)
-        try:
-            with cls.database.engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-        except OperationalError as exc:
-            host = make_url(database_url).render_as_string(hide_password=True)
-            raise unittest.SkipTest(
-                f"Postgres not reachable at {host} -- "
-                f"run `docker compose up -d db` to enable this test ({exc})"
-            )
-        Base.metadata.create_all(cls.database.engine)
+@pytest.fixture
+def identity():
+    """Unique per test so repeated runs against a shared dev database never collide."""
+    return f"Integration Test Customer {uuid4().hex[:8]}"
 
-    def setUp(self) -> None:
-        self.repository = PostgresCMIRRepository(self.database)
-        # Unique per test run so repeated runs against a shared dev database never collide.
-        self.customer_identity = f"Integration Test Customer {uuid4().hex[:8]}"
-        self.material_ref = f"MAT-{uuid4().hex[:8]}"
 
-    def tearDown(self) -> None:
-        with self.database.session() as session:
-            session.execute(
-                text("DELETE FROM cmir.cmir_records WHERE customer_identity = :customer_identity"),
-                {"customer_identity": self.customer_identity},
-            )
+@pytest.fixture
+def material_ref():
+    return f"MAT-{uuid4().hex[:8]}"
 
-    def test_supersede_and_insert_then_get_current_round_trip(self) -> None:
-        cmir = CMIR(
-            customer_identity=self.customer_identity,
-            target_customer_material_ref=self.material_ref,
-            brand="IntegrationBrand",
+
+@pytest.fixture(autouse=True)
+def _cleanup(pg_database: Database, identity: str):
+    yield
+    with pg_database.session() as session:
+        session.execute(
+            text("DELETE FROM cmir.cmir_record WHERE customer_identity = :customer_identity"),
+            {"customer_identity": identity},
         )
 
-        new_id = self.repository.supersede_and_insert(
-            customer_identity=self.customer_identity,
-            target_customer_material_ref=self.material_ref,
-            merged=cmir,
+
+def _merged(*, customer_identity: str, target_customer_material_ref: str, brand: str) -> dict:
+    return {
+        "sender_type": "EMAIL",
+        "customer_identity": customer_identity,
+        "material_identity": "MAT-IDENTITY",
+        "intent_phrase": None,
+        "existing_cmir_ref": "",
+        "brand": brand,
+        "site": "",
+        "target_grd_code": "",
+        "target_customer_material_ref": target_customer_material_ref,
+        "effective_date": None,
+        "reason": None,
+    }
+
+
+def test_supersede_and_insert_then_get_current_round_trips(
+    pg_database: Database, identity: str, material_ref: str
+):
+    with pg_database.session() as session:
+        repo = CmirRecordRepository(session)
+
+        new_id = repo.supersede_and_insert(
+            customer_identity=identity,
+            target_customer_material_ref=material_ref,
+            merged=_merged(
+                customer_identity=identity,
+                target_customer_material_ref=material_ref,
+                brand="IntegrationBrand",
+            ),
             expected_current_id=None,
         )
 
-        current = self.repository.get_current(self.customer_identity, self.material_ref)
-        self.assertIsNotNone(current)
-        self.assertEqual(current["id"], new_id)
-        self.assertEqual(current["brand"], "IntegrationBrand")
+        current = repo.get_current(identity, material_ref)
+        assert current is not None
+        assert current["id"] == new_id
+        assert current["brand"] == "IntegrationBrand"
 
-    def test_supersede_and_insert_retires_previous_current_row(self) -> None:
-        first = CMIR(
-            customer_identity=self.customer_identity,
-            target_customer_material_ref=self.material_ref,
-            brand="FirstVersion",
-        )
-        first_id = self.repository.supersede_and_insert(
-            customer_identity=self.customer_identity,
-            target_customer_material_ref=self.material_ref,
-            merged=first,
+
+def test_supersede_and_insert_retires_previous_current_row(
+    pg_database: Database, identity: str, material_ref: str
+):
+    with pg_database.session() as session:
+        repo = CmirRecordRepository(session)
+
+        first_id = repo.supersede_and_insert(
+            customer_identity=identity,
+            target_customer_material_ref=material_ref,
+            merged=_merged(
+                customer_identity=identity, target_customer_material_ref=material_ref, brand="FirstVersion"
+            ),
             expected_current_id=None,
         )
 
-        second = CMIR(
-            customer_identity=self.customer_identity,
-            target_customer_material_ref=self.material_ref,
-            brand="SecondVersion",
-        )
-        second_id = self.repository.supersede_and_insert(
-            customer_identity=self.customer_identity,
-            target_customer_material_ref=self.material_ref,
-            merged=second,
+        second_id = repo.supersede_and_insert(
+            customer_identity=identity,
+            target_customer_material_ref=material_ref,
+            merged=_merged(
+                customer_identity=identity, target_customer_material_ref=material_ref, brand="SecondVersion"
+            ),
             expected_current_id=first_id,
         )
 
-        current = self.repository.get_current(self.customer_identity, self.material_ref)
-        self.assertEqual(current["id"], second_id)
-        self.assertEqual(current["brand"], "SecondVersion")
+        current = repo.get_current(identity, material_ref)
+        assert current is not None
+        assert current["id"] == second_id
+        assert current["brand"] == "SecondVersion"
 
-    def test_supersede_and_insert_raises_conflict_on_stale_expected_id(self) -> None:
-        cmir = CMIR(
-            customer_identity=self.customer_identity,
-            target_customer_material_ref=self.material_ref,
-            brand="OnlyVersion",
-        )
-        self.repository.supersede_and_insert(
-            customer_identity=self.customer_identity,
-            target_customer_material_ref=self.material_ref,
-            merged=cmir,
+
+def test_supersede_and_insert_raises_conflict_on_stale_expected_id(
+    pg_database: Database, identity: str, material_ref: str
+):
+    with pg_database.session() as session:
+        repo = CmirRecordRepository(session)
+
+        repo.supersede_and_insert(
+            customer_identity=identity,
+            target_customer_material_ref=material_ref,
+            merged=_merged(
+                customer_identity=identity, target_customer_material_ref=material_ref, brand="OnlyVersion"
+            ),
             expected_current_id=None,
         )
 
-        with self.assertRaises(CMIRVersionConflict):
-            self.repository.supersede_and_insert(
-                customer_identity=self.customer_identity,
-                target_customer_material_ref=self.material_ref,
-                merged=cmir,
+        with pytest.raises(CmirVersionConflict):
+            repo.supersede_and_insert(
+                customer_identity=identity,
+                target_customer_material_ref=material_ref,
+                merged=_merged(
+                    customer_identity=identity, target_customer_material_ref=material_ref, brand="OnlyVersion"
+                ),
                 expected_current_id=None,  # stale: a current row already exists now
             )
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -1,73 +1,116 @@
-"""Register and re-export all ORM models so they are available through `app.models`."""
+"""Register and re-export all ORM models so they are available through
+`app.models`.
+
+Four Postgres schemas: `common` (shared master/fulfillment data), `process`
+(shared job/agent/workflow backbone), `cmir` (CMIR-only), `penalties`
+(penalties-only). No tables in `public`. See docs/DATABASE.md and
+`app/db/base.py` for the schema constants.
+"""
 
 from app.db.base import Base, TimestampMixin
-from app.models.agent_registry import Agent, PromptVersion
-from app.models.cmir import CMIRRecordORM
-from app.models.email import EmailActionLogORM, EmailEventORM
-from app.models.enums import JobItemStatus, JobRunType, JobTaskType, SummaryStatus
-from app.models.fine_master_data import Carrier, Location, Retailer, Sku
-from app.models.fine_mitigation.mitigation import MitigationInput
-from app.models.fine_mitigation.result import MitigationResult
-from app.models.fine_mitigation.summary import MitigationSummary
-from app.models.fine_projection.fulfillment_facts import (
+from app.models.cmir import (
+    CmirJobItemContext,
+    CmirJobRunContext,
+    CmirRecord,
+    EmailActionLog,
+    EmailEvent,
+)
+from app.models.common import (
+    Carrier,
+    Delivery,
+    DeliveryLine,
     DemandException,
+    Material,
+    MaterialMaster,
     OrderConfirmation,
+    OrderConfirmationLine,
+    Plant,
+    PoDeliveryChangeRequest,
+    ProductionOrder,
     ProductionSchedule,
+    PurchaseOrder,
+    PurchaseOrderLine,
+    Retailer,
+    RetailerLocation,
     Shipment,
+    Sku,
+    StorageLocation,
+    Warehouse,
 )
-from app.models.fine_projection.outcomes import ActualFine, ProjectedFine
-from app.models.fine_projection.po_delivery_change_request import PoDeliveryChangeRequest
-from app.models.fine_projection.summary import ProjectionSummary
-from app.models.fine_rule import FineRule, FineRuleTier
-from app.models.job_queue import JobItem, JobRun
-from app.models.observability import (
-    AgentRunORM,
-    AgentTraceORM,
-    HITLActionORM,
-    PendingHumanActionORM,
-    WorkflowThreadORM,
+from app.models.enums import AgentDomain, JobItemStatus, JobRunType, JobTaskType, SummaryStatus, SummaryType
+from app.models.penalties import (
+    ActualPenalty,
+    MitigationInput,
+    MitigationOption,
+    PenaltyJobItemContext,
+    PenaltyJobRunContext,
+    PenaltyProjection,
+    PenaltyRule,
+    PenaltyRuleTier,
+    PenaltySummary,
 )
-from app.models.order import Order
-from app.models.po_validation import MaterialMasterORM, PoLineErrorORM, PoLineORM
+from app.models.process import (
+    Agent,
+    AgentRun,
+    AgentTrace,
+    HumanAction,
+    JobItem,
+    JobRun,
+    ProcessingError,
+    WorkflowThread,
+    WorkflowThreadSubject,
+)
 
 __all__ = [
-    "ActualFine",
+    "ActualPenalty",
     "Agent",
-    "AgentRunORM",
-    "AgentTraceORM",
+    "AgentDomain",
+    "AgentRun",
+    "AgentTrace",
     "Base",
-    "CMIRRecordORM",
     "Carrier",
+    "CmirJobItemContext",
+    "CmirJobRunContext",
+    "CmirRecord",
+    "Delivery",
+    "DeliveryLine",
     "DemandException",
-    "EmailActionLogORM",
-    "EmailEventORM",
-    "FineRule",
-    "FineRuleTier",
-    "HITLActionORM",
+    "EmailActionLog",
+    "EmailEvent",
+    "HumanAction",
     "JobItem",
     "JobItemStatus",
     "JobRun",
     "JobRunType",
     "JobTaskType",
-    "Location",
-    "MaterialMasterORM",
+    "Material",
+    "MaterialMaster",
     "MitigationInput",
-    "MitigationResult",
-    "MitigationSummary",
-    "Order",
+    "MitigationOption",
     "OrderConfirmation",
-    "PendingHumanActionORM",
+    "OrderConfirmationLine",
+    "PenaltyJobItemContext",
+    "PenaltyJobRunContext",
+    "PenaltyProjection",
+    "PenaltyRule",
+    "PenaltyRuleTier",
+    "PenaltySummary",
+    "Plant",
     "PoDeliveryChangeRequest",
-    "PoLineErrorORM",
-    "PoLineORM",
+    "ProcessingError",
+    "ProductionOrder",
     "ProductionSchedule",
-    "ProjectedFine",
-    "ProjectionSummary",
-    "PromptVersion",
+    "PurchaseOrder",
+    "PurchaseOrderLine",
     "Retailer",
+    "RetailerLocation",
     "Shipment",
     "Sku",
+    "StorageLocation",
     "SummaryStatus",
+    "SummaryType",
     "TimestampMixin",
-    "WorkflowThreadORM",
+    "Warehouse",
+    "WorkflowThread",
+    "WorkflowThreadSubject",
 ]
