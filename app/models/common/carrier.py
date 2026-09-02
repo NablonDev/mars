@@ -5,12 +5,11 @@ from uuid import UUID
 from sqlalchemy import Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import COMMON_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
+from app.db.base import UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class Carrier(Base, TimestampMixin):
     __tablename__ = "carrier"
-    __table_args__ = ({"schema": COMMON_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     carrier_code: Mapped[str] = mapped_column(String(50), unique=True, index=True)

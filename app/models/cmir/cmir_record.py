@@ -11,7 +11,7 @@ from uuid import UUID
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import CMIR_SCHEMA, COMMON_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
+from app.db.base import CMIR_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class CmirRecord(Base, TimestampMixin):
@@ -20,7 +20,7 @@ class CmirRecord(Base, TimestampMixin):
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     purchase_order_line_id: Mapped[UUID | None] = mapped_column(
-        UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.purchase_order_line.id"), nullable=True
+        UUID_PK, ForeignKey("purchase_order_line.id"), nullable=True
     )
     email_event_id: Mapped[UUID | None] = mapped_column(
         UUID_PK, ForeignKey(f"{CMIR_SCHEMA}.email_event.id"), nullable=True

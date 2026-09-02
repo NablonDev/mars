@@ -195,6 +195,35 @@ def test_processing_error_log_and_list_for_job_item(repos, db_session):
     assert errors[0]["node_name"] == "check_material_master"
 
 
+def test_processing_error_log_and_list_for_purchase_order_line(repos):
+    """Gap 2: a purchase_order_line_id-keyed lookup, independent of any
+    job_item/agent_run -- covers a line that fails before ever reaching a
+    human interrupt (no workflow_thread exists yet)."""
+    retailer = repos.master_data.add_retailer("RET-PE", "Retailer", None, "SUM")
+    plant = repos.master_data.add_plant("PLANT-PE", None, None)
+    purchase_order = repos.purchase_orders.create_purchase_order(
+        purchase_order_number="PO-PE-1", retailer_id=retailer["id"], order_date=date(2026, 1, 1)
+    )
+    line = repos.purchase_orders.add_line(
+        purchase_order_id=purchase_order["id"],
+        line_number="10",
+        ordered_quantity=100,
+        unit_price=0.0,
+        plant_id=plant["id"],
+    )
+
+    repos.processing_errors.log(
+        error_type="LOOKUP_FAILURE",
+        purchase_order_line_id=line["id"],
+        node_name="check_material_master",
+    )
+
+    errors = repos.processing_errors.list_for_purchase_order_line(line["id"])
+    assert len(errors) == 1
+    assert errors[0]["purchase_order_line_id"] == line["id"]
+    assert errors[0]["node_name"] == "check_material_master"
+
+
 def test_processing_error_mark_resolved(repos, db_session):
     from app.models import JobItem, JobRun
 

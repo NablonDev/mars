@@ -10,20 +10,21 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 import app.models  # noqa: F401
-from app.db.base import CMIR_SCHEMA, COMMON_SCHEMA, PENALTIES_SCHEMA, PROCESS_SCHEMA, Base
+from app.db.base import CMIR_SCHEMA, PENALTIES_SCHEMA, PROCESS_SCHEMA, Base
 
 
 def apply_sqlite_schema_translation(engine: Engine) -> Engine:
     """Translate the application schema away for SQLite.
 
-    LANGGRAPH_SCHEMA is deliberately not included here -- no ORM model is
-    bound to it (LangGraph's own PostgresSaver populates it at runtime),
-    so there is nothing on Base.metadata that would need translating.
+    `common`'s former tables now live unqualified in `public`, so there is
+    nothing to translate for them any more. LANGGRAPH_SCHEMA is deliberately
+    not included here either -- no ORM model is bound to it (LangGraph's own
+    PostgresSaver populates it at runtime), so there is nothing on
+    Base.metadata that would need translating.
     """
     if engine.dialect.name == "sqlite":
         return engine.execution_options(
             schema_translate_map={
-                COMMON_SCHEMA: None,
                 PROCESS_SCHEMA: None,
                 CMIR_SCHEMA: None,
                 PENALTIES_SCHEMA: None,

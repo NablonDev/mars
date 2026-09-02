@@ -6,21 +6,16 @@ from uuid import UUID
 from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import COMMON_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
+from app.db.base import UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class ProductionOrder(Base, TimestampMixin):
     __tablename__ = "production_order"
-    __table_args__ = ({"schema": COMMON_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     production_order_number: Mapped[str] = mapped_column(String(100), unique=True, index=True)
-    material_id: Mapped[UUID | None] = mapped_column(
-        UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.material.id"), nullable=True
-    )
-    plant_id: Mapped[UUID | None] = mapped_column(
-        UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.plant.id"), nullable=True
-    )
+    material_id: Mapped[UUID | None] = mapped_column(UUID_PK, ForeignKey("material.id"), nullable=True)
+    plant_id: Mapped[UUID | None] = mapped_column(UUID_PK, ForeignKey("plant.id"), nullable=True)
     planned_quantity: Mapped[float | None] = mapped_column(Numeric(18, 3), nullable=True)
     produced_quantity: Mapped[float | None] = mapped_column(Numeric(18, 3), nullable=True)
     planned_start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -38,16 +33,13 @@ class ProductionSchedule(Base, TimestampMixin):
     wrinkle rather than a bug."""
 
     __tablename__ = "production_schedule"
-    __table_args__ = ({"schema": COMMON_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     production_order_id: Mapped[UUID | None] = mapped_column(
-        UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.production_order.id"), nullable=True
+        UUID_PK, ForeignKey("production_order.id"), nullable=True
     )
-    material_id: Mapped[UUID | None] = mapped_column(
-        UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.material.id"), nullable=True
-    )
-    plant_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.plant.id"))
+    material_id: Mapped[UUID | None] = mapped_column(UUID_PK, ForeignKey("material.id"), nullable=True)
+    plant_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey("plant.id"))
     scheduled_quantity: Mapped[float | None] = mapped_column(Numeric(18, 3), nullable=True)
     scheduled_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     scheduled_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

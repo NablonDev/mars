@@ -9,7 +9,6 @@ from sqlalchemy import JSON, DateTime, MetaData, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-COMMON_SCHEMA = "common"
 PROCESS_SCHEMA = "process"
 CMIR_SCHEMA = "cmir"
 PENALTIES_SCHEMA = "penalties"

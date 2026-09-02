@@ -46,7 +46,6 @@ depends_on: str | Sequence[str] | None = None
 
 CMIR = "cmir"
 PROCESS = "process"
-COMMON = "common"
 
 
 def upgrade() -> None:
@@ -95,7 +94,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(["email_event_id"], [f"{CMIR}.email_event.id"]),
-        sa.ForeignKeyConstraint(["purchase_order_line_id"], [f"{COMMON}.purchase_order_line.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_line_id"], ["purchase_order_line.id"]),
         sa.ForeignKeyConstraint(["workflow_thread_id"], [f"{PROCESS}.workflow_thread.id"]),
         sa.PrimaryKeyConstraint("workflow_thread_id"),
         schema=PROCESS,
@@ -142,7 +141,7 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(["email_event_id"], [f"{CMIR}.email_event.id"]),
         sa.ForeignKeyConstraint(["job_item_id"], [f"{PROCESS}.job_item.id"]),
-        sa.ForeignKeyConstraint(["purchase_order_line_id"], [f"{COMMON}.purchase_order_line.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_line_id"], ["purchase_order_line.id"]),
         sa.PrimaryKeyConstraint("job_item_id"),
         schema=CMIR,
     )
@@ -179,7 +178,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(["email_event_id"], [f"{CMIR}.email_event.id"]),
-        sa.ForeignKeyConstraint(["purchase_order_line_id"], [f"{COMMON}.purchase_order_line.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_line_id"], ["purchase_order_line.id"]),
         sa.ForeignKeyConstraint(["superseded_by_id"], [f"{CMIR}.cmir_record.id"]),
         sa.PrimaryKeyConstraint("id"),
         schema=CMIR,

@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import Boolean, Date, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import COMMON_SCHEMA, PENALTIES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
+from app.db.base import PENALTIES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class MitigationInput(Base, TimestampMixin):
@@ -22,7 +22,7 @@ class MitigationInput(Base, TimestampMixin):
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     purchase_order_id: Mapped[UUID] = mapped_column(
-        UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.purchase_order.id"), unique=True, index=True
+        UUID_PK, ForeignKey("purchase_order.id"), unique=True, index=True
     )
     shortage_cause: Mapped[str] = mapped_column(String(50), default="UNKNOWN")
     shortage_cause_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -55,7 +55,7 @@ class MitigationOption(Base, TimestampMixin):
     )
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    purchase_order_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.purchase_order.id"))
+    purchase_order_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey("purchase_order.id"))
     projection_date: Mapped[date] = mapped_column(Date)
     action: Mapped[str | None] = mapped_column(
         String(50), nullable=True

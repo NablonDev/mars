@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import Date, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import COMMON_SCHEMA, PENALTIES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
+from app.db.base import PENALTIES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class ActualPenalty(Base, TimestampMixin):
@@ -16,7 +16,7 @@ class ActualPenalty(Base, TimestampMixin):
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     actual_penalty_number: Mapped[str] = mapped_column(String(50), unique=True, index=True)
-    purchase_order_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.purchase_order.id"))
+    purchase_order_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey("purchase_order.id"))
     violation_type: Mapped[str] = mapped_column(String(50))
     actual_penalty_amount: Mapped[float] = mapped_column(Numeric(12, 2))
     invoice_or_deduction_date: Mapped[date] = mapped_column(Date)

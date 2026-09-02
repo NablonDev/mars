@@ -16,10 +16,14 @@ those must be verified against a real Postgres database instead.
 No live Postgres needed for this test itself -- it only checks structural
 parity between the migrations and the ORM, not Postgres-specific DDL
 correctness. Both engines go through `apply_sqlite_schema_translation`
-because `Base.metadata` has tables bound to the `common`, `process`,
-`cmir`, and `penalties` schemas (app/db/base.py), which SQLite cannot
-express -- the same translation app/db/session.py and alembic/env.py
-apply, so the tables land unqualified on both sides and stay comparable.
+because `Base.metadata` has tables bound to the `process`, `cmir`, and
+`penalties` schemas (app/db/base.py), which SQLite cannot express -- the
+same translation app/db/session.py and alembic/env.py apply, so the
+tables land unqualified on both sides and stay comparable. The shared
+master/fulfillment tables (`app/models/common/`) carry no schema binding
+at all -- they resolve to `public` on Postgres and need no translation on
+SQLite either, so they compare cleanly on both sides without any special
+handling here.
 `langgraph` is not part of this comparison: it has no ORM model and its
 migration creates no tables (Postgres-only `CREATE SCHEMA`, a no-op on
 SQLite).

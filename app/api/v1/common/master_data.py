@@ -174,6 +174,6 @@ def get_carrier(
     row = master_data.get_carrier(carrier_id)
     if row is None:
         raise NotFoundError(
-            code="CARRIER_NOT_FOUND", message=f"No carrier found with carrier_id={carrier_id!r}"
+            code="CARRIER_NOT_FOUND", message=f"No carrier found with carrier_id={carrier_id}"
         )
     return success_envelope(CarrierResponse.model_validate(row))

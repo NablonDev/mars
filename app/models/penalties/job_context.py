@@ -17,7 +17,6 @@ from sqlalchemy import Boolean, Date, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import (
-    COMMON_SCHEMA,
     JSONB_OR_JSON,
     PENALTIES_SCHEMA,
     PROCESS_SCHEMA,
@@ -51,7 +50,7 @@ class PenaltyJobItemContext(Base, TimestampMixin):
     job_item_id: Mapped[UUID] = mapped_column(
         UUID_PK, ForeignKey(f"{PROCESS_SCHEMA}.job_item.id"), primary_key=True
     )
-    purchase_order_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.purchase_order.id"))
+    purchase_order_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey("purchase_order.id"))
     projection_date: Mapped[date] = mapped_column(Date)
     task_type: Mapped[str] = mapped_column(String(100))
     stacking_mode_override: Mapped[str | None] = mapped_column(String(30), nullable=True)

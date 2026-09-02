@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import Boolean, Date, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import COMMON_SCHEMA, PENALTIES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
+from app.db.base import PENALTIES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class PenaltyRule(Base, TimestampMixin):
@@ -16,7 +16,7 @@ class PenaltyRule(Base, TimestampMixin):
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     rule_code: Mapped[str] = mapped_column(String(20), unique=True, index=True)
-    retailer_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.retailer.id"))
+    retailer_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey("retailer.id"))
     violation_type: Mapped[str] = mapped_column(String(30))
     threshold_pct: Mapped[float] = mapped_column(Numeric(6, 4), default=0.0)
     calc_type: Mapped[str] = mapped_column(String(20))  # PER_UNIT / PERCENT_OF_PO / FLAT_FEE / TIERED

@@ -12,7 +12,6 @@ from sqlalchemy import CheckConstraint, Date, ForeignKey, String, Text, UniqueCo
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import (
-    COMMON_SCHEMA,
     PENALTIES_SCHEMA,
     PROCESS_SCHEMA,
     UUID_PK,
@@ -39,7 +38,7 @@ class PenaltySummary(Base, TimestampMixin):
         {"schema": PENALTIES_SCHEMA},
     )
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    purchase_order_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.purchase_order.id"))
+    purchase_order_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey("purchase_order.id"))
     summary_type: Mapped[str] = mapped_column(String(30), default=SummaryType.PROJECTION)
     as_of_date: Mapped[date] = mapped_column(Date)
     agent_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{PROCESS_SCHEMA}.agent.id"))

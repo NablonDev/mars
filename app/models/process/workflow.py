@@ -5,7 +5,7 @@ is declared here (in `process`), but its table is physically created by the
 `cmir` schema's migration, placed after `cmir.email_event` and before
 `cmir.job_item_context` -- Postgres needs `cmir.email_event` to already
 exist when `workflow_thread_subject`'s FK to it is created, and migrations
-run in schema order (`common` -> `process` -> `cmir` -> `penalties`).
+run in schema order (`public` -> `process` -> `cmir` -> `penalties`).
 """
 
 from datetime import datetime
@@ -16,7 +16,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import (
     CMIR_SCHEMA,
-    COMMON_SCHEMA,
     JSONB_OR_JSON,
     PROCESS_SCHEMA,
     UUID_PK,
@@ -74,5 +73,5 @@ class WorkflowThreadSubject(Base, TimestampMixin):
         UUID_PK, ForeignKey(f"{CMIR_SCHEMA}.email_event.id"), nullable=True
     )
     purchase_order_line_id: Mapped[UUID | None] = mapped_column(
-        UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.purchase_order_line.id"), nullable=True
+        UUID_PK, ForeignKey("purchase_order_line.id"), nullable=True
     )

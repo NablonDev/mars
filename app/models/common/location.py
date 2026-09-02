@@ -5,18 +5,17 @@ from uuid import UUID
 from sqlalchemy import Boolean, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import COMMON_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
+from app.db.base import UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class RetailerLocation(Base, TimestampMixin):
     __tablename__ = "retailer_location"
     __table_args__ = (
         UniqueConstraint("retailer_id", "location_code", name="uq_retailer_location_retailer_code"),
-        {"schema": COMMON_SCHEMA},
     )
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    retailer_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.retailer.id"))
+    retailer_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey("retailer.id"))
     location_code: Mapped[str] = mapped_column(String(100))
     location_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     location_type: Mapped[str | None] = mapped_column(String(50), nullable=True)

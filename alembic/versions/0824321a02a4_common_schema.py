@@ -1,4 +1,4 @@
-"""Common schema.
+"""Public schema (common tables).
 
 Revision ID: 0824321a02a4
 Revises:
@@ -6,16 +6,18 @@ Create Date: 2026-08-29
 
 First of five revisions replacing the old 3-revision `fines`/`cmir`/`public`
 chain (`e803d9470f31` -> `43d8ced96170` -> `e04c67e98dda`) with a fresh
-squash across four schemas this project owns (`common`, `process`, `cmir`,
-`penalties`) plus a fifth, empty `langgraph` schema. See
-docs/DATABASE.md and the approved Phase 1 restructure plan for the full
-rationale (ERP-normalized ` common` schema, `process` job/agent/workflow
-backbone shared by both domains, full `fine`->`penalty` rename).
+squash across three dedicated schemas this project owns (`process`, `cmir`,
+`penalties`) plus a fourth, empty `langgraph` schema. Shared master/
+fulfillment data lives unqualified in Postgres's default `public` schema
+rather than a dedicated `common` schema (reversed from an earlier version of
+this plan -- see docs/DATABASE.md and the approved Phase 1 restructure plan
+for the full rationale: ERP-normalized shared tables, `process` job/agent/
+workflow backbone shared by both domains, full `fine`->`penalty` rename).
 
-This revision creates every `common`-schema table: shared master data
-(retailer, sku, material/material_master, plant/storage_location/
-warehouse, retailer_location, carrier) and fulfillment facts
-(purchase_order/purchase_order_line, order_confirmation/*_line,
+This revision creates every shared master/fulfillment table, unqualified in
+`public`: master data (retailer, sku, material/material_master, plant/
+storage_location/warehouse, retailer_location, carrier) and fulfillment
+facts (purchase_order/purchase_order_line, order_confirmation/*_line,
 delivery/*_line/shipment, production_order/production_schedule,
 demand_exception). Every FK across all five revisions points at a
 surrogate `uuid -> <table>.id`, not a business-key column -- the single
@@ -41,16 +43,15 @@ down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-SCHEMA = "common"
-
-# Every Postgres schema this project owns, created here (idempotently) so
-# `alembic upgrade head --sql` (offline mode, no live connection -- used for
-# DBA-gated deploys) actually emits the CREATE SCHEMA statements. The online
-# path also has `ensure_project_schemas_exist` in alembic/env.py running
-# before any revision, which makes this redundant there -- kept anyway since
-# it's cheap (IF NOT EXISTS) and this is the one place both paths agree.
-# `langgraph` is deliberately excluded -- its own migration creates it.
-_PROJECT_SCHEMAS = ("common", "process", "cmir", "penalties")
+# Every dedicated Postgres schema this project owns (excluding `public`,
+# which always already exists, and `langgraph`, whose own migration creates
+# it), created here (idempotently) so `alembic upgrade head --sql` (offline
+# mode, no live connection -- used for DBA-gated deploys) actually emits the
+# CREATE SCHEMA statements. The online path also has
+# `ensure_project_schemas_exist` in alembic/env.py running before any
+# revision, which makes this redundant there -- kept anyway since it's cheap
+# (IF NOT EXISTS) and this is the one place both paths agree.
+_PROJECT_SCHEMAS = ("process", "cmir", "penalties")
 
 
 def upgrade() -> None:
@@ -67,11 +68,8 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id"),
-        schema=SCHEMA,
     )
-    op.create_index(
-        op.f("ix_material_material_code"), "material", ["material_code"], unique=True, schema=SCHEMA
-    )
+    op.create_index(op.f("ix_material_material_code"), "material", ["material_code"], unique=True)
 
     op.create_table(
         "plant",
@@ -83,9 +81,8 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id"),
-        schema=SCHEMA,
     )
-    op.create_index(op.f("ix_plant_plant_code"), "plant", ["plant_code"], unique=True, schema=SCHEMA)
+    op.create_index(op.f("ix_plant_plant_code"), "plant", ["plant_code"], unique=True)
 
     op.create_table(
         "retailer",
@@ -102,11 +99,8 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id"),
-        schema=SCHEMA,
     )
-    op.create_index(
-        op.f("ix_retailer_retailer_code"), "retailer", ["retailer_code"], unique=True, schema=SCHEMA
-    )
+    op.create_index(op.f("ix_retailer_retailer_code"), "retailer", ["retailer_code"], unique=True)
 
     op.create_table(
         "carrier",
@@ -118,9 +112,8 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id"),
-        schema=SCHEMA,
     )
-    op.create_index(op.f("ix_carrier_carrier_code"), "carrier", ["carrier_code"], unique=True, schema=SCHEMA)
+    op.create_index(op.f("ix_carrier_carrier_code"), "carrier", ["carrier_code"], unique=True)
 
     op.create_table(
         "sku",
@@ -131,11 +124,10 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["material_id"], [f"{SCHEMA}.material.id"]),
+        sa.ForeignKeyConstraint(["material_id"], ["material.id"]),
         sa.PrimaryKeyConstraint("id"),
-        schema=SCHEMA,
     )
-    op.create_index(op.f("ix_sku_sku_code"), "sku", ["sku_code"], unique=True, schema=SCHEMA)
+    op.create_index(op.f("ix_sku_sku_code"), "sku", ["sku_code"], unique=True)
 
     op.create_table(
         "storage_location",
@@ -146,10 +138,9 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["plant_id"], [f"{SCHEMA}.plant.id"]),
+        sa.ForeignKeyConstraint(["plant_id"], ["plant.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("plant_id", "storage_location_code", name="uq_storage_location_plant_code"),
-        schema=SCHEMA,
     )
 
     op.create_table(
@@ -161,13 +152,10 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["plant_id"], [f"{SCHEMA}.plant.id"]),
+        sa.ForeignKeyConstraint(["plant_id"], ["plant.id"]),
         sa.PrimaryKeyConstraint("id"),
-        schema=SCHEMA,
     )
-    op.create_index(
-        op.f("ix_warehouse_warehouse_code"), "warehouse", ["warehouse_code"], unique=True, schema=SCHEMA
-    )
+    op.create_index(op.f("ix_warehouse_warehouse_code"), "warehouse", ["warehouse_code"], unique=True)
 
     op.create_table(
         "retailer_location",
@@ -186,10 +174,9 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["retailer_id"], [f"{SCHEMA}.retailer.id"]),
+        sa.ForeignKeyConstraint(["retailer_id"], ["retailer.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("retailer_id", "location_code", name="uq_retailer_location_retailer_code"),
-        schema=SCHEMA,
     )
 
     op.create_table(
@@ -209,12 +196,11 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["follow_up_material_id"], [f"{SCHEMA}.material.id"]),
-        sa.ForeignKeyConstraint(["material_id"], [f"{SCHEMA}.material.id"]),
-        sa.ForeignKeyConstraint(["plant_id"], [f"{SCHEMA}.plant.id"]),
+        sa.ForeignKeyConstraint(["follow_up_material_id"], ["material.id"]),
+        sa.ForeignKeyConstraint(["material_id"], ["material.id"]),
+        sa.ForeignKeyConstraint(["plant_id"], ["plant.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("material_id", "plant_id", name="uq_material_master_material_plant"),
-        schema=SCHEMA,
     )
 
     op.create_table(
@@ -236,23 +222,73 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["retailer_id"], [f"{SCHEMA}.retailer.id"]),
+        sa.ForeignKeyConstraint(["retailer_id"], ["retailer.id"]),
         sa.PrimaryKeyConstraint("id"),
-        schema=SCHEMA,
     )
     op.create_index(
         op.f("ix_purchase_order_purchase_order_number"),
         "purchase_order",
         ["purchase_order_number"],
         unique=True,
-        schema=SCHEMA,
     )
     op.create_index(
         op.f("ix_purchase_order_negotiation_status"),
         "purchase_order",
         ["negotiation_status"],
         unique=False,
-        schema=SCHEMA,
+    )
+
+    op.create_table(
+        "po_delivery_change_request",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("request_id", sa.String(length=50), nullable=False),
+        sa.Column("purchase_order_id", sa.Uuid(), nullable=False),
+        sa.Column("reason_code", sa.String(length=30), nullable=False),
+        sa.Column("requested_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("baseline_delivery_date", sa.Date(), nullable=False),
+        sa.Column("proposed_delivery_date", sa.Date(), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("status", sa.String(length=30), nullable=False),
+        sa.Column("retailer_response_date", sa.Date(), nullable=True),
+        sa.Column("countered_delivery_date", sa.Date(), nullable=True),
+        sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "response_payload",
+            sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql"),
+            nullable=True,
+        ),
+        sa.Column("notes", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
+        sa.CheckConstraint(
+            "status IN ('PENDING', 'ACCEPTED', 'COUNTERED', 'REJECTED', 'EXPIRED')",
+            name="ck_po_delivery_change_request_status",
+        ),
+        sa.CheckConstraint(
+            "reason_code IN ('SHORTAGE', 'DELAY', 'OTHER')",
+            name="ck_po_delivery_change_request_reason_code",
+        ),
+        sa.ForeignKeyConstraint(["purchase_order_id"], ["purchase_order.id"]),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(
+        op.f("ix_po_delivery_change_request_request_id"),
+        "po_delivery_change_request",
+        ["request_id"],
+        unique=True,
+    )
+    op.create_index(
+        "ix_po_delivery_change_request_po_status",
+        "po_delivery_change_request",
+        ["purchase_order_id", "status"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_po_delivery_change_request_status_expires",
+        "po_delivery_change_request",
+        ["status", "expires_at"],
+        unique=False,
     )
 
     op.create_table(
@@ -281,15 +317,14 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["material_id"], [f"{SCHEMA}.material.id"]),
-        sa.ForeignKeyConstraint(["plant_id"], [f"{SCHEMA}.plant.id"]),
-        sa.ForeignKeyConstraint(["purchase_order_id"], [f"{SCHEMA}.purchase_order.id"]),
-        sa.ForeignKeyConstraint(["ship_to_location_id"], [f"{SCHEMA}.retailer_location.id"]),
-        sa.ForeignKeyConstraint(["sku_id"], [f"{SCHEMA}.sku.id"]),
-        sa.ForeignKeyConstraint(["storage_location_id"], [f"{SCHEMA}.storage_location.id"]),
+        sa.ForeignKeyConstraint(["material_id"], ["material.id"]),
+        sa.ForeignKeyConstraint(["plant_id"], ["plant.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_id"], ["purchase_order.id"]),
+        sa.ForeignKeyConstraint(["ship_to_location_id"], ["retailer_location.id"]),
+        sa.ForeignKeyConstraint(["sku_id"], ["sku.id"]),
+        sa.ForeignKeyConstraint(["storage_location_id"], ["storage_location.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("purchase_order_id", "line_number", name="uq_purchase_order_line_po_line_number"),
-        schema=SCHEMA,
     )
 
     op.create_table(
@@ -302,16 +337,14 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["purchase_order_id"], [f"{SCHEMA}.purchase_order.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_id"], ["purchase_order.id"]),
         sa.PrimaryKeyConstraint("id"),
-        schema=SCHEMA,
     )
     op.create_index(
         op.f("ix_order_confirmation_confirmation_number"),
         "order_confirmation",
         ["confirmation_number"],
         unique=True,
-        schema=SCHEMA,
     )
 
     op.create_table(
@@ -325,13 +358,12 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["order_confirmation_id"], [f"{SCHEMA}.order_confirmation.id"]),
-        sa.ForeignKeyConstraint(["purchase_order_line_id"], [f"{SCHEMA}.purchase_order_line.id"]),
+        sa.ForeignKeyConstraint(["order_confirmation_id"], ["order_confirmation.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_line_id"], ["purchase_order_line.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "order_confirmation_id", "purchase_order_line_id", name="uq_order_confirmation_line_line"
         ),
-        schema=SCHEMA,
     )
 
     op.create_table(
@@ -351,16 +383,13 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["purchase_order_id"], [f"{SCHEMA}.purchase_order.id"]),
-        sa.ForeignKeyConstraint(["ship_from_plant_id"], [f"{SCHEMA}.plant.id"]),
-        sa.ForeignKeyConstraint(["ship_from_warehouse_id"], [f"{SCHEMA}.warehouse.id"]),
-        sa.ForeignKeyConstraint(["ship_to_location_id"], [f"{SCHEMA}.retailer_location.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_id"], ["purchase_order.id"]),
+        sa.ForeignKeyConstraint(["ship_from_plant_id"], ["plant.id"]),
+        sa.ForeignKeyConstraint(["ship_from_warehouse_id"], ["warehouse.id"]),
+        sa.ForeignKeyConstraint(["ship_to_location_id"], ["retailer_location.id"]),
         sa.PrimaryKeyConstraint("id"),
-        schema=SCHEMA,
     )
-    op.create_index(
-        op.f("ix_delivery_delivery_number"), "delivery", ["delivery_number"], unique=True, schema=SCHEMA
-    )
+    op.create_index(op.f("ix_delivery_delivery_number"), "delivery", ["delivery_number"], unique=True)
 
     op.create_table(
         "delivery_line",
@@ -373,13 +402,12 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["delivery_id"], [f"{SCHEMA}.delivery.id"]),
-        sa.ForeignKeyConstraint(["purchase_order_line_id"], [f"{SCHEMA}.purchase_order_line.id"]),
+        sa.ForeignKeyConstraint(["delivery_id"], ["delivery.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_line_id"], ["purchase_order_line.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "delivery_id", "purchase_order_line_id", name="uq_delivery_line_delivery_po_line"
         ),
-        schema=SCHEMA,
     )
 
     op.create_table(
@@ -399,14 +427,11 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["carrier_id"], [f"{SCHEMA}.carrier.id"]),
-        sa.ForeignKeyConstraint(["delivery_id"], [f"{SCHEMA}.delivery.id"]),
+        sa.ForeignKeyConstraint(["carrier_id"], ["carrier.id"]),
+        sa.ForeignKeyConstraint(["delivery_id"], ["delivery.id"]),
         sa.PrimaryKeyConstraint("id"),
-        schema=SCHEMA,
     )
-    op.create_index(
-        op.f("ix_shipment_shipment_number"), "shipment", ["shipment_number"], unique=True, schema=SCHEMA
-    )
+    op.create_index(op.f("ix_shipment_shipment_number"), "shipment", ["shipment_number"], unique=True)
 
     op.create_table(
         "production_order",
@@ -424,17 +449,15 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["material_id"], [f"{SCHEMA}.material.id"]),
-        sa.ForeignKeyConstraint(["plant_id"], [f"{SCHEMA}.plant.id"]),
+        sa.ForeignKeyConstraint(["material_id"], ["material.id"]),
+        sa.ForeignKeyConstraint(["plant_id"], ["plant.id"]),
         sa.PrimaryKeyConstraint("id"),
-        schema=SCHEMA,
     )
     op.create_index(
         op.f("ix_production_order_production_order_number"),
         "production_order",
         ["production_order_number"],
         unique=True,
-        schema=SCHEMA,
     )
 
     op.create_table(
@@ -451,11 +474,10 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["material_id"], [f"{SCHEMA}.material.id"]),
-        sa.ForeignKeyConstraint(["plant_id"], [f"{SCHEMA}.plant.id"]),
-        sa.ForeignKeyConstraint(["production_order_id"], [f"{SCHEMA}.production_order.id"]),
+        sa.ForeignKeyConstraint(["material_id"], ["material.id"]),
+        sa.ForeignKeyConstraint(["plant_id"], ["plant.id"]),
+        sa.ForeignKeyConstraint(["production_order_id"], ["production_order.id"]),
         sa.PrimaryKeyConstraint("id"),
-        schema=SCHEMA,
     )
 
     op.create_table(
@@ -468,36 +490,43 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["purchase_order_line_id"], [f"{SCHEMA}.purchase_order_line.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_line_id"], ["purchase_order_line.id"]),
         sa.PrimaryKeyConstraint("id"),
-        schema=SCHEMA,
     )
     op.create_index(
         op.f("ix_demand_exception_exception_id"),
         "demand_exception",
         ["exception_id"],
         unique=True,
-        schema=SCHEMA,
     )
 
 
 def downgrade() -> None:
-    op.drop_table("demand_exception", schema=SCHEMA)
-    op.drop_table("production_schedule", schema=SCHEMA)
-    op.drop_table("production_order", schema=SCHEMA)
-    op.drop_table("shipment", schema=SCHEMA)
-    op.drop_table("delivery_line", schema=SCHEMA)
-    op.drop_table("delivery", schema=SCHEMA)
-    op.drop_table("order_confirmation_line", schema=SCHEMA)
-    op.drop_table("order_confirmation", schema=SCHEMA)
-    op.drop_table("purchase_order_line", schema=SCHEMA)
-    op.drop_table("purchase_order", schema=SCHEMA)
-    op.drop_table("material_master", schema=SCHEMA)
-    op.drop_table("retailer_location", schema=SCHEMA)
-    op.drop_table("warehouse", schema=SCHEMA)
-    op.drop_table("storage_location", schema=SCHEMA)
-    op.drop_table("sku", schema=SCHEMA)
-    op.drop_table("carrier", schema=SCHEMA)
-    op.drop_table("retailer", schema=SCHEMA)
-    op.drop_table("plant", schema=SCHEMA)
-    op.drop_table("material", schema=SCHEMA)
+    op.drop_table("demand_exception")
+    op.drop_table("production_schedule")
+    op.drop_table("production_order")
+    op.drop_table("shipment")
+    op.drop_table("delivery_line")
+    op.drop_table("delivery")
+    op.drop_table("order_confirmation_line")
+    op.drop_table("order_confirmation")
+    op.drop_table("purchase_order_line")
+    op.drop_index(
+        "ix_po_delivery_change_request_status_expires",
+        table_name="po_delivery_change_request",
+    )
+    op.drop_index(
+        "ix_po_delivery_change_request_po_status",
+        table_name="po_delivery_change_request",
+    )
+    op.drop_table("po_delivery_change_request")
+    op.drop_table("purchase_order")
+    op.drop_table("material_master")
+    op.drop_table("retailer_location")
+    op.drop_table("warehouse")
+    op.drop_table("storage_location")
+    op.drop_table("sku")
+    op.drop_table("carrier")
+    op.drop_table("retailer")
+    op.drop_table("plant")
+    op.drop_table("material")

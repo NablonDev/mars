@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import email as email_lib
 import imaplib
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 from bs4 import BeautifulSoup
 
 from app.core.config import EmailConfig
 from app.schemas.cmir import EmailMessage
+from app.utils.clock import utc_now
 
 
 class GmailImapReader:
@@ -31,7 +32,7 @@ class GmailImapReader:
         mail = self._connect()
         mail.select("INBOX")
 
-        since = (datetime.now(UTC) - timedelta(days=self._config.lookback_days)).strftime("%d-%b-%Y")
+        since = (utc_now() - timedelta(days=self._config.lookback_days)).strftime("%d-%b-%Y")
         search_terms = ["SINCE", since, "SUBJECT", subject_contains or self._config.search_subject]
         if unread_only:
             search_terms.insert(0, "UNSEEN")

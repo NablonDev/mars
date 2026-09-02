@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import Date, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import COMMON_SCHEMA, PENALTIES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
+from app.db.base import PENALTIES_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class PenaltyProjection(Base, TimestampMixin):
@@ -20,7 +20,7 @@ class PenaltyProjection(Base, TimestampMixin):
     )
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    purchase_order_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.purchase_order.id"))
+    purchase_order_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey("purchase_order.id"))
     rule_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{PENALTIES_SCHEMA}.penalty_rule.id"))
     projection_date: Mapped[date] = mapped_column(Date)
     violation_type: Mapped[str] = mapped_column(String(50))

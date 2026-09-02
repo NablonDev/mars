@@ -8,16 +8,15 @@ from uuid import UUID
 from sqlalchemy import Date, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import COMMON_SCHEMA, JSONB_OR_JSON, UUID_PK, Base, TimestampMixin, generate_uuid7
+from app.db.base import JSONB_OR_JSON, UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class PurchaseOrder(Base, TimestampMixin):
     __tablename__ = "purchase_order"
-    __table_args__ = ({"schema": COMMON_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
     purchase_order_number: Mapped[str] = mapped_column(String(50), unique=True, index=True)
-    retailer_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.retailer.id"))
+    retailer_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey("retailer.id"))
     retailer_po_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     order_date: Mapped[date] = mapped_column(Date)
     requested_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -39,26 +38,21 @@ class PurchaseOrderLine(Base, TimestampMixin):
     __tablename__ = "purchase_order_line"
     __table_args__ = (
         UniqueConstraint("purchase_order_id", "line_number", name="uq_purchase_order_line_po_line_number"),
-        {"schema": COMMON_SCHEMA},
     )
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    purchase_order_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.purchase_order.id"))
+    purchase_order_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey("purchase_order.id"))
     line_number: Mapped[str] = mapped_column(String(50))
     retailer_po_line_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    sku_id: Mapped[UUID | None] = mapped_column(UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.sku.id"), nullable=True)
-    material_id: Mapped[UUID | None] = mapped_column(
-        UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.material.id"), nullable=True
-    )
+    sku_id: Mapped[UUID | None] = mapped_column(UUID_PK, ForeignKey("sku.id"), nullable=True)
+    material_id: Mapped[UUID | None] = mapped_column(UUID_PK, ForeignKey("material.id"), nullable=True)
     retailer_material_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    plant_id: Mapped[UUID | None] = mapped_column(
-        UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.plant.id"), nullable=True
-    )
+    plant_id: Mapped[UUID | None] = mapped_column(UUID_PK, ForeignKey("plant.id"), nullable=True)
     storage_location_id: Mapped[UUID | None] = mapped_column(
-        UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.storage_location.id"), nullable=True
+        UUID_PK, ForeignKey("storage_location.id"), nullable=True
     )
     ship_to_location_id: Mapped[UUID | None] = mapped_column(
-        UUID_PK, ForeignKey(f"{COMMON_SCHEMA}.retailer_location.id"), nullable=True
+        UUID_PK, ForeignKey("retailer_location.id"), nullable=True
     )
     ordered_quantity: Mapped[float] = mapped_column(Numeric(18, 3))
     # Kept from the pre-ERP-split `sales_order` model (which carried this at
