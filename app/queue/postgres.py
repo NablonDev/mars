@@ -7,7 +7,6 @@ for both dispatch and work discovery.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import update
@@ -17,6 +16,7 @@ from app.models import JobItem
 from app.queue.interfaces import JobDispatcher, JobSource
 from app.queue.types import ClaimedJob, claimed_job_from_row
 from app.repositories.process.job_queue import JobQueueRepository
+from app.utils.clock import utc_now_naive
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +35,7 @@ class PostgresJobQueue(JobDispatcher, JobSource):
         """Record dispatch time; polling discovers the job independently."""
         with self._database.session() as session:
             session.execute(
-                update(JobItem)
-                .where(JobItem.id == job_item_id)
-                .values(dispatched_at=datetime.now(UTC).replace(tzinfo=None))
+                update(JobItem).where(JobItem.id == job_item_id).values(dispatched_at=utc_now_naive())
             )
 
     def claim_batch(self, worker_id: str, limit: int) -> list[ClaimedJob]:

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -23,6 +23,7 @@ from app.models.enums import JobItemStatus
 from app.queue.interfaces import JobDispatcher, JobSource
 from app.queue.types import ClaimedJob, claimed_job_from_row
 from app.repositories.process.job_queue import JobQueueRepository
+from app.utils.clock import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,7 @@ class ServiceBusJobQueue(JobDispatcher, JobSource):
         message = self._message_factory(str(job_item_id))
 
         if delay_seconds > 0:
-            scheduled_time_utc = datetime.now(UTC) + timedelta(seconds=delay_seconds)
+            scheduled_time_utc = utc_now() + timedelta(seconds=delay_seconds)
             with self._lock:
                 self._sender.schedule_messages(message, scheduled_time_utc)
         else:

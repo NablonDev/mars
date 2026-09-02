@@ -11,7 +11,6 @@ callers pass plain fields instead of an `EmailMessage`/`CMIR` DTO.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -19,6 +18,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models import EmailEvent
+from app.utils.clock import utc_now
 
 
 def _to_dict(row: EmailEvent) -> dict:
@@ -62,7 +62,7 @@ class EmailRepository:
             source_message_id=source_message_id,
             source_imap_id=source_imap_id,
             queue_status="processed",
-            processed_at=datetime.now(UTC),
+            processed_at=utc_now(),
         )
         self._session.add(row)
         self._session.flush()
@@ -127,7 +127,7 @@ class EmailRepository:
             .values(
                 queue_status="queued",
                 queue_message_id=queue_message_id,
-                queued_at=datetime.now(UTC),
+                queued_at=utc_now(),
                 queue_error=None,
                 updated_at=func.now(),
             )
@@ -137,7 +137,7 @@ class EmailRepository:
     def mark_processing(self, email_id: UUID, queue_message_id: str | None = None) -> None:
         values: dict[str, Any] = {
             "queue_status": "processing",
-            "processing_started_at": datetime.now(UTC),
+            "processing_started_at": utc_now(),
             "queue_delivery_count": EmailEvent.queue_delivery_count + 1,
             "queue_error": None,
             "updated_at": func.now(),
@@ -154,7 +154,7 @@ class EmailRepository:
             .where(EmailEvent.id == email_id)
             .values(
                 queue_status="processed",
-                processed_at=datetime.now(UTC),
+                processed_at=utc_now(),
                 queue_error=None,
                 updated_at=func.now(),
             )
