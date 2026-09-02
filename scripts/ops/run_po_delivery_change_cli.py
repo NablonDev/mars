@@ -21,9 +21,11 @@ Phase 2/3 `common`/`penalties` repositories and services (the `fine`/
 `fines` -> `penalty`/`penalties` rename, and `Po*` -> `PurchaseOrder*`
 naming).
 
-The request's own business-key `request_id` (an `ext_...` string) has been
-removed -- the surrogate `id: UUID` is now the sole identifier end to end,
-so `respond`'s `--id` flag (was `--request-id`) takes and `create`/`history`/
+The request's own business-key `request_id` (an `ext_...` string) still
+exists in the database (kept for a possible future external-system
+correlation), but is not exposed anywhere in the API or this CLI -- the
+surrogate `id: UUID` is the sole identifier end to end, so `respond`'s
+`--id` flag (was `--request-id`) takes and `create`/`history`/
 `expire-sweep` print a UUID, not an `ext_...` string.
 
 Examples:
