@@ -25,7 +25,7 @@ domain-agnostic module should not import.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from app.models import JobItem, JobRun
 from app.models.enums import JobItemStatus
+from app.utils.clock import utc_now_naive
 
 # A job is never left in FAILED: retryable failures return to PENDING.
 _INFLIGHT_STATUSES = (JobItemStatus.PENDING, JobItemStatus.RUNNING)
@@ -67,7 +68,7 @@ _CLAIM_BATCH_SQL = text(
 
 
 def _utcnow() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+    return utc_now_naive()
 
 
 def _to_dict(row: JobItem) -> dict:
@@ -155,6 +156,7 @@ class JobQueueRepository:
         dedupe_key: str | None = None,
         *,
         max_attempts: int,
+        metadata: dict[str, Any] | None = None,
     ) -> dict | None:
         """Insert one job, returning the existing in-flight row if
         `dedupe_key` is already in flight.
@@ -164,6 +166,11 @@ class JobQueueRepository:
         dedupes (matches the partial index's own exclusion of NULL rows).
         ``None`` return is possible if the winning row becomes terminal
         before the loser re-reads it.
+
+        `metadata`, when given, is stored on `process.job_item.metadata`
+        (JSONB) -- e.g. `PENALTY_FULL_RUN`'s requested `steps`, which has
+        no dedicated domain-context column of its own. Defaults to `{}`,
+        matching the column's own `server_default`.
         """
         if dedupe_key is not None:
             existing = self._find_inflight(dedupe_key)
@@ -176,6 +183,7 @@ class JobQueueRepository:
             dedupe_key=dedupe_key,
             status=JobItemStatus.PENDING,
             max_attempts=max_attempts,
+            metadata_json=metadata or {},
         )
         self._session.add(row)
 
@@ -408,6 +416,14 @@ class JobQueueRepository:
     # ------------------------------------------------------------------
     # Observability
     # ------------------------------------------------------------------
+
+    def get_item(self, job_item_id: UUID) -> dict | None:
+        """Fetch one `job_item` row directly, including `metadata_json` --
+        used by `app.workers.penalty_full_run.run_full_run` to read back the
+        `steps` a `PENALTY_FULL_RUN` item was enqueued with (`ClaimedJob`
+        itself carries no metadata; see its own docstring)."""
+        row = self._session.get(JobItem, job_item_id)
+        return _to_dict(row) if row is not None else None
 
     def get_run_summary(self, job_run_id: UUID) -> dict:
         run = self._session.get(JobRun, job_run_id)

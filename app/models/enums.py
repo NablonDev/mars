@@ -28,8 +28,19 @@ class JobTaskType(StrEnum):
     ORDER_RUN = "ORDER_RUN"
     PROJECTION_SUMMARY_REGEN = "PROJECTION_SUMMARY_REGEN"
     MITIGATION_SUMMARY_REGEN = "MITIGATION_SUMMARY_REGEN"
+    # Computes and persists fresh mitigation options for a purchase order
+    # against its already-persisted latest projection -- distinct from
+    # MITIGATION_SUMMARY_REGEN (which only regenerates the LLM summary over
+    # options that already exist). See app/workers/penalty_mitigation.py.
+    MITIGATION_RUN = "MITIGATION_RUN"
     EMAIL_INGEST = "EMAIL_INGEST"
     PO_VALIDATION = "PO_VALIDATION"
+    # Dispatched from `job_type=PENALTY_FULL_RUN_BATCH` -- one item per
+    # matching purchase order, executing only its requested subset of
+    # projection/projection_summary/mitigation/mitigation_summary steps
+    # (stored in process.job_item.metadata) in that fixed dependency order.
+    # See app/workers/penalty_full_run.py.
+    PENALTY_FULL_RUN = "PENALTY_FULL_RUN"
 
 
 class JobRunType(StrEnum):

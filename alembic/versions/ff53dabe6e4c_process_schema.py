@@ -37,6 +37,39 @@ Postgres-only -- same style as the pre-restructure `uq_job_item_inflight`,
   (see `app/models/process/job.py::JobItem`'s docstring).
 - `uq_agent_one_active_per_code` on `agent (agent_code) WHERE is_active`
   -- guarantees at most one active prompt version per agent.
+
+`job_item.item_type`'s CHECK constraint gained `'MITIGATION_RUN'` the same
+way (edited into this squashed revision in place, matching this project's
+edit-in-place-rather-than-chain convention for these five revisions --
+see `app/models/enums.py::JobTaskType`'s docstring): the penalty-mitigation
+batch entry point (`app/api/v1/job_runs.py::_trigger_penalty_mitigation_batch`)
+dispatches this new `item_type`, mirroring `ORDER_RUN`'s existing shape.
+
+`processing_error.purchase_order_line_id` (edited into this squashed
+revision in place, matching this project's edit-in-place-rather-than-chain
+convention for these five revisions -- see `app/models/process/
+processing_error.py`'s docstring) FKs into `purchase_order_line.id` (bare,
+unqualified -- that table lives in `public`, resolved via Postgres's default
+`search_path`), valid here since migrations run in schema order (`public`
+-> `process` -> `cmir` -> `penalties`) and the `purchase_order_line` table
+has already been created by the time this revision runs.
+
+`job_item.attempt_count`/`max_attempts`/`metadata` gained a `server_default`
+(edited into this squashed revision in place, same convention): they were
+previously NOT NULL with only a SQLAlchemy-level `default=`
+(app/models/process/job.py), so a raw insert bypassing the ORM (e.g. a test,
+or a manual DB write) failed NOT NULL before ever reaching
+`uq_job_item_inflight`. `metadata`'s default is dialect-branched (`'{}'::jsonb`
+on Postgres, `'{}'` elsewhere) for the same SQLite-rendering reason as this
+file's partial unique indexes.
+
+`job_item.item_type`'s CHECK constraint gained `'PENALTY_FULL_RUN'` the same
+way (edited into this squashed revision in place, same convention -- see
+`app/models/enums.py::JobTaskType`'s docstring): the combined-run batch entry
+point (`app/api/v1/job_runs.py::_trigger_penalty_full_run_batch`) dispatches
+this new `item_type`, storing its requested `steps` on this table's own
+`metadata` column (no further schema change needed) rather than a new
+`penalty_job_item_context` column.
 """
 
 from collections.abc import Sequence
@@ -109,14 +142,25 @@ def upgrade() -> None:
     else:
         op.execute("CREATE UNIQUE INDEX uq_agent_one_active_per_code ON agent (agent_code) WHERE is_active")
 
+    # attempt_count/max_attempts/metadata get a server_default in addition to
+    # their existing SQLAlchemy-level `default=` (app/models/process/job.py),
+    # so a raw insert that omits them (e.g. a manual DB write, or a test's
+    # raw SQL) doesn't fail NOT NULL before reaching business-logic
+    # constraints like uq_job_item_inflight. metadata's default is
+    # dialect-branched the same way as this file's partial unique indexes
+    # (see below): `'{}'::jsonb` is not valid syntax on SQLite, which this
+    # revision also renders for (tests/unit/db/test_migration_parity.py).
+    job_item_metadata_default = (
+        sa.text("'{}'::jsonb") if op.get_bind().dialect.name == "postgresql" else sa.text("'{}'")
+    )
     op.create_table(
         "job_item",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("job_run_id", sa.Uuid(), nullable=False),
         sa.Column("item_type", sa.String(length=100), nullable=False),
         sa.Column("status", sa.String(length=50), nullable=False),
-        sa.Column("attempt_count", sa.Integer(), nullable=False),
-        sa.Column("max_attempts", sa.Integer(), nullable=False),
+        sa.Column("attempt_count", sa.Integer(), server_default=sa.text("0"), nullable=False),
+        sa.Column("max_attempts", sa.Integer(), server_default=sa.text("5"), nullable=False),
         sa.Column("available_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("locked_by", sa.String(length=100), nullable=True),
         sa.Column("locked_at", sa.DateTime(timezone=True), nullable=True),
@@ -128,6 +172,7 @@ def upgrade() -> None:
         sa.Column(
             "metadata",
             sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql"),
+            server_default=job_item_metadata_default,
             nullable=False,
         ),
         sa.Column("dedupe_key", sa.String(length=200), nullable=True),
@@ -138,8 +183,8 @@ def upgrade() -> None:
             "status IN ('DEAD', 'PENDING', 'RUNNING', 'SUCCEEDED')", name="ck_job_item_status"
         ),
         sa.CheckConstraint(
-            "item_type IN ('EMAIL_INGEST', 'MITIGATION_SUMMARY_REGEN', 'ORDER_RUN', 'PO_VALIDATION', "
-            "'PROJECTION_SUMMARY_REGEN')",
+            "item_type IN ('EMAIL_INGEST', 'MITIGATION_RUN', 'MITIGATION_SUMMARY_REGEN', 'ORDER_RUN', "
+            "'PENALTY_FULL_RUN', 'PO_VALIDATION', 'PROJECTION_SUMMARY_REGEN')",
             name="ck_job_item_item_type",
         ),
         sa.ForeignKeyConstraint(["job_run_id"], [f"{SCHEMA}.job_run.id"]),
@@ -289,6 +334,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("job_item_id", sa.Uuid(), nullable=True),
         sa.Column("agent_run_id", sa.Uuid(), nullable=True),
+        sa.Column("purchase_order_line_id", sa.Uuid(), nullable=True),
         sa.Column("error_type", sa.String(length=100), nullable=False),
         sa.Column("error_code", sa.String(length=100), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
@@ -307,6 +353,7 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(["agent_run_id"], [f"{SCHEMA}.agent_run.id"]),
         sa.ForeignKeyConstraint(["job_item_id"], [f"{SCHEMA}.job_item.id"]),
+        sa.ForeignKeyConstraint(["purchase_order_line_id"], ["purchase_order_line.id"]),
         sa.PrimaryKeyConstraint("id"),
         schema=SCHEMA,
     )

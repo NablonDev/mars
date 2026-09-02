@@ -4,13 +4,19 @@ Was `app/workers/fine_mitigation.py` (`fine`/`fines` -> `penalty`/`penalties`
 rename, per the approved plan's naming convention). Rewritten against the
 Phase 2/3 `common`/`process`/`penalties` repositories and services.
 
-Everything here is penalty-mitigation-specific: the MITIGATION_SUMMARY_REGEN
-per-item work (`run_mitigation_summary`) and the recovery sweep for stranded
-PENDING `penalty_summary` (MITIGATION) rows
-(`sweep_stranded_pending_mitigation_summaries`). Mirrors
+Everything here is penalty-mitigation-specific: the MITIGATION_RUN per-item
+work (`run_mitigation` -- computes and persists fresh mitigation options via
+`MitigationService.run_for_purchase_order`, the same compute path
+`POST /penalties/mitigations` uses synchronously), the
+MITIGATION_SUMMARY_REGEN per-item work (`run_mitigation_summary` --
+regenerates the LLM summary over options that already exist; deliberately
+NOT the same operation as `run_mitigation`, see that function's docstring),
+and the recovery sweep for stranded PENDING `penalty_summary` (MITIGATION)
+rows (`sweep_stranded_pending_mitigation_summaries`). Mirrors
 `app/workers/penalty_projection.py`'s shape for the sibling domain --
-mitigation itself has no nightly-enqueue equivalent (it's on-demand only),
-so this module is shorter and has no `enqueue_daily_run`-equivalent.
+mitigation itself has no nightly-enqueue equivalent (it's on-demand only,
+via `PENALTY_MITIGATION_BATCH`/`app.api.v1.job_runs._trigger_penalty_
+mitigation_batch`), so this module has no `enqueue_daily_run`-equivalent.
 """
 
 from __future__ import annotations
@@ -31,12 +37,13 @@ from app.repositories.common.fulfillment import FulfillmentRepository
 from app.repositories.common.master_data import MasterDataRepository
 from app.repositories.common.purchase_order import PurchaseOrderRepository
 from app.repositories.penalties.job_context import PenaltyJobItemContextRepository
-from app.repositories.penalties.mitigation import MitigationOptionRepository
+from app.repositories.penalties.mitigation import MitigationInputRepository, MitigationOptionRepository
 from app.repositories.penalties.projection import ActualPenaltyRepository, PenaltyProjectionRepository
 from app.repositories.penalties.rule import PenaltyRuleRepository
 from app.repositories.penalties.summary import PenaltySummaryRepository
 from app.repositories.process.agent_registry import AgentRegistryRepository
 from app.repositories.process.job_queue import JobQueueRepository
+from app.services.penalties.mitigation.service import MitigationService
 from app.services.penalties.mitigation.summary_service import MitigationSummaryService
 from app.services.penalties.projection.service import ProjectionService
 
@@ -68,6 +75,39 @@ def _build_projection_service(session) -> ProjectionService:
         master_data=MasterDataRepository(session),
         projections=PenaltyProjectionRepository(session),
     )
+
+
+def run_mitigation(job: ClaimedJob, database: Database) -> None:
+    """MITIGATION_RUN: compute and persist fresh mitigation options for one
+    purchase order against its already-persisted projection.
+
+    This is the batch-dispatched twin of the synchronous
+    `POST /penalties/mitigations` route
+    (`app/api/v1/penalties/mitigations.py::run_penalty_mitigations`) --
+    both ultimately call `MitigationService.run_for_purchase_order`, the
+    single compute-and-persist entry point for this domain; behavior there
+    is unchanged by this addition. Deliberately NOT
+    `run_mitigation_summary` below: that function only regenerates the LLM
+    summary over options that already exist and requires them to be
+    present first (`NO_MITIGATION_OPTIONS_EXIST` otherwise) -- this
+    function is what actually computes and persists those options in the
+    first place, no LLM call involved.
+    """
+    with database.session() as session:
+        context = PenaltyJobItemContextRepository(session).get(job.job_item_id)
+        if context is None:
+            raise _missing_context_error(job.job_item_id)
+
+        service = MitigationService(
+            purchase_orders=PurchaseOrderRepository(session),
+            rules=PenaltyRuleRepository(session),
+            master_data=MasterDataRepository(session),
+            projections=PenaltyProjectionRepository(session),
+            mitigation_inputs=MitigationInputRepository(session),
+            mitigation_options=MitigationOptionRepository(session),
+            projection_service=_build_projection_service(session),
+        )
+        service.run_for_purchase_order(context["purchase_order_id"], context["projection_date"])
 
 
 def run_mitigation_summary(
