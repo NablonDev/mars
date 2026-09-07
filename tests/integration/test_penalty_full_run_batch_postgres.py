@@ -111,7 +111,7 @@ def job_run(pg_database: Database):
 
 def test_ck_job_item_item_type_accepts_penalty_full_run(pg_database: Database, job_run: dict):
     """Proves the edited `ck_job_item_item_type` CHECK constraint
-    (alembic/versions/ff53dabe6e4c_process_schema.py) actually accepts
+    (alembic/versions/ff53dabe6e4c_initial_process_schema.py) actually accepts
     `PENALTY_FULL_RUN` against real Postgres -- the one thing
     tests/unit/db/test_migration_parity.py structurally cannot check
     (table/column names only, no constraint bodies)."""

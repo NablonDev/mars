@@ -1,9 +1,12 @@
 """
-Proves the hand-authored Alembic migrations (the 5-revision chain in
-alembic/versions/: 0824321a02a4_common_schema.py, ff53dabe6e4c_process_schema.py,
-374aa902b053_cmir_schema.py, 4b41f6bcb2f3_penalties_schema.py, and
-a5b39c6e2181_langgraph_schema.py) actually match app/models/, rather than
-just asserting it in a docstring. Builds one SQLite DB via
+Proves the hand-authored Alembic migrations (the 5-revision "initial" squash
+in alembic/versions/: 0824321a02a4_initial_common_schema.py,
+ff53dabe6e4c_initial_process_schema.py, 374aa902b053_initial_cmir_schema.py,
+4b41f6bcb2f3_initial_penalties_schema.py, and
+a5b39c6e2181_initial_langgraph_schema.py, plus every normal chained revision
+added since -- currently just 11ce88f609e0_penalty_dispute_schema.py) actually
+match app/models/, rather than just asserting it in a docstring. Builds one
+SQLite DB via
 `alembic upgrade head` (walks the whole chain) and another via
 `Base.metadata.create_all()`, then diffs table and column names.
 

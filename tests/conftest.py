@@ -53,6 +53,7 @@ from app.repositories.common.delivery_change_request import PoDeliveryChangeRequ
 from app.repositories.common.fulfillment import FulfillmentRepository
 from app.repositories.common.master_data import MasterDataRepository
 from app.repositories.common.purchase_order import PurchaseOrderRepository
+from app.repositories.penalties.dispute import PenaltyDisputeRepository
 from app.repositories.penalties.job_context import (
     PenaltyJobItemContextRepository,
     PenaltyJobRunContextRepository,
@@ -107,6 +108,7 @@ def repos(db_session):
         penalty_rules=PenaltyRuleRepository(db_session),
         penalty_projections=PenaltyProjectionRepository(db_session),
         actual_penalties=ActualPenaltyRepository(db_session),
+        disputes=PenaltyDisputeRepository(db_session),
         penalty_summaries=PenaltySummaryRepository(db_session),
         mitigation_inputs=MitigationInputRepository(db_session),
         mitigation_options=MitigationOptionRepository(db_session),

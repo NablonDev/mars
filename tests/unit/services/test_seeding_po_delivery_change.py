@@ -45,6 +45,7 @@ def _build_seeding_service(repos) -> PenaltySeedingService:
         penalty_summaries=repos.penalty_summaries,
         penalty_projections=repos.penalty_projections,
         actual_penalties=repos.actual_penalties,
+        disputes=repos.disputes,
         job_queue=repos.job_queue,
         penalty_job_item_context=repos.penalty_job_item_context,
         penalty_job_run_context=repos.penalty_job_run_context,
