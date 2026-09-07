@@ -15,7 +15,7 @@ class PenaltyRule(Base, TimestampMixin):
     __table_args__ = ({"schema": PENALTIES_SCHEMA},)
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
-    rule_code: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    rule_code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     retailer_id: Mapped[UUID] = mapped_column(UUID_PK, ForeignKey("retailer.id"))
     violation_type: Mapped[str] = mapped_column(String(30))
     threshold_pct: Mapped[float] = mapped_column(Numeric(6, 4), default=0.0)
