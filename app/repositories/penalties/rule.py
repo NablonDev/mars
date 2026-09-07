@@ -159,6 +159,50 @@ class PenaltyRuleRepository:
             )
         return rules
 
+    def list_rules_effective_on(self, retailer_id: UUID, as_of_date: date) -> list[dict]:
+        """Rules for a retailer that were actually in force on a specific
+        historical date -- unlike `list_rules_for_retailer` (used by
+        projection/mitigation, which prices *today's* orders against
+        *currently* active rules and ignores `effective_start_date`/
+        `effective_end_date` entirely), adjudicating a historical charge
+        needs the rule that was effective on the charge date, which may
+        since have been superseded or deactivated.
+
+        Returns plain dicts (not the pure-engine `PenaltyRuleValue`
+        dataclass `list_rules_for_retailer` returns) -- the dispute engine
+        needs `grace_period_days` alongside the calc fields, which has no
+        home on that dataclass (see `app.services.penalties.dispute.types`'
+        module docstring); `app.services.penalties.dispute.service`
+        converts the calc fields into a `PenaltyRuleValue` itself, tier
+        rows included, at the one call site that needs it.
+
+        `is_active` is NOT filtered here (unlike `list_rules_for_retailer`)
+        -- a rule later deactivated is still the one that was effective on
+        a past charge date; only the date-range columns are checked.
+        """
+        rows = self._session.scalars(
+            select(PenaltyRuleModel).where(
+                PenaltyRuleModel.retailer_id == retailer_id,
+                PenaltyRuleModel.effective_start_date <= as_of_date,
+                (PenaltyRuleModel.effective_end_date.is_(None))
+                | (PenaltyRuleModel.effective_end_date >= as_of_date),
+            )
+        ).all()
+        return [_rule_to_dict(r) for r in rows]
+
+    def get_tiers_for_rule(self, rule_id: UUID) -> list[PenaltyRuleTierValue]:
+        """Pure-engine tier bands for one rule id -- factored out of
+        `list_rules_for_retailer`'s inline tier-loading loop so
+        `list_rules_effective_on` callers (dict rows, no dataclass) can
+        reuse the same tier lookup without duplicating it."""
+        tier_rows = self._session.scalars(
+            select(PenaltyRuleTierModel).where(PenaltyRuleTierModel.rule_id == rule_id)
+        ).all()
+        return [
+            PenaltyRuleTierValue(band_min=float(t.band_min), band_max=float(t.band_max), rate=float(t.rate))
+            for t in tier_rows
+        ]
+
     def list_rules(self, retailer_id: UUID | None = None) -> list[dict]:
         stmt = select(PenaltyRuleModel)
         if retailer_id:

@@ -24,6 +24,7 @@ from app.core.config import Settings
 from app.db.session import Database
 from app.models.enums import JobTaskType
 from app.queue.types import ClaimedJob
+from app.workers.penalty_dispute import run_dispute_summary
 from app.workers.penalty_full_run import run_full_run
 from app.workers.penalty_mitigation import run_mitigation, run_mitigation_summary
 from app.workers.penalty_projection import run_projection, run_summary
@@ -49,7 +50,10 @@ def execute_job(
     single-PO API route, `app/api/v1/penalties/mitigations.py`, unchanged by
     this addition). MITIGATION_SUMMARY_REGEN runs the mitigation summary
     only and requires already-persisted mitigation options
-    (mitigation_option). PENALTY_FULL_RUN (dispatched from
+    (mitigation_option). DISPUTE_SUMMARY_REGEN generates only the LLM
+    narrative for an already-ANALYZED `penalty_dispute` row -- the verdict
+    itself is always computed synchronously via the API
+    (`app/api/v1/penalties/disputes.py`), never by a queued job. PENALTY_FULL_RUN (dispatched from
     PENALTY_FULL_RUN_BATCH,
     `app/api/v1/job_runs.py::_trigger_penalty_full_run_batch`) runs only the
     requested subset of the four steps above, in that fixed dependency
@@ -64,6 +68,8 @@ def execute_job(
         run_mitigation(job, database)
     elif job.item_type == JobTaskType.MITIGATION_SUMMARY_REGEN:
         run_mitigation_summary(job, database, llm, heartbeat=heartbeat)
+    elif job.item_type == JobTaskType.DISPUTE_SUMMARY_REGEN:
+        run_dispute_summary(job, database, llm, heartbeat=heartbeat)
     elif job.item_type == JobTaskType.PENALTY_FULL_RUN:
         run_full_run(job, database, llm, heartbeat=heartbeat)
     else:

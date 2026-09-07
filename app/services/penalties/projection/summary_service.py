@@ -16,7 +16,7 @@ import json
 import logging
 from collections.abc import Callable
 from datetime import date
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from langchain_core.tools import BaseTool
@@ -41,8 +41,6 @@ from app.models.enums import JobTaskType, SummaryType
 from app.repositories.common.master_data import MasterDataRepository
 from app.repositories.common.purchase_order import PurchaseOrderRepository
 from app.repositories.penalties.job_context import PenaltyJobItemContextRepository
-from app.repositories.penalties.projection import ActualPenaltyRepository, PenaltyProjectionRepository
-from app.repositories.penalties.rule import PenaltyRuleRepository
 from app.repositories.penalties.summary import PenaltySummaryRepository
 from app.repositories.process.agent_registry import AgentRegistryRepository
 from app.repositories.process.job_queue import JobQueueRepository
@@ -53,6 +51,10 @@ from app.services.penalties._summary_base import (  # noqa: F401 -- SummaryJob r
 from app.services.penalties.projection import DELAY_VIOLATION_TYPES, SHORTAGE_VIOLATION_TYPES
 from app.services.penalties.projection.service import ProjectionService
 from app.utils.clock import utc_today
+
+if TYPE_CHECKING:
+    from app.repositories.penalties.projection import ActualPenaltyRepository, PenaltyProjectionRepository
+    from app.repositories.penalties.rule import PenaltyRuleRepository
 
 logger = logging.getLogger(__name__)
 

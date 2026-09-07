@@ -37,11 +37,22 @@ from app.models.common import (
     StorageLocation,
     Warehouse,
 )
-from app.models.enums import AgentDomain, JobItemStatus, JobRunType, JobTaskType, SummaryStatus, SummaryType
+from app.models.enums import (
+    AgentDomain,
+    DisputeReasonCode,
+    DisputeStatus,
+    DisputeVerdict,
+    JobItemStatus,
+    JobRunType,
+    JobTaskType,
+    SummaryStatus,
+    SummaryType,
+)
 from app.models.penalties import (
     ActualPenalty,
     MitigationInput,
     MitigationOption,
+    PenaltyDispute,
     PenaltyJobItemContext,
     PenaltyJobRunContext,
     PenaltyProjection,
@@ -75,6 +86,9 @@ __all__ = [
     "Delivery",
     "DeliveryLine",
     "DemandException",
+    "DisputeReasonCode",
+    "DisputeStatus",
+    "DisputeVerdict",
     "EmailActionLog",
     "EmailEvent",
     "HumanAction",
@@ -89,6 +103,7 @@ __all__ = [
     "MitigationOption",
     "OrderConfirmation",
     "OrderConfirmationLine",
+    "PenaltyDispute",
     "PenaltyJobItemContext",
     "PenaltyJobRunContext",
     "PenaltyProjection",

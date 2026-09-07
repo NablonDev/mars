@@ -1,2 +1,2 @@
-"""`penalties`-domain routers: rules, projections, mitigations, and actual
-penalties."""
+"""`penalties`-domain routers: rules, projections, mitigations, actual
+penalties, and disputes."""

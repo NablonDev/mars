@@ -70,6 +70,7 @@ from app.repositories.process.job_queue import JobQueueRepository
 _NO_SUMMARY_JOB_CODES: dict[str, str] = {
     "projection": "NO_PROJECTION_SUMMARY_JOB_EXISTS",
     "mitigation": "NO_MITIGATION_SUMMARY_JOB_EXISTS",
+    "dispute": "NO_DISPUTE_SUMMARY_JOB_EXISTS",
 }
 
 

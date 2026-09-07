@@ -33,6 +33,11 @@ class JobTaskType(StrEnum):
     # MITIGATION_SUMMARY_REGEN (which only regenerates the LLM summary over
     # options that already exist). See app/workers/penalty_mitigation.py.
     MITIGATION_RUN = "MITIGATION_RUN"
+    # Regenerates only the LLM narrative for an already-`ANALYZED`/terminal
+    # `penalty_dispute` row -- mirrors PROJECTION_SUMMARY_REGEN/
+    # MITIGATION_SUMMARY_REGEN; the verdict itself is never recomputed by
+    # this task type (see app/services/penalties/dispute/service.py).
+    DISPUTE_SUMMARY_REGEN = "DISPUTE_SUMMARY_REGEN"
     EMAIL_INGEST = "EMAIL_INGEST"
     PO_VALIDATION = "PO_VALIDATION"
     # Dispatched from `job_type=PENALTY_FULL_RUN_BATCH` -- one item per
@@ -61,10 +66,54 @@ class SummaryStatus(StrEnum):
 class SummaryType(StrEnum):
     """`penalties.penalty_summary.summary_type` discriminator, replacing
     what were two separate tables (`projection_summary`/
-    `mitigation_summary`)."""
+    `mitigation_summary`). DISPUTE (added alongside `penalty_dispute`) is a
+    plain third value, keyed by the exact same `(purchase_order_id,
+    summary_type, as_of_date)` triple as PROJECTION/MITIGATION -- see
+    `app.models.penalties.summary.PenaltySummary`'s module docstring for
+    the known limitation this creates (a PO can have more than one
+    concurrent dispute) and why a DISPUTE-only entity-pointer column was
+    rejected."""
 
     PROJECTION = "PROJECTION"
     MITIGATION = "MITIGATION"
+    DISPUTE = "DISPUTE"
+
+
+class DisputeStatus(StrEnum):
+    """`penalties.penalty_dispute.dispute_status` lifecycle.
+
+    OPEN -> ANALYZED (the deterministic engine ran and persisted a verdict)
+    -> RESOLVED (a human accepted the engine's verdict) or OVERRIDDEN (a
+    human set a different verdict; requires `override_reason`). RESOLVED
+    and OVERRIDDEN are both terminal."""
+
+    OPEN = "OPEN"
+    ANALYZED = "ANALYZED"
+    RESOLVED = "RESOLVED"
+    OVERRIDDEN = "OVERRIDDEN"
+
+
+class DisputeVerdict(StrEnum):
+    """`penalties.penalty_dispute.verdict`/`.override_verdict` -- always
+    computed deterministically by `app.services.penalties.dispute.engine`,
+    never by the LLM narrative (see `DisputeSummaryService`'s docstring)."""
+
+    NO_PAY = "NO_PAY"
+    PAY_PARTIAL = "PAY_PARTIAL"
+    PAY_FULL = "PAY_FULL"
+
+
+class DisputeReasonCode(StrEnum):
+    """`penalties.penalty_dispute.reason_code` -- closed list, extendable
+    later. The retailer/ops-supplied grounds for disputing a charge; never
+    read by the deterministic engine, only recorded for audit and handed to
+    the dispute-summary LLM as context."""
+
+    AMOUNT_INCORRECT = "AMOUNT_INCORRECT"
+    NOT_LATE = "NOT_LATE"
+    QTY_CONFIRMED = "QTY_CONFIRMED"
+    RULE_MISAPPLIED = "RULE_MISAPPLIED"
+    OTHER = "OTHER"
 
 
 class AgentDomain(StrEnum):

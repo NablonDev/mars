@@ -18,14 +18,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from app.core.exceptions import BusinessRuleError, NotFoundError
 from app.repositories.common.fulfillment import FulfillmentRepository
 from app.repositories.common.master_data import MasterDataRepository
 from app.repositories.common.purchase_order import PurchaseOrderRepository
-from app.repositories.penalties.projection import PenaltyProjectionRepository
-from app.repositories.penalties.rule import PenaltyRuleRepository
 from app.services.penalties.projection.engine import ProjectionEngine
 from app.services.penalties.projection.types import (
     AppointmentStatus,
@@ -34,6 +33,10 @@ from app.services.penalties.projection.types import (
     ProjectionResult,
 )
 from app.utils.clock import utc_today
+
+if TYPE_CHECKING:
+    from app.repositories.penalties.projection import PenaltyProjectionRepository
+    from app.repositories.penalties.rule import PenaltyRuleRepository
 
 
 @dataclass

@@ -19,8 +19,8 @@ class AppSettings(BaseSettings):
 
     project_name: str = Field(
         default=(
-            "Mars Petcare Backend -- CMIR Email Resolution, "
-            "PO Validation, and Projected Penalties & Mitigation"
+            "Mars Petcare Backend -- CMIR Email Resolution, PO Validation, "
+            "and Projected Penalties, Mitigation & Dispute Resolution"
         ),
         validation_alias="APP_PROJECT_NAME",
     )
