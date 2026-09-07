@@ -39,6 +39,7 @@ from app.repositories.common.delivery_change_request import PoDeliveryChangeRequ
 from app.repositories.common.fulfillment import FulfillmentRepository
 from app.repositories.common.master_data import MasterDataRepository
 from app.repositories.common.purchase_order import PurchaseOrderRepository
+from app.repositories.penalties.dispute import PenaltyDisputeRepository
 from app.repositories.penalties.job_context import (
     PenaltyJobItemContextRepository,
     PenaltyJobRunContextRepository,
@@ -51,6 +52,8 @@ from app.repositories.process.agent_registry import AgentRegistryRepository
 from app.repositories.process.job_queue import JobQueueRepository
 from app.services.cmir.run_service import CmirRunService
 from app.services.penalties.delivery_change import PoDeliveryChangeRequestService
+from app.services.penalties.dispute.service import DisputeService
+from app.services.penalties.dispute.summary_service import DisputeSummaryService
 from app.services.penalties.mitigation.service import MitigationService
 from app.services.penalties.mitigation.summary_service import MitigationSummaryService
 from app.services.penalties.projection.service import ProjectionService
@@ -182,6 +185,10 @@ def get_mitigation_option_repository(session: Session = Depends(get_session)) ->
     return MitigationOptionRepository(session)
 
 
+def get_dispute_repository(session: Session = Depends(get_session)) -> PenaltyDisputeRepository:
+    return PenaltyDisputeRepository(session)
+
+
 def get_delivery_change_request_repository(
     session: Session = Depends(get_session),
 ) -> PoDeliveryChangeRequestRepository:
@@ -300,6 +307,46 @@ def get_delivery_change_request_service(
     )
 
 
+def get_dispute_service(
+    purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
+    disputes: PenaltyDisputeRepository = Depends(get_dispute_repository),
+    actual_penalties: ActualPenaltyRepository = Depends(get_actual_penalty_repository),
+    rules: PenaltyRuleRepository = Depends(get_penalty_rule_repository),
+    projection_service: ProjectionService = Depends(get_projection_service),
+) -> DisputeService:
+    return DisputeService(
+        purchase_orders=purchase_orders,
+        disputes=disputes,
+        actual_penalties=actual_penalties,
+        rules=rules,
+        projection_service=projection_service,
+    )
+
+
+def get_dispute_summary_service(
+    purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
+    summaries: PenaltySummaryRepository = Depends(get_penalty_summary_repository),
+    agent_registry: AgentRegistryRepository = Depends(get_agent_registry_repository),
+    job_queue: JobQueueRepository = Depends(get_job_queue_repository),
+    job_context: PenaltyJobItemContextRepository = Depends(get_penalty_job_item_context_repository),
+    llm: AzureOpenAIChatClient = Depends(get_llm_client),
+    disputes: PenaltyDisputeRepository = Depends(get_dispute_repository),
+    rules: PenaltyRuleRepository = Depends(get_penalty_rule_repository),
+    master_data: MasterDataRepository = Depends(get_master_data_repository),
+) -> DisputeSummaryService:
+    return DisputeSummaryService(
+        purchase_orders=purchase_orders,
+        summaries=summaries,
+        agent_registry=agent_registry,
+        job_queue=job_queue,
+        job_context=job_context,
+        llm=llm,
+        disputes=disputes,
+        rules=rules,
+        master_data=master_data,
+    )
+
+
 def get_projection_summary_service(
     purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
     summaries: PenaltySummaryRepository = Depends(get_penalty_summary_repository),
@@ -368,6 +415,7 @@ def get_penalty_seeding_service(
     penalty_summaries: PenaltySummaryRepository = Depends(get_penalty_summary_repository),
     penalty_projections: PenaltyProjectionRepository = Depends(get_penalty_projection_repository),
     actual_penalties: ActualPenaltyRepository = Depends(get_actual_penalty_repository),
+    disputes: PenaltyDisputeRepository = Depends(get_dispute_repository),
     job_queue: JobQueueRepository = Depends(get_job_queue_repository),
     penalty_job_item_context: PenaltyJobItemContextRepository = Depends(
         get_penalty_job_item_context_repository
@@ -386,6 +434,7 @@ def get_penalty_seeding_service(
         penalty_summaries=penalty_summaries,
         penalty_projections=penalty_projections,
         actual_penalties=actual_penalties,
+        disputes=disputes,
         job_queue=job_queue,
         penalty_job_item_context=penalty_job_item_context,
         penalty_job_run_context=penalty_job_run_context,

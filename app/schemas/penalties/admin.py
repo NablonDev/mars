@@ -20,6 +20,9 @@ class SeedDataResponse(BaseModel):
     rules: int
     orders: int
     mitigation_inputs: int
+    dispute_rules: int
+    dispute_orders: int
+    dispute_actual_penalties: int
 
 
 class ScenarioDayResult(BaseModel):

@@ -30,7 +30,7 @@ from app.api.v1 import (
     workflow_threads,
 )
 from app.api.v1.common import delivery_change_requests, fulfillment, master_data, purchase_orders
-from app.api.v1.penalties import actual_penalties, mitigations, projections, rules
+from app.api.v1.penalties import actual_penalties, disputes, mitigations, projections, rules
 
 router = APIRouter()
 router.include_router(health.router)
@@ -49,6 +49,7 @@ protected_router.include_router(rules.router)
 protected_router.include_router(projections.router)
 protected_router.include_router(mitigations.router)
 protected_router.include_router(actual_penalties.router)
+protected_router.include_router(disputes.router)
 protected_router.include_router(job_runs.router)
 protected_router.include_router(admin.router)
 
