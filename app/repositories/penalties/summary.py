@@ -2,9 +2,9 @@
 LLM-generated summary table replacing what were two near-mirror tables,
 `projection_summary` (was `app/repositories/fine_projection/summary.py`)
 and `mitigation_summary` (was `app/repositories/fine_mitigation/summary.py`).
-One repository now, `summary_type` (`PROJECTION`|`MITIGATION`, see
+One repository now, `summary_type` (`PROJECTION`|`MITIGATION`|`DISPUTE`, see
 `app.models.enums.SummaryType`) threaded through every method instead of
-two copy-pasted classes.
+two (now three) copy-pasted classes.
 
 **Real behavior change, not just a merge (forced by the new schema, not a
 choice made here):** the old tables' uniqueness/identity was
@@ -16,9 +16,12 @@ merged into `process.agent`, see that model's docstring). Practically: at
 most one summary row can exist per PO/type/date now, regardless of which
 agent/prompt-version produced it -- generating with a new prompt version
 overwrites the row for that date rather than adding a second one. Every
-method below is keyed on `(purchase_order_id, summary_type, as_of_date)`
-accordingly; `agent_id` is recorded for provenance and used as the
-reuse-eligibility filter that `prompt_version` used to serve.
+triple-keyed method below (the original PROJECTION/MITIGATION lifecycle,
+`_find`/`get_cached`/`get_by_key`/`get_latest_not_after`/`create_pending`/
+`mark_ready`/`find_reusable`/`create_reused`/`mark_failed`) is keyed
+strictly on `(purchase_order_id, summary_type, as_of_date)`, unchanged from
+before `penalty_dispute` existed; `agent_id` is recorded for provenance and
+used as the reuse-eligibility filter that `prompt_version` used to serve.
 
 `find_stranded_pending` (merges the old
 `find_stranded_pending_projection_summaries`/
@@ -31,6 +34,22 @@ is now keyed on the *existence* of a matching `PenaltyJobItemContext` row
 an existing, non-deleted job item) rather than joining through
 `process.job_item` itself -- same "any task type/status counts as
 coverage" semantics as before.
+
+**DISPUTE rows go through the exact same triple-keyed methods above as
+PROJECTION/MITIGATION**, with `summary_type="DISPUTE"` passed as the
+ordinary parameter every method already accepts. An earlier pass added a
+`dispute_id` FK column plus a parallel set of `dispute_id`-keyed methods
+(`get_by_dispute_id`/`get_cached_for_dispute`/`create_pending_for_dispute`/
+`mark_ready_for_dispute`/`mark_failed_for_dispute`) so a DISPUTE row could
+be looked up per-entity instead of per-triple -- reverted (see
+`app.models.penalties.summary.PenaltySummary`'s module docstring for why,
+and for the known limitation this reintroduces: a PO can have more than
+one concurrent dispute, and two analyzed the same calendar day collide on
+`(purchase_order_id, "DISPUTE", as_of_date)`).
+`app.services.penalties.dispute.summary_service.DisputeSummaryService`
+resolves a `dispute_id` to its `(purchase_order_id, as_of_date)` before
+calling these methods, exactly as `ProjectionSummaryService`/
+`MitigationSummaryService` do for their own domains.
 """
 
 from __future__ import annotations
@@ -71,6 +90,11 @@ class PenaltySummaryRepository:
 
     def commit(self) -> None:
         self._session.commit()
+
+    # ------------------------------------------------------------------
+    # PROJECTION / MITIGATION -- (purchase_order_id, summary_type,
+    # as_of_date)-keyed, unchanged by DISPUTE's addition.
+    # ------------------------------------------------------------------
 
     def _find(self, purchase_order_id: UUID, summary_type: str, as_of_date: date) -> PenaltySummary | None:
         return self._session.scalars(
@@ -404,8 +428,8 @@ class PenaltySummaryRepository:
     # ------------------------------------------------------------------
 
     def truncate_all(self) -> None:
-        """Deletes every penalty_summary row (both PROJECTION and
-        MITIGATION), for a force-reseed. FKs to purchase_order, so must
-        run before PurchaseOrderRepository.truncate_all()."""
+        """Deletes every penalty_summary row (PROJECTION, MITIGATION, and
+        DISPUTE), for a force-reseed. FKs to purchase_order only, so must
+        run before `PurchaseOrderRepository.truncate_all()`."""
         self._session.execute(delete(PenaltySummary))
         self._session.flush()

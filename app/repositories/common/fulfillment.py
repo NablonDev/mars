@@ -42,7 +42,7 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -314,6 +314,37 @@ class FulfillmentRepository:
             .order_by(Shipment.recorded_at.asc())
         ).all()
         return [_shipment_to_dict(r) for r in rows]
+
+    def get_delivered_quantity_for_purchase_order_not_after(
+        self, purchase_order_id: UUID, as_of_date: date
+    ) -> float | None:
+        """Real, final delivered quantity for a PO as-of a historical date --
+        the fact `app.services.penalties.dispute.engine` uses for a SHORTAGE
+        dispute, unlike `get_latest_confirmation_line_not_after`'s
+        pre-delivery promise (`order_confirmation` is what the retailer
+        *said* they'd ship; this is what actually shipped).
+
+        Sums `DeliveryLine.delivered_quantity` across every delivery line
+        whose parent `Delivery.actual_delivery_date` is set and
+        `<= as_of_date` -- a delivery not yet physically completed
+        contributes nothing (`Delivery.actual_delivery_date` is the one date
+        column on this model that reflects a real, final event rather than a
+        plan). Returns `None`, never `0.0`, when no delivery line qualifies
+        at all as-of that date -- the caller must treat that as "we don't
+        know," never as "confirmed zero" (see
+        `app.services.penalties.dispute.types.InsufficientDataForDisputeError`).
+        """
+        total = self._session.scalar(
+            select(func.sum(DeliveryLine.delivered_quantity))
+            .select_from(DeliveryLine)
+            .join(Delivery, Delivery.id == DeliveryLine.delivery_id)
+            .where(
+                Delivery.purchase_order_id == purchase_order_id,
+                Delivery.actual_delivery_date.isnot(None),
+                Delivery.actual_delivery_date <= as_of_date,
+            )
+        )
+        return float(total) if total is not None else None
 
     def get_latest_shipment_for_purchase_order_not_after(
         self, purchase_order_id: UUID, as_of_date: date
