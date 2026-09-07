@@ -120,9 +120,7 @@ class Container:
         # Previous implementation using MemorySaver kept for easy rollback.
         # checkpointer = MemorySaver()
         checkpointer = resources.enter_context(
-            PostgresSaver.from_conn_string(
-                checkpoint_dsn(config.database.url, LANGGRAPH_SCHEMA)
-            )
+            PostgresSaver.from_conn_string(checkpoint_dsn(config.database.url, LANGGRAPH_SCHEMA))
         )
         checkpointer.setup()
         logger.info("Checkpoint tables verified.")
