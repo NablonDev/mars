@@ -256,6 +256,35 @@ Flat, same reasoning as Projections/Mitigations above.
 | GET | `/api/v1/penalties/actual-penalties?purchase_order_id=` | List actual penalties, optionally filtered to one PO; omitted lists across every PO |
 | GET | `/api/v1/penalties/actual-penalties/{actual_penalty_id}` | Single actual-penalty read (`404 ACTUAL_PENALTY_NOT_FOUND`) |
 
+### Disputes
+
+Flat, same reasoning as Projections/Mitigations/Actual penalties above.
+Routes in `app/api/v1/penalties/disputes.py`, backed by
+`app.services.penalties.dispute.service.DisputeService`; schemas in
+`app/schemas/penalties/disputes.py`. `.../{dispute_id}/analyze`,
+`.../{dispute_id}/resolve`, and `.../{dispute_id}/summary` are sub-actions
+nested under the dispute's own id, not a second URL shape for the
+collection (mirrors the delivery-change-request `.../response` convention
+under Common above).
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/v1/penalties/disputes` (body: `actual_penalty_id`, `reason_code`, `claimed_amount`, `notes?`) | Open a dispute against an existing actual penalty (`201`) |
+| GET | `/api/v1/penalties/disputes?purchase_order_id=` | List disputes, optionally filtered to one PO (`404` if the PO itself doesn't exist); omitted lists across every PO |
+| GET | `/api/v1/penalties/disputes/{dispute_id}` | Single dispute read (`404 DISPUTE_NOT_FOUND`) |
+| POST | `/api/v1/penalties/disputes/{dispute_id}/analyze` | Compute and persist the verdict against the original rule (synchronous -- no job-queue involvement, no blocking human-approval gate by design), moving the dispute to `ANALYZED` |
+| POST | `/api/v1/penalties/disputes/{dispute_id}/resolve` (body: `resolved_by`, `override_verdict?`, `override_reason?`) | Record a human decision on an already-`ANALYZED` dispute; omit `override_verdict` to accept the engine's own verdict, or set both it and `override_reason` to override it (`422` if only one of the two is set) |
+| POST | `/api/v1/penalties/disputes/{dispute_id}/summary` (body: `force_regenerate?`) | Trigger/poll the LLM dispute-summary job (`200` with a cached/ready summary, or `202 PENDING`) |
+| GET | `/api/v1/penalties/disputes/{dispute_id}/summary` | Dedicated pure-read poll for the same summary job (`200`, `status: null` if none was ever requested for this dispute -- same "never-requested is success, not 404" convention as the projection/mitigation summary `GET` routes above) |
+
+A dispute's `reason_code` is one of `AMOUNT_INCORRECT`, `NOT_LATE`,
+`QTY_CONFIRMED`, `RULE_MISAPPLIED`, `OTHER`; its `verdict` (set by
+`analyze`) and `override_verdict` (set by `resolve`) are one of `NO_PAY`,
+`PAY_PARTIAL`, `PAY_FULL`. The response also carries `computed_amount` /
+`delta_amount` (the engine's re-derived charge and its difference from
+`claimed_amount`) and a full `analysis_breakdown` of the facts and rule
+the verdict was computed against, once analyzed.
+
 ## Job runs (`penalties` domain)
 
 Routes in `app/api/v1/job_runs.py`; request schemas in
@@ -371,5 +400,14 @@ Spans both domains, so it stays a top-level module rather than living under
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/v1/admin/seed-master-data?force=` | Seed the four worked-example scenarios' master/master-adjacent data |
+| POST | `/api/v1/admin/seed-master-data?force=` | Seed the four worked-example scenarios' master/master-adjacent data, plus a separate additive set of dispute-resolution fixtures (5 dispute rules, 8 delivered purchase orders, 8 actual penalties) |
 | POST | `/api/v1/admin/simulate-daily-run` | Replay the seeded scenarios day by day, returning each day's projected shortage/delay penalty and negotiation outcome |
+
+`seed-master-data`'s response (`SeedDataResponse`,
+`app/schemas/penalties/admin.py`) reports every table it touched as a flat
+count: `retailers`, `materials`, `skus`, `plants`, `carriers`, `rules`,
+`orders`, `mitigation_inputs` for the four worked-example scenarios, plus
+`dispute_rules`, `dispute_orders`, `dispute_actual_penalties` for the
+dispute fixtures above. Idempotent like the rest of this endpoint: a
+repeat call with data already seeded returns `0` for every field it
+skipped, not an error.

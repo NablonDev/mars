@@ -46,7 +46,7 @@ unqualified (no schema override on those models).
   `penalty`/`penalties` domain rename; see "Tables (penalties schema)"
   below). Declared in `app/db/base.py::PENALTIES_SCHEMA`.
 - **`langgraph`** -- created empty by its own migration
-  (`a5b39c6e2181_langgraph_schema.py`). LangGraph's `PostgresSaver`
+  (`a5b39c6e2181_initial_langgraph_schema.py`). LangGraph's `PostgresSaver`
   creates and owns its checkpoint tables (`checkpoints`,
   `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`) here at
   runtime, never via Alembic, and never queried/written directly by
@@ -87,15 +87,27 @@ an earlier plan draft specified.
 
 ### Migration history
 
-Five revisions, one per schema, in FK-dependency order:
+The five-revision pre-release squash, one per schema, plus every
+genuinely incremental revision added since, in FK-dependency order:
 
 | Revision | File | What it adds |
 |---|---|---|
-| `0824321a02a4` | `alembic/versions/0824321a02a4_common_schema.py`, `down_revision=None` | Every shared master/fulfillment table (unqualified, in `public`) |
-| `ff53dabe6e4c` | `alembic/versions/ff53dabe6e4c_process_schema.py` | Every `process`-schema table except `workflow_thread_subject` (see below) |
-| `374aa902b053` | `alembic/versions/374aa902b053_cmir_schema.py` | Every `cmir`-schema table, **plus `process.workflow_thread_subject`** |
-| `4b41f6bcb2f3` | `alembic/versions/4b41f6bcb2f3_penalties_schema.py` | Every `penalties`-schema table |
-| `a5b39c6e2181` | `alembic/versions/a5b39c6e2181_langgraph_schema.py` | `CREATE SCHEMA langgraph` only -- no tables, Postgres-only, no-op on SQLite |
+| `0824321a02a4` | `alembic/versions/0824321a02a4_initial_common_schema.py`, `down_revision=None` | Every shared master/fulfillment table (unqualified, in `public`) |
+| `ff53dabe6e4c` | `alembic/versions/ff53dabe6e4c_initial_process_schema.py` | Every `process`-schema table except `workflow_thread_subject` (see below) |
+| `374aa902b053` | `alembic/versions/374aa902b053_initial_cmir_schema.py` | Every `cmir`-schema table, **plus `process.workflow_thread_subject`** |
+| `4b41f6bcb2f3` | `alembic/versions/4b41f6bcb2f3_initial_penalties_schema.py` | Every `penalties`-schema table |
+| `a5b39c6e2181` | `alembic/versions/a5b39c6e2181_initial_langgraph_schema.py` | `CREATE SCHEMA langgraph` only -- no tables, Postgres-only, no-op on SQLite |
+| `11ce88f609e0` | `alembic/versions/11ce88f609e0_penalty_dispute_schema.py` | `penalty_dispute` table; `DISPUTE` added to `penalty_summary.summary_type`'s CHECK constraint; `penalty_rule.rule_code` widened `varchar(20)` -> `varchar(50)` |
+
+The five revisions above `11ce88f609e0` are a pre-release squash -- edited in
+place rather than chained, since there was no production data to preserve
+at that point (see `0824321a02a4`'s docstring). `11ce88f609e0` is the first
+genuinely incremental revision: it was split out from an in-place edit to
+`4b41f6bcb2f3` once a real local database already had the five "initial"
+revisions applied, at which point editing an already-applied revision's
+file stopped doing anything for `alembic upgrade head` (Alembic tracks
+revision *ids* applied, never file content). Every revision from here on
+should be a normal new chained revision, not an edit to an existing one.
 
 **Why `workflow_thread_subject` is created by the `cmir` revision, not the
 `process` one its Python class lives in:** a genuine cross-revision FK
@@ -361,7 +373,7 @@ Six constructs across the five revisions cannot be expressed as an ORM
 model declaration, and exist only as raw DDL inside their migration:
 
 1. **`workflow_thread_subject`'s `CHECK (num_nonnulls(email_event_id,
-   purchase_order_line_id) = 1)`** (`374aa902b053_cmir_schema.py`) --
+   purchase_order_line_id) = 1)`** (`374aa902b053_initial_cmir_schema.py`) --
    PostgreSQL-only builtin, skipped on SQLite.
 2. **`cmir_job_item_context`'s identical CHECK** (same migration, same
    reason).
@@ -372,14 +384,14 @@ model declaration, and exist only as raw DDL inside their migration:
    legitimate second historical (non-current) row for the same identity
    pair.
 4. **`job_item`'s partial unique index** (`uq_job_item_inflight`,
-   `ff53dabe6e4c_process_schema.py`) -- restores the pre-restructure
+   `ff53dabe6e4c_initial_process_schema.py`) -- restores the pre-restructure
    schema's in-flight dedupe constraint on top of the generic `dedupe_key`
    column; same "`postgresql_where=` dropped on SQLite" reason as #3. See
    `job_item`'s own section above for the full story, including why an
    earlier version of this squash dropped it and why that was wrong.
 5. **`agent`'s partial unique index** (`uq_agent_one_active_per_code`,
    same migration) -- at most one active prompt version per agent code.
-6. **`langgraph`'s `CREATE SCHEMA`** (`a5b39c6e2181_langgraph_schema.py`)
+6. **`langgraph`'s `CREATE SCHEMA`** (`a5b39c6e2181_initial_langgraph_schema.py`)
    -- Postgres-only, no SQLite equivalent, no-op there.
 
 All six are dialect-branched (schema-qualified on Postgres, unqualified

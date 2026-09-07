@@ -420,7 +420,12 @@ curl -X POST http://127.0.0.1:8000/api/v1/admin/simulate-daily-run \
 
 `seed-master-data` creates the master data (retailers, materials, SKUs,
 plants, carriers), 4 penalty rules, and 4 purchase-order headers (all
-`OPEN`). `simulate-daily-run`
+`OPEN`) for the worked-example walkthrough below, plus a separate,
+additive set of fixtures for the dispute-resolution demo: 5 dispute-only
+penalty rules, 8 `DELIVERED` purchase orders, and one `actual_penalty`
+charge per order (see `docs/API.md`'s Admin section) -- neither set
+touches the other. See §11 for the full dispute-resolution lifecycle
+walkthrough against these fixtures. `simulate-daily-run`
 walks all four orders through their entire scripted history
 (`app/services/seeding/scenario_data_projection.py`), writing each day's facts and running a
 projection, then marks every order `DELIVERED`. Running it twice in a
@@ -499,7 +504,8 @@ mitigation second:
 # 1. Project this PO today:
 curl -X POST http://127.0.0.1:8000/api/v1/penalties/projections \
   -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
-  -H "Content-Type: application/json" -d '{"purchase_order_id": "<purchase_order_id>"}'
+  -H "Content-Type: application/json" \
+  -d '{"purchase_order_id": "<purchase_order_id>"}'
 
 # 2a. Rank mitigation actions directly against that (purchase_order_id, projection_date):
 curl -X POST http://127.0.0.1:8000/api/v1/penalties/mitigations \
@@ -511,10 +517,21 @@ curl -X POST http://127.0.0.1:8000/api/v1/penalties/mitigations \
 curl "http://127.0.0.1:8000/api/v1/penalties/projections?purchase_order_id=<purchase_order_id>" \
   -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"
 # -> take the `id` off any violation row for the date you want
+
 curl -X POST http://127.0.0.1:8000/api/v1/penalties/mitigations \
   -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
-  -H "Content-Type: application/json" -d '{"projection_id": "<projection_id>"}'
+  -H "Content-Type: application/json" \
+  -d '{"projection_id": "<projection_id>"}'
 ```
+
+**Step 2b's history lookup is only needed for an already-run, older
+projection date.** For the projection step 1 just ran, skip the round trip
+entirely -- `POST /penalties/projections`'s own response already carries
+each violation's `projection_id` directly (`response.data.violations[].projection_id`,
+one per persisted `penalty_projection` row -- see `docs/API.md`
+"Projections" and `app/schemas/penalties/projections.py`'s `ViolationResponse`),
+ready to feed straight into `POST /penalties/mitigations`'s `projection_id`
+field without a separate `GET .../projections?purchase_order_id=` call.
 
 **A freshly seeded database has projection rows and still needs step 2
 run explicitly.** `simulate-daily-run` replays each PO's scripted history
@@ -584,29 +601,24 @@ PLANT_ID=$(curl -s -X POST http://127.0.0.1:8000/api/v1/plants \
 curl -X POST http://127.0.0.1:8000/api/v1/penalties/rules \
   -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"rule_code\": \"RULE-TGT-OTIF\", \"retailer_id\": \"$RETAILER_ID\",
-       \"violation_type\": \"OTIF_LATE\", \"calc_type\": \"PERCENT_OF_PO\", \"rate\": 0.03}"
+  -d '{"rule_code": "RULE-TGT-OTIF", "retailer_id": "$RETAILER_ID", "violation_type": "OTIF_LATE", "calc_type": "PERCENT_OF_PO", "rate": 0.03}'
 
 PO_ID=$(curl -s -X POST http://127.0.0.1:8000/api/v1/purchase-orders \
   -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"purchase_order_number\": \"TGT-1\", \"retailer_id\": \"$RETAILER_ID\",
-       \"order_date\": \"2026-09-01\", \"requested_delivery_date\": \"2026-09-10\",
-       \"required_ship_date\": \"2026-09-08\",
-       \"lines\": [{\"line_number\": \"1\", \"material_id\": \"$MATERIAL_ID\", \"plant_id\": \"$PLANT_ID\",
-                    \"ordered_quantity\": 500, \"unit_price\": 20.0}]}" \
+  -d '{"purchase_order_number": "TGT-1", "retailer_id": "$RETAILER_ID", "order_date": "2026-09-01", "requested_delivery_date": "2026-09-10" "required_ship_date": "2026-09-08", "lines": [{"line_number": "1", "material_id": "$MATERIAL_ID", "plant_id": "$PLANT_ID", "ordered_quantity": 500, "unit_price": 20.0}]}" \
   | jq -r .data.id)
 
 # SAP just cut the order (purchase_order_line_id comes off the PO create response's lines[]):
 curl -X POST http://127.0.0.1:8000/api/v1/purchase-orders/$PO_ID/confirmations \
   -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"confirmation_number": "CONF-TGT-1-01", "confirmation_date": "2026-09-03T06:00:00", "status": "CONFIRMED",
-       "lines": [{"purchase_order_line_id": "<purchase_order_line_id>", "confirmed_quantity": 450}]}'
+  -d '{"confirmation_number": "CONF-TGT-1-01", "confirmation_date": "2026-09-03T06:00:00", "status": "CONFIRMED", "lines": [{"purchase_order_line_id": "<purchase_order_line_id>", "confirmed_quantity": 450}]}'
 
 curl -X POST http://127.0.0.1:8000/api/v1/penalties/projections \
   -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
-  -H "Content-Type: application/json" -d "{\"purchase_order_id\": \"$PO_ID\"}"
+  -H "Content-Type: application/json" \
+  -d '{"purchase_order_id": "$PO_ID"}'
 ```
 
 `POST .../shipments` and `POST .../demand-exceptions` work the same way --
@@ -690,7 +702,8 @@ With those set (`<purchase_order_id>` is the PO's surrogate UUID, from
 # Fast, no LLM call inline -- 200 (cache hit) or 202 (job scheduled):
 curl -X POST http://127.0.0.1:8000/api/v1/penalties/projections/summary \
   -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
-  -H "Content-Type: application/json" -d '{"purchase_order_id": "<purchase_order_id>"}'
+  -H "Content-Type: application/json" \
+  -d '{"purchase_order_id": "<purchase_order_id>"}'
 
 # Poll again with the same call until status leaves PENDING, or read the
 # dedicated summary route directly:
@@ -700,7 +713,8 @@ curl "http://127.0.0.1:8000/api/v1/penalties/projections/summary?purchase_order_
 # Force a fresh LLM call even if today's summary is already cached:
 curl -X POST http://127.0.0.1:8000/api/v1/penalties/projections/summary \
   -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
-  -H "Content-Type: application/json" -d '{"purchase_order_id": "<purchase_order_id>", "force_regenerate": true}'
+  -H "Content-Type: application/json" \
+  -d '{"purchase_order_id": "<purchase_order_id>", "force_regenerate": true}'
 ```
 
 The mitigation summary is the same shape against
@@ -712,11 +726,13 @@ ranked mitigation options to already exist for that date
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/penalties/mitigations/summary \
   -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
-  -H "Content-Type: application/json" -d '{"purchase_order_id": "<purchase_order_id>"}'
+  -H "Content-Type: application/json" \
+  -d '{"purchase_order_id": "<purchase_order_id>"}'
 
 curl -X POST http://127.0.0.1:8000/api/v1/penalties/mitigations/summary \
   -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
-  -H "Content-Type: application/json" -d '{"purchase_order_id": "<purchase_order_id>", "force_regenerate": true}'
+  -H "Content-Type: application/json" \
+  -d '{"purchase_order_id": "<purchase_order_id>", "force_regenerate": true}'
 ```
 
 Or the scripted equivalent, which looks up each PO's actual latest
@@ -790,8 +806,7 @@ orders -- look up its UUID via `GET /api/v1/purchase-orders`):
 curl -X POST http://127.0.0.1:8000/api/v1/delivery-change-requests \
   -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"purchase_order_id": "<purchase_order_id>", "reason_code": "SHORTAGE", "proposed_delivery_date": "2026-08-14",
-       "notes": "SAP confirms a real cut to 1,850/2,000; requesting 3 extra days."}'
+  -d '{"purchase_order_id": "<purchase_order_id>", "reason_code": "SHORTAGE", "proposed_delivery_date": "2026-08-14", "notes": "SAP confirms a real cut to 1,850/2,000; requesting 3 extra days."}'
 
 # Retailer accepts the proposed date outright (<delivery_change_request_id> is
 # the "id" field from the create response above):
@@ -871,7 +886,240 @@ it isn't, or not strictly between `baseline_delivery_date` and
 `proposed_delivery_date`. Check the request's current `status` via history
 first.
 
-## 11. Tests
+## 11. Post-delivery penalty dispute resolution
+
+This is the other side of the retailer relationship from §10: instead of
+negotiating a still-open PO's delivery date before a charge exists, this
+handles a retailer's `actual_penalty` charge that has already been
+recorded (post-delivery, a real deduction/invoice) and re-adjudicates it
+against Mars's own rule engine rather than accepting it at face value.
+`DisputeService` (`app/services/penalties/dispute/service.py`) owns the
+lifecycle: `open_dispute()` records a dispute against one `actual_penalty`
+row; `analyze()` is a synchronous, deterministic recompute
+(`app/services/penalties/dispute/engine.py`, reusing the exact same
+PER_UNIT/PERCENT_OF_PO/FLAT_FEE/TIERED pricing functions the projection
+engine uses, fed real, final post-delivery facts instead of risk-adjusted
+ones) that classifies the charge as `NO_PAY`/`PAY_PARTIAL`/`PAY_FULL` and
+moves the dispute to `ANALYZED`; `resolve()` then records a human decision
+-- either accepting that verdict (`RESOLVED`) or overriding it with a
+different one and a required reason (`OVERRIDDEN`). Like §10, there is no
+blocking human-approval gate before a verdict is written -- no LangGraph,
+no job queue for `analyze()` itself -- a human accepts or overrides only
+after the deterministic verdict already exists. The one asynchronous piece
+is the LLM narrative over an already-computed verdict (`.../summary`),
+which mirrors §9's projection/mitigation summary trigger/poll pattern
+exactly, including its background-job, cache, and `FAILED`-status
+mechanics -- see §9 for all of that; this section only covers what's
+dispute-specific. At most one `OPEN`/`ANALYZED` dispute may be active
+against a given `actual_penalty` charge at a time; a charge can go through
+more than one dispute cycle over its life, just not two open at once.
+
+**Via the API**, using seed scenario (a) `correct_shortage` from
+`app/services/seeding/scenario_data_dispute.py` (`purchase_order_number`
+`ORD-DSP-A1`, seeded by `seed-master-data`'s additive dispute fixtures --
+see §6): a 100-unit, $10/unit PO against retailer `RET-DSPA`, delivered
+90 units (a confirmed 10-unit shortfall) against a `SHORT_SHIP` rule
+charging `$5`/unit with no threshold, cap, or grace period. The retailer's
+charge (`actual_penalty_number` `AP-ORD-DSP-A1`) is exactly `$50.00` --
+Mars's own rule recomputes the identical amount, so this scenario is
+scripted to land on `PAY_FULL` with a `$0` delta, proving the "correct
+charge" path end to end. Every path below takes the PO's surrogate UUID,
+not its business number -- look it up first with
+`GET /api/v1/purchase-orders` (`purchase_order_number` `ORD-DSP-A1`), then
+its one `actual_penalty` charge with
+`GET /api/v1/penalties/actual-penalties?purchase_order_id=<purchase_order_id>`
+(`actual_penalty_number` `AP-ORD-DSP-A1`, `$50.00` `SHORT_SHIP`):
+
+```bash
+# Open a dispute against that charge (reason_code is caller-supplied, not
+# part of the seed fixture -- AMOUNT_INCORRECT fits since the whole premise
+# of this scenario is questioning whether the charged amount is right):
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/disputes \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"actual_penalty_id": "<actual_penalty_id>", "reason_code": "AMOUNT_INCORRECT", "claimed_amount": 50.0}'
+```
+
+Analyze it -- computes and persists the verdict immediately, no polling
+(`<dispute_id>` is the `id` field from the create response above):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/disputes/<dispute_id>/analyze \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"
+```
+
+```json
+{
+  "success": true,
+  "message": "Penalty dispute analyzed.",
+  "data": {
+    "id": "<dispute_id>",
+    "dispute_number": "DSP-3F9A2B1C4D5E",
+    "actual_penalty_id": "<actual_penalty_id>",
+    "purchase_order_id": "<purchase_order_id>",
+    "rule_id": "<rule_id for RULE-DSPA-SHORT>",
+    "reason_code": "AMOUNT_INCORRECT",
+    "claimed_amount": 50.0,
+    "computed_amount": 50.0,
+    "delta_amount": 0.0,
+    "verdict": "PAY_FULL",
+    "dispute_status": "ANALYZED",
+    "analysis_breakdown": {
+      "rule_id": "<rule_id for RULE-DSPA-SHORT>",
+      "rule_code": "RULE-DSPA-SHORT",
+      "calc_type": "PER_UNIT",
+      "violation_family": "SHORTAGE",
+      "as_of_date": "2026-06-12",
+      "facts": {
+        "order_qty": 100,
+        "unit_price": 10.0,
+        "delivered_qty": 90.0,
+        "shortfall_units": 10.0,
+        "required_delivery_date": "2026-06-10",
+        "actual_delivery_date": null,
+        "deadline": null,
+        "is_late": null,
+        "grace_period_days": 0
+      },
+      "cap_amount": null,
+      "cap_applied": false,
+      "claimed_amount": 50.0,
+      "computed_amount": 50.0,
+      "delta_amount": 0.0
+    },
+    "analyzed_at": "<timestamp>",
+    "resolved_at": null,
+    "resolved_by": null,
+    "override_verdict": null,
+    "override_reason": null,
+    "notes": null
+  },
+  "error": null
+}
+```
+
+Resolve it -- accepting the engine's own verdict outright:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/disputes/<dispute_id>/resolve \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"resolved_by": "ops-reviewer"}'
+# -> dispute_status "RESOLVED", verdict stays "PAY_FULL"
+```
+
+...or, instead, overriding it with a different verdict (requires
+`override_reason`; this is an alternative ending for the same dispute, not
+a second call on top of the one above -- `resolve` only runs once, from
+`ANALYZED`):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/disputes/<dispute_id>/resolve \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"resolved_by": "ops-reviewer", "override_verdict": "PAY_PARTIAL", "override_reason": "Retailer agreed off-line to split the difference."}'
+# -> dispute_status "OVERRIDDEN"; verdict stays "PAY_FULL" (the engine's own
+#    computed verdict, left as the audit trail); override_verdict
+#    "PAY_PARTIAL" and override_reason record the human's different call
+#    alongside it.
+```
+
+Read it back:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/penalties/disputes/<dispute_id> \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"
+
+curl "http://127.0.0.1:8000/api/v1/penalties/disputes?purchase_order_id=<purchase_order_id>" \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"   # every dispute ever opened on this PO
+```
+
+And the summary trigger/poll pair, same shape as §9's (needs
+`AZURE_OPENAI_*` configured per §9 -- same enqueue-then-drain, cache, and
+`force_regenerate` mechanics, just keyed by `dispute_id` instead of
+`purchase_order_id`, and only callable once the dispute is `ANALYZED` or
+later):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/penalties/disputes/<dispute_id>/summary \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" -d '{}'
+
+curl http://127.0.0.1:8000/api/v1/penalties/disputes/<dispute_id>/summary \
+  -H "X-Internal-Api-Key: $APP_INTERNAL_API_KEY"
+```
+
+There is no CLI script for disputes (unlike projections/mitigations/
+delivery-change-requests) -- the API walkthrough above is the only way to
+exercise this feature outside the seed data's own scripted scenarios.
+
+### Troubleshooting
+
+#### Open returns `ACTUAL_PENALTY_NOT_FOUND` (404)
+`actual_penalty_id` doesn't exist. Confirm it via
+`GET /penalties/actual-penalties?purchase_order_id=`.
+
+#### Open returns `ACTIVE_DISPUTE_EXISTS` (409)
+That charge already has an `OPEN`/`ANALYZED` dispute -- at most one active
+dispute per `actual_penalty` at a time. Check
+`GET /penalties/disputes?purchase_order_id=` for the pending one's `id`;
+resolve it (or let it reach `RESOLVED`/`OVERRIDDEN`) before opening a
+second cycle against the same charge.
+
+#### Any dispute-scoped route returns `DISPUTE_NOT_FOUND` (404)
+No `penalty_dispute` row exists for that `dispute_id`. Confirm the id from
+the `open` response or from `GET /penalties/disputes?purchase_order_id=`.
+
+#### Analyze returns `DISPUTE_ALREADY_RESOLVED` (422)
+The dispute is already `RESOLVED` or `OVERRIDDEN` -- `analyze()` refuses to
+recompute underneath a verdict a human has already acted on. It's freely
+re-runnable while still `OPEN` or `ANALYZED` (e.g. after correcting the
+rule it matched against).
+
+#### Analyze returns `NO_MATCHING_RULE_FOR_DISPUTE` (409)
+No `penalty_rule` was effective for the PO's retailer/`violation_type` on
+the charge's `invoice_or_deduction_date`. Add or correct the rule (§8),
+then re-analyze.
+
+#### Analyze returns `INSUFFICIENT_DATA_FOR_DISPUTE` (409)
+The real, final fact this violation family needs was never recorded as of
+the charge date -- `delivered_qty` for a `SHORTAGE`-family dispute,
+`actual_delivery_date` for a `DELAY`-family one. This is never silently
+treated as "confirmed zero"/"confirmed on time" -- post the missing
+delivery/shipment fact (§8) then re-analyze.
+
+#### Analyze returns `DISPUTE_CALC_NOT_SUPPORTED` (409)
+The effective rule's `calc_type` can't be priced for this violation family
+-- today, only a `TIERED` delay rule (tiered pricing is implemented for
+shortage rules, banded by shortfall %, not for delay rules).
+
+#### Resolve returns `DISPUTE_NOT_ANALYZED` (422)
+The dispute isn't `ANALYZED` yet. Run `POST .../analyze` first.
+
+#### Resolve returns `OVERRIDE_REASON_REQUIRED` (422), or the request never reaches the service at all
+`override_verdict` was set without `override_reason` (or vice versa).
+`DisputeResolveRequest`'s own Pydantic validator rejects this before the
+request reaches the service, surfacing as `422 REQUEST_VALIDATION_ERROR`;
+`DisputeService.resolve` enforces the identical rule server-side (`code=
+"OVERRIDE_REASON_REQUIRED"`) as defense in depth, in case a future caller
+bypasses schema validation.
+
+#### Summary trigger/poll returns `DISPUTE_NOT_ANALYZED` (409)
+`POST`/`GET .../{dispute_id}/summary` refuse a narrative request before a
+verdict exists. Despite the identical-looking code string, this one is
+raised as a `BusinessRuleError` (`409`), **not** the `ValidationError`
+(`422`) `resolve` uses for the same code above -- two different call sites,
+two different HTTP statuses for the same `code`. Run `POST .../analyze`
+first.
+
+#### A dispute-summary poll reports `status: "FAILED"`
+Same cause and mechanics as §9's projection/mitigation summaries -- the
+model didn't return valid structured output within the bounded
+tool-calling loop, coded `PENALTY_DISPUTE_SUMMARY_UPSTREAM_FAILED`. `POST`
+again (or with `force_regenerate: true`), or check the deployment in the
+Azure portal.
+
+## 12. Tests
 
 ```bash
 pytest tests/unit/ -v         # 582 passed, 1 xfailed, in-memory SQLite
@@ -900,14 +1148,14 @@ python scripts/demo/seed_master_data.py   # (with uvicorn running against the sa
 python scripts/demo/demo_daily_simulation.py
 ```
 
-## 12. Linting and formatting
+## 13. Linting and formatting
 
 ```bash
 ruff check app/ scripts/ tests/ alembic/
 ruff format app/ scripts/ tests/ alembic/
 ```
 
-## 13. Common tasks, quick reference
+## 14. Common tasks, quick reference
 
 | I want to... | Run |
 |---|---|
@@ -927,7 +1175,7 @@ ruff format app/ scripts/ tests/ alembic/
 | See why the queue looks stuck | `docs/DEPLOYMENT.md` §3.7 — the SQL to run and what each status means |
 | Deploy to Azure | `docs/DEPLOYMENT.md` §6 |
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 - **`sqlalchemy.exc.OperationalError` / `relation "sales_order" does not
   exist`**: migrations haven't been applied against the `DATABASE_URL`
