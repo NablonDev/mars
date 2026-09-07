@@ -23,6 +23,7 @@ from app.repositories.common.delivery_change_request import PoDeliveryChangeRequ
 from app.repositories.common.fulfillment import FulfillmentRepository
 from app.repositories.common.master_data import MasterDataRepository
 from app.repositories.common.purchase_order import PurchaseOrderRepository
+from app.repositories.penalties.dispute import PenaltyDisputeRepository
 from app.repositories.penalties.job_context import (
     PenaltyJobItemContextRepository,
     PenaltyJobRunContextRepository,
@@ -34,6 +35,7 @@ from app.repositories.penalties.summary import PenaltySummaryRepository
 from app.repositories.process.job_queue import JobQueueRepository
 from app.services.penalties.delivery_change import PoDeliveryChangeRequestService
 from app.services.penalties.projection.service import ProjectionService
+from app.services.seeding import dispute as dispute_seed
 from app.services.seeding import master_data as master_data_seed
 from app.services.seeding import mitigation as mitigation_seed
 from app.services.seeding import projection as projection_seed
@@ -52,6 +54,7 @@ class PenaltySeedingService:
     penalty_summaries: PenaltySummaryRepository
     penalty_projections: PenaltyProjectionRepository
     actual_penalties: ActualPenaltyRepository
+    disputes: PenaltyDisputeRepository
     job_queue: JobQueueRepository
     penalty_job_item_context: PenaltyJobItemContextRepository
     penalty_job_run_context: PenaltyJobRunContextRepository
@@ -72,13 +75,30 @@ class PenaltySeedingService:
             projection_seed.seed(self.rules, self.purchase_orders, self.fulfillment, self.master_data)
         )
         counts.update(mitigation_seed.seed(self.mitigation_inputs, self.purchase_orders))
+        counts.update(self.seed_disputes())
         return counts
+
+    def seed_disputes(self) -> dict[str, int]:
+        """Additive dispute-resolution fixture data (new rules, new
+        retailers, eight dedicated purchase orders + fulfillment facts +
+        `actual_penalty` charges) -- never touches the four existing
+        worked-example POs or their rule/fulfillment data. Idempotent, same
+        posture as every other `seed_*` step; called from
+        `seed_master_data()` and separately callable for tests that only
+        need the dispute fixtures."""
+        return dispute_seed.seed(
+            self.rules,
+            self.purchase_orders,
+            self.fulfillment,
+            self.master_data,
+            self.actual_penalties,
+        )
 
     def _truncate_seeded_tables(self) -> None:
         """FK-safe truncate order: children before the parents they
         reference.
 
-        `penalty_summary`, `penalty_job_item_context`/
+        `penalty_summary`, `penalty_dispute`, `penalty_job_item_context`/
         `penalty_job_run_context`, `mitigation_input`/`mitigation_option`,
         `po_delivery_change_request`, `penalty_projection`,
         `actual_penalty`, `job_item`/`job_run`, and every fulfillment fact
@@ -86,10 +106,20 @@ class PenaltySeedingService:
         `demand_exception`, ...) must be cleared before `purchase_order`
         itself; `purchase_order` and `penalty_rule` must both be cleared
         before the retailer/material/plant/carrier master data they
-        reference. See the individual repositories' `truncate_all()`
+        reference. `penalty_summary` FKs only to `purchase_order` --
+        `penalty_job_item_context` FKs to `purchase_order` too and does not
+        FK to `penalty_dispute` at all (its `DISPUTE_SUMMARY_REGEN` rows
+        key off `process.job_item.metadata_json` instead, see
+        `app.models.penalties.job_context.PenaltyJobItemContext`'s
+        docstring). `penalty_summaries.truncate_all()` still runs before
+        `disputes.truncate_all()` for tidiness, though nothing FKs between
+        them any more; `disputes.truncate_all()` in turn FKs to
+        `actual_penalty`/`penalty_rule`/`purchase_order` and so must run
+        before those. See the individual repositories' `truncate_all()`
         docstrings for exactly what each step covers."""
         self.penalty_summaries.truncate_all()
         self.penalty_job_item_context.truncate_all()
+        self.disputes.truncate_all()
         self.penalty_job_run_context.truncate_all()
         self.mitigation_inputs.truncate_all()  # also clears mitigation_option
         self.delivery_change_requests.truncate_all()
