@@ -1,8 +1,7 @@
 """Plant-agnostic material identity and per-plant material/stock detail.
 
-`material` is referenced by `sku`, `material_master`, `purchase_order_line`,
-`production_order`, and `production_schedule`. `material_master` is one row
-per (material, plant), not one row per material -- the SAP MARA/MARC split.
+`material_master` holds one row per (material, plant), not one per material,
+mirroring the SAP MARA/MARC split.
 """
 
 from datetime import date, datetime
@@ -15,6 +14,8 @@ from app.db.base import UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class Material(Base, TimestampMixin):
+    """Plant-agnostic material identity and description."""
+
     __tablename__ = "material"
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
@@ -23,7 +24,11 @@ class Material(Base, TimestampMixin):
 
 
 class MaterialMaster(Base, TimestampMixin):
-    """Per-plant stock/logistics detail for one material."""
+    """Per-plant material details (stock, UOM, discontinuation).
+
+    One row per (material, plant) tuple. Mirrors SAP's MARA/MARC split.
+    Keyed by (material_id, plant_id).
+    """
 
     __tablename__ = "material_master"
     __table_args__ = (UniqueConstraint("material_id", "plant_id", name="uq_material_master_material_plant"),)

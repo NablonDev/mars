@@ -1,25 +1,4 @@
-"""Repository for the shared `process.agent`/`agent_run`/`agent_trace`
-tables -- used by both the `penalties` and `cmir`/`po_validation` domains.
-Was `app/repositories/agent_registry.py` (Agent/PromptVersion) plus the
-`AgentRun`/`AgentTrace` methods split out of
-`app/repositories/observability.py`'s `PostgresAgentRunRepository`/
-`PostgresAgentTraceRepository`.
-
-`app.models.process.agent.Agent` merges what were two tables (`agent` +
-`prompt_version`) into one row per (agent_code, prompt_version) -- see that
-model's docstring. `AgentRun` no longer carries the old `batch_id`/
-`thread_id`/`email_id`/`po_line_id` columns (that grouping/subject
-information now lives on `process.job_run`/`process.workflow_thread`, see
-`app.repositories.process.workflow`); it gains a required `agent_id` FK
-instead, since every run is now explicitly tied to one versioned agent row.
-
-Switched from the old `Database`-per-call session pattern (each method
-opening and committing its own session) to the project's standard
-injected-`Session` pattern (see the `postgres-conventions` skill: "one
-session per request/use-case, provided via Depends -- don't create ad hoc
-sessions inside a repository") -- flagged in this PR's summary as a
-deliberate, not purely mechanical, change.
-"""
+"""Repository for shared process.agent, agent_run, and agent_trace tables."""
 
 from __future__ import annotations
 
@@ -35,6 +14,7 @@ from app.utils.pagination import parse_cursor
 
 
 def _agent_to_dict(row: Agent) -> dict:
+    """Project an `Agent` row onto the plain dict shape returned to callers."""
     return {
         "id": row.id,
         "agent_code": row.agent_code,
@@ -48,6 +28,7 @@ def _agent_to_dict(row: Agent) -> dict:
 
 
 def _agent_run_to_dict(row: AgentRun) -> dict:
+    """Project an `AgentRun` row onto the plain dict shape returned to callers."""
     return {
         "id": row.id,
         "job_item_id": row.job_item_id,
@@ -64,6 +45,7 @@ def _agent_run_to_dict(row: AgentRun) -> dict:
 
 
 def _agent_trace_to_dict(row: AgentTrace) -> dict:
+    """Project an `AgentTrace` row onto the plain dict shape returned to callers."""
     return {
         "id": row.id,
         "agent_run_id": row.agent_run_id,
@@ -94,7 +76,13 @@ class AgentRegistryRepository:
         description: str | None = None,
         is_active: bool = True,
     ) -> UUID:
-        """Idempotently register one (agent_code, prompt_version) row."""
+        """Idempotently register one (agent_code, prompt_version) row.
+
+        Register-once rather than upsert: a second call carrying a different
+        `system_prompt` or `is_active` for the same pair returns the existing id and
+        changes nothing. Bumping a prompt means bumping `prompt_version`, which
+        registers as a fresh row.
+        """
         row = self._session.scalars(
             select(Agent).where(Agent.agent_code == agent_code, Agent.prompt_version == prompt_version)
         ).first()
@@ -115,12 +103,14 @@ class AgentRegistryRepository:
         return row.id
 
     def get_by_code_version(self, agent_code: str, prompt_version: str) -> dict | None:
+        """Return the exact (agent_code, prompt_version) row, or None if it isn't registered."""
         row = self._session.scalars(
             select(Agent).where(Agent.agent_code == agent_code, Agent.prompt_version == prompt_version)
         ).first()
         return _agent_to_dict(row) if row is not None else None
 
     def get_active(self, agent_code: str) -> dict | None:
+        """Return the one `is_active` row for `agent_code`, or None if no version is currently active."""
         row = self._session.scalars(
             select(Agent).where(Agent.agent_code == agent_code, Agent.is_active.is_(True))
         ).first()
@@ -140,6 +130,7 @@ class AgentRunRepository:
         job_item_id: UUID | None = None,
         workflow_thread_id: UUID | None = None,
     ) -> UUID:
+        """Open a new agent run in `running` status, returning its id."""
         row = AgentRun(
             agent_id=agent_id,
             run_type=run_type,
@@ -160,6 +151,7 @@ class AgentRunRepository:
         error: str | None = None,
         completed: bool = False,
     ) -> None:
+        """Update an agent run's status, optionally recording an error and/or stamping `completed_at`."""
         row = self._session.get(AgentRun, run_id)
         if row is None:
             return
@@ -174,6 +166,7 @@ class AgentRunRepository:
         self._session.flush()
 
     def get(self, run_id: UUID) -> dict | None:
+        """Return the agent run `run_id`, or None if it doesn't exist."""
         row = self._session.get(AgentRun, run_id)
         return _agent_run_to_dict(row) if row is not None else None
 
@@ -187,6 +180,12 @@ class AgentRunRepository:
         limit: int = 50,
         cursor: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
+        """Page through agent runs, filtered by any combination of job item, thread, agent, and status.
+
+        Ordered newest-first on `updated_at` with id as a tiebreaker; returns
+        the page alongside a cursor for the next page, or `None` once the
+        page is short of `limit` (no more results).
+        """
         stmt = select(AgentRun)
         if job_item_id is not None:
             stmt = stmt.where(AgentRun.job_item_id == job_item_id)
@@ -225,6 +224,7 @@ class AgentTraceRepository:
         output_snapshot: dict[str, Any] | None,
         error: str | None,
     ) -> dict:
+        """Record one LangGraph node execution for an agent run."""
         row = AgentTrace(
             agent_run_id=agent_run_id,
             node_name=node_name,
@@ -241,6 +241,7 @@ class AgentTraceRepository:
         return _agent_trace_to_dict(row)
 
     def list_for_run(self, agent_run_id: UUID) -> list[dict]:
+        """Return every node execution trace for `agent_run_id`, in execution order."""
         rows = self._session.scalars(
             select(AgentTrace)
             .where(AgentTrace.agent_run_id == agent_run_id)

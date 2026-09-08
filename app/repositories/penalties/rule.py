@@ -1,19 +1,4 @@
-"""Repository for `penalties.penalty_rule` and its optional
-`penalty_rule_tier` bands. Was `app/repositories/fine_rule.py`
-(`FineRuleRepository`, full `fine`/`fines` -> `penalty`/`penalties` rename).
-
-`PenaltyRule`/`PenaltyRuleTier` gain a UUID surrogate `id`; `rule_code` is
-now the natural business key (was `rule_id`), and `PenaltyRuleTier.rule_id`
-FKs to `PenaltyRule.id`, not the business key -- tier rows are looked up
-via that FK, not `rule_code`, directly.
-
-**Naming collision, same pattern as `app/repositories/penalties/mitigation.py`'s
-`MitigationOption`:** the ORM models `app.models.penalties.rule.PenaltyRule`/
-`PenaltyRuleTier` and the pure-engine dataclasses
-`app.services.penalties.projection.types.PenaltyRule`/`PenaltyRuleTier`
-share the same class names -- both are imported below, aliased to keep
-them apart.
-"""
+"""Repository for penalty_rule and penalty_rule_tier."""
 
 from __future__ import annotations
 
@@ -39,6 +24,7 @@ _CALC_TYPE_MAP = {
 
 
 def _rule_to_dict(r: PenaltyRuleModel) -> dict:
+    """Serialize a PenaltyRuleModel row into a dict."""
     return {
         "id": r.id,
         "rule_code": r.rule_code,
@@ -57,6 +43,12 @@ def _rule_to_dict(r: PenaltyRuleModel) -> dict:
 
 
 class PenaltyRuleRepository:
+    """Access layer for penalty_rule and penalty_rule_tier.
+
+    Holds the retailer-specific penalty pricing rules the projection,
+    mitigation, and dispute engines price violations against.
+    """
+
     def __init__(self, session: Session) -> None:
         self._session = session
 
@@ -75,6 +67,12 @@ class PenaltyRuleRepository:
         source_doc_reference: str | None = None,
         tiers: list[dict] | None = None,
     ) -> dict:
+        """Create a penalty rule, along with its penalty_rule_tier rows for a TIERED rule.
+
+        Defaults `effective_start_date` to 2026-01-01 when not given. Each
+        entry in `tiers` gets a generated `tier_code` ("TIER-00", "TIER-01",
+        ...) in the order supplied.
+        """
         rule = PenaltyRuleModel(
             rule_code=rule_code,
             retailer_id=retailer_id,
@@ -106,6 +104,11 @@ class PenaltyRuleRepository:
         return _rule_to_dict(rule)
 
     def list_rules_for_retailer(self, retailer_id: UUID) -> list[PenaltyRuleValue]:
+        """Fetch a retailer's active rules as pure-engine `PenaltyRuleValue` objects.
+
+        Tier bands are loaded for TIERED rules. Raises `ValidationError` when a rule's
+        `calc_type` is not one of the known calc types.
+        """
         rows = self._session.scalars(
             select(PenaltyRuleModel).where(
                 PenaltyRuleModel.retailer_id == retailer_id,
@@ -141,13 +144,10 @@ class PenaltyRuleRepository:
 
             rules.append(
                 PenaltyRuleValue(
-                    # Deliberate Phase 3 fix (flagged in the phase report): `rule_id`
-                    # must be the surrogate `penalty_rule.id`, not `rule_code` --
+                    # Must be the surrogate `penalty_rule.id`, not `rule_code`:
                     # `PenaltyProjectionRepository.save_result` writes this value
-                    # straight into `penalty_projection.rule_id`, a UUID FK to
-                    # `penalty_rule.id`. `rule_code` (e.g. "RULE-WMT-SHORT") stays
-                    # available via `list_rules()`/`list_rules_for_retailer` dict
-                    # rows for anything that needs the human-legible business key.
+                    # straight into `penalty_projection.rule_id`, a UUID FK. The
+                    # human-legible `rule_code` stays available on the dict rows.
                     rule_id=str(r.id),
                     violation_type=r.violation_type,
                     calc_type=calc_type,
@@ -160,25 +160,12 @@ class PenaltyRuleRepository:
         return rules
 
     def list_rules_effective_on(self, retailer_id: UUID, as_of_date: date) -> list[dict]:
-        """Rules for a retailer that were actually in force on a specific
-        historical date -- unlike `list_rules_for_retailer` (used by
-        projection/mitigation, which prices *today's* orders against
-        *currently* active rules and ignores `effective_start_date`/
-        `effective_end_date` entirely), adjudicating a historical charge
-        needs the rule that was effective on the charge date, which may
-        since have been superseded or deactivated.
+        """Return the rules in force for a retailer on a specific historical date.
 
-        Returns plain dicts (not the pure-engine `PenaltyRuleValue`
-        dataclass `list_rules_for_retailer` returns) -- the dispute engine
-        needs `grace_period_days` alongside the calc fields, which has no
-        home on that dataclass (see `app.services.penalties.dispute.types`'
-        module docstring); `app.services.penalties.dispute.service`
-        converts the calc fields into a `PenaltyRuleValue` itself, tier
-        rows included, at the one call site that needs it.
-
-        `is_active` is NOT filtered here (unlike `list_rules_for_retailer`)
-        -- a rule later deactivated is still the one that was effective on
-        a past charge date; only the date-range columns are checked.
+        Adjudicating a past charge needs the rule that was effective on the charge
+        date, so `is_active` is deliberately not filtered: only the date range is
+        checked. Returns plain dicts rather than `PenaltyRuleValue` because the
+        dispute engine also needs `grace_period_days`.
         """
         rows = self._session.scalars(
             select(PenaltyRuleModel).where(
@@ -191,10 +178,7 @@ class PenaltyRuleRepository:
         return [_rule_to_dict(r) for r in rows]
 
     def get_tiers_for_rule(self, rule_id: UUID) -> list[PenaltyRuleTierValue]:
-        """Pure-engine tier bands for one rule id -- factored out of
-        `list_rules_for_retailer`'s inline tier-loading loop so
-        `list_rules_effective_on` callers (dict rows, no dataclass) can
-        reuse the same tier lookup without duplicating it."""
+        """Return the pure-engine tier bands for one rule id."""
         tier_rows = self._session.scalars(
             select(PenaltyRuleTierModel).where(PenaltyRuleTierModel.rule_id == rule_id)
         ).all()
@@ -204,6 +188,7 @@ class PenaltyRuleRepository:
         ]
 
     def list_rules(self, retailer_id: UUID | None = None) -> list[dict]:
+        """List penalty rules, optionally filtered to one retailer."""
         stmt = select(PenaltyRuleModel)
         if retailer_id:
             stmt = stmt.where(PenaltyRuleModel.retailer_id == retailer_id)
@@ -212,9 +197,7 @@ class PenaltyRuleRepository:
         return [_rule_to_dict(r) for r in rows]
 
     def truncate_all(self) -> None:
-        """Deletes every penalty_rule row and its penalty_rule_tier
-        children, for a force-reseed. Caller must first clear
-        penalty_projection (it FKs to penalty_rule)."""
+        """Delete every rule and its tiers; penalty_projection must be cleared first."""
         self._session.execute(delete(PenaltyRuleTierModel))
         self._session.execute(delete(PenaltyRuleModel))
         self._session.flush()

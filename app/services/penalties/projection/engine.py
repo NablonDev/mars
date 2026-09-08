@@ -1,8 +1,4 @@
-"""Orchestrates shortage and delay calculations into an order projection.
-
-Moved unchanged from `app/services/fine_projection/engine.py` (Phase 3 --
-services move/folder-split); only the import paths below changed.
-"""
+"""Orchestrates shortage and delay calculations into an order projection."""
 
 from app.services.penalties.projection.delay import compute_delay_probability, price_delay_penalty
 from app.services.penalties.projection.shortage import (
@@ -21,18 +17,23 @@ from app.services.penalties.projection.types import (
 
 
 class ProjectionEngine:
-    """Stateless entry point for the penalty-projection domain: combines the
-    shortage and delay calculation models into one order-level projection.
+    """Stateless entry point for the penalty-projection domain.
 
-    No constructor state -- each call is fresh with its own snapshot, rule
-    set, and stacking mode, so there is nothing naturally constant to hold
-    across invocations.
+    Combines the shortage and delay calculation models into one order-level
+    projection. Holds no constructor state: every call brings its own
+    snapshot, rule set, and stacking mode.
     """
 
     def project(
         self, snapshot: OrderSnapshot, rules: list[PenaltyRule], stacking_mode: str = "SUM"
     ) -> ProjectionResult:
-        """Projects shortage and delay penalties using the specified stacking mode."""
+        """Project shortage and delay penalties from an order snapshot and rule set.
+
+        Each rule's expected penalty is its probability times its priced amount;
+        `stacking_mode` combines those additively (SUM) or keeps the most severe
+        (MAX). Raises ValueError on an unmapped violation_type or an unknown
+        stacking mode.
+        """
         shortage_prob = compute_shortage_probability(snapshot)
         delay_prob = compute_delay_probability(snapshot)
         shortfall_units = shortfall_units_for_pricing(snapshot)

@@ -21,10 +21,14 @@ INDEX_NAMING_CONVENTION = {
 
 
 class Base(DeclarativeBase):
+    """Declarative base shared by every ORM model, bound to the naming convention below."""
+
     metadata = MetaData(naming_convention=INDEX_NAMING_CONVENTION)
 
 
 class TimestampMixin:
+    """Adds `created_at`/`updated_at`/`deleted_at` audit columns to a model."""
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -43,7 +47,13 @@ class TimestampMixin:
 
 
 def generate_uuid7() -> UUID:
-    """Generate a time-ordered UUIDv7 for surrogate primary keys."""
+    """Generate a time-ordered UUIDv7 for surrogate primary keys.
+
+    Packs a millisecond timestamp into the high bits so values sort and
+    index in insertion order (unlike UUIDv4), while the version/variant bits
+    and remaining random bits keep collisions negligible across concurrent
+    writers.
+    """
     timestamp_ms = time.time_ns() // 1_000_000
     value = (
         (timestamp_ms << 80)

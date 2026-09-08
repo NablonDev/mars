@@ -1,3 +1,10 @@
+"""LangGraph node implementations for the CMIR resolution workflow.
+
+Implements discrete steps in the email extraction, validation, approval, and
+persistence pipeline. Each method is a single, atomic workflow node that reads
+from and updates the shared GraphState.
+"""
+
 from __future__ import annotations
 
 from typing import Literal
@@ -18,18 +25,12 @@ ACTOR = "AI Agent"
 
 
 class WorkflowNodes:
-    """LangGraph node functions.
+    """LangGraph node functions for the CMIR workflow, one atomic step per method.
 
-    Every method is a single, small step. All collaborators are injected
-    (Dependency Inversion) so the graph never talks to IMAP, Postgres or
-    Azure OpenAI directly - only through the collaborators passed in here.
-
-    No `workflow_thread_repository` collaborator here (unlike the
-    pre-restructure version of this class): `process.workflow_thread` rows
-    are now created lazily, exactly once per run, at the first human
-    interrupt -- exclusively by `CmirRunService._handle_graph_state` (see
-    that method's docstring). Nothing in this graph creates one eagerly any
-    more, so there is nothing for a node to inject that repository into.
+    Nodes reach IMAP, Postgres and Azure OpenAI only through the injected
+    collaborators. `process.workflow_thread` rows are created lazily by
+    `CmirRunService._handle_graph_state` at the first human interrupt, so no node
+    holds a workflow-thread repository.
     """
 
     def __init__(
@@ -51,6 +52,7 @@ class WorkflowNodes:
     # ---- extraction / persistence steps ---- #
 
     def persist_email(self, state: GraphState) -> GraphState:
+        """Save the incoming email if it is not already persisted, and log receipt."""
         email = EmailMessage(**state["email"])
         email_id = state.get("email_id")
         if email_id is None:
@@ -65,6 +67,7 @@ class WorkflowNodes:
         return {"email_id": email_id}
 
     def extract_cmir(self, state: GraphState) -> GraphState:
+        """Extract CMIR fields from the email body using Azure OpenAI."""
         email = EmailMessage(**state["email"])
         cmir = self._extractor.extract(email.body)
         return {"cmir": cmir.model_dump()}
@@ -72,11 +75,9 @@ class WorkflowNodes:
     def identify_existing_cmir(self, state: GraphState) -> GraphState:
         """Look up the current active cmir_record row for this entity, if any.
 
-        Runs on every pass through this part of the graph, including a loop back
-        from collect_missing_fields -- a mandatory field (e.g. customer_identity)
-        may only become known once the human supplies it, so re-running this lookup
-        is what lets prepare_diff/validate_cmir see an accurate existing record and
-        diff instead of one computed against a blank identity.
+        Re-runs on every pass, including the loop back from collect_missing_fields,
+        because a mandatory field such as customer_identity may only become known once
+        the human supplies it; prepare_diff would otherwise diff a blank identity.
         """
         cmir = Cmir(**state["cmir"])
         existing = self._cmir_repository.get_current(
@@ -87,11 +88,10 @@ class WorkflowNodes:
     def prepare_diff(self, state: GraphState) -> GraphState:
         """Merge the proposed draft onto the active record (if any) and stash the diff.
 
-        Always runs, whether this turns out to be a create (existing_cmir is None,
-        diff is "from blank") or an update -- this keeps human_approval's interrupt
-        payload uniform regardless of which case a given email falls into. The
-        existing record's id becomes the version token persist_cmir will later use
-        to detect a conflicting concurrent write.
+        Runs for both creates (existing_cmir is None, so the diff is from blank) and
+        updates, keeping human_approval's interrupt payload uniform. The existing
+        record's id becomes the version token persist_cmir uses to detect a conflicting
+        concurrent write.
         """
         existing = state.get("existing_cmir")
         proposed = Cmir(**state["cmir"])
@@ -103,11 +103,13 @@ class WorkflowNodes:
         }
 
     def validate_cmir(self, state: GraphState) -> GraphState:
+        """Validate the CMIR against business rules, populating missing_fields and status."""
         cmir = Cmir(**state["cmir"])
         cmir = self._validator.validate(cmir)
         return {"cmir": cmir.model_dump()}
 
     def persist_ai_result(self, state: GraphState) -> GraphState:
+        """Store the AI extraction result on the email row and log the outcome."""
         cmir = Cmir(**state["cmir"])
         self._email_repository.update_extraction(
             state["email_id"], cmir.model_dump(), cmir.missing_fields, cmir.status
@@ -126,6 +128,11 @@ class WorkflowNodes:
     # ---- human-in-the-loop steps ---- #
 
     def collect_missing_fields(self, state: GraphState) -> GraphState:
+        """Interrupt to collect mandatory fields from a human operator.
+
+        Resume values are merged field-by-field onto the current CMIR, which then
+        loops back through identify_existing_cmir for re-validation.
+        """
         cmir_dict = state["cmir"]
         answers = interrupt(
             {
@@ -141,6 +148,11 @@ class WorkflowNodes:
         return {"cmir": merged.model_dump()}
 
     def human_approval(self, state: GraphState) -> GraphState:
+        """Interrupt to request human approval of the merged CMIR.
+
+        The interrupt payload carries the proposed CMIR, the current record and the
+        field-level diff; the resume value supplies the decision and its reason.
+        """
         decision = interrupt(
             {
                 "reason": "approval_required",
@@ -158,15 +170,13 @@ class WorkflowNodes:
     # ---- outcome steps ---- #
 
     def persist_cmir(self, state: GraphState) -> GraphState:
-        """Attempt to commit the approved (merged) draft as the new current version.
+        """Attempt to commit the approved draft as the new current version.
 
-        Does not raise on a version conflict -- it catches CmirVersionConflict and
-        reports the outcome through cmir_write_result instead, so
-        route_after_persist_cmir can send the graph to handle_version_conflict rather
-        than crashing the run. cmir_version_token is whatever prepare_diff captured
-        the active record's id as when the diff was computed; supersede_and_insert
-        re-checks it (and, as the real backstop, the database's own partial unique
-        index) at commit time.
+        A version conflict does not propagate: CmirVersionConflict is caught and
+        reported through cmir_write_result, letting route_after_persist_cmir divert
+        the graph to handle_version_conflict. cmir_version_token is the active
+        record's id as captured by prepare_diff; supersede_and_insert re-checks it at
+        commit time, backed by the database's partial unique index.
         """
         cmir = Cmir(**state["cmir"])
         try:
@@ -182,6 +192,7 @@ class WorkflowNodes:
         return {"cmir_write_result": "committed"}
 
     def persist_rejection(self, state: GraphState) -> GraphState:
+        """Log the rejection with the approver's reason, leaving the active record alone."""
         self._action_log_repository.log(
             state["email_id"],
             "CMIR Rejected",
@@ -193,10 +204,7 @@ class WorkflowNodes:
     def handle_version_conflict(self, state: GraphState) -> GraphState:
         """Record that persist_cmir's write was rejected by a concurrent update.
 
-        Reached only via a routing decision after persist_cmir catches
-        CmirVersionConflict (see app.repositories.cmir.cmir_record) -- this node
-        itself doesn't need to know how that was detected, only that it happened,
-        so it stays decoupled from persist_cmir's exact implementation.
+        Reached only by routing after persist_cmir catches CmirVersionConflict.
         """
         cmir = state["cmir"]
         self._action_log_repository.log(
@@ -211,6 +219,7 @@ class WorkflowNodes:
         return {}
 
     def mark_email_read(self, state: GraphState) -> GraphState:
+        """Mark the email read in IMAP unless the caller set mark_read=False."""
         if not state["email"].get("mark_read", True):
             return {}
         self._email_reader.mark_as_read(state["email"]["imap_id"])
@@ -219,11 +228,14 @@ class WorkflowNodes:
     # ---- routing functions ---- #
 
     def route_after_validation(self, state: GraphState) -> Literal["needs_input", "ready"]:
+        """Route to collect_missing_fields when mandatory fields are missing, else approval."""
         missing = state["cmir"].get("missing_fields") or []
         return "needs_input" if missing else "ready"
 
     def route_after_approval(self, state: GraphState) -> Literal["approved", "rejected"]:
+        """Route to persistence on an "approve" decision, otherwise to rejection logging."""
         return "approved" if state.get("decision") == "approve" else "rejected"
 
     def route_after_persist_cmir(self, state: GraphState) -> Literal["committed", "conflict"]:
+        """Route on persist_cmir's outcome, sending "conflict" to handle_version_conflict."""
         return state.get("cmir_write_result", "committed")

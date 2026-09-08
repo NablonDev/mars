@@ -1,23 +1,13 @@
 """Enums and data structures for the penalty-projection engine.
 
-Moved unchanged from `app/services/fine_projection/types.py` (Phase 3 --
-services move/folder-split). Per the approved plan's explicit Phase 3 flag,
-this pure-calc engine's contract (a single scalar `order_qty`/`unit_price`
-per snapshot, not a per-line list) does NOT change in this pass --
-re-architecting it to be line-aware is out of scope. `order_id` stays a
-`str` field: `ProjectionService.build_snapshot` now populates it with
-`str(purchase_order_id)` (a stringified UUID) rather than a business key,
-but the dataclass shape itself is untouched.
+The engine's contract is one scalar `order_qty`/`unit_price` per snapshot
+rather than a per-line list, and `order_id` carries a stringified
+purchase-order UUID rather than a business key.
 
-`PenaltyRule`/`PenaltyRuleTier` below are the pure, framework-free
-counterparts of the ORM models of the same name
-(`app.models.penalties.rule.PenaltyRule`/`PenaltyRuleTier`) -- this is the
-same deliberate same-name-different-module pattern already used for
-`MitigationOption` (see `app/repositories/penalties/mitigation.py`'s module
-docstring): the pure dataclass and the ORM model share a name and are told
-apart by import path/alias, not by inventing a different name for one of
-them. This was the last piece of the `fine`/`fines` -> `penalty`/`penalties`
-domain rename still outstanding in this package.
+`PenaltyRule` and `PenaltyRuleTier` are the pure, framework-free counterparts
+of the ORM models of the same name in `app.models.penalties.rule`, told apart
+by import path rather than by renaming one side. `MitigationOption` follows
+the same pattern (see `app/repositories/penalties/mitigation.py`).
 """
 
 from dataclasses import dataclass
@@ -27,12 +17,16 @@ from uuid import UUID
 
 
 class ProductionStatus(Enum):
+    """Manufacturing progress toward the confirmed order quantity, feeding shortage risk."""
+
     ON_TRACK = "ON_TRACK"
     AT_RISK = "AT_RISK"
     BEHIND = "BEHIND"
 
 
 class AppointmentStatus(Enum):
+    """State of the retailer delivery appointment, feeding delay risk."""
+
     SCHEDULED = "SCHEDULED"
     RESCHEDULED = "RESCHEDULED"
     MISSED = "MISSED"
@@ -40,6 +34,8 @@ class AppointmentStatus(Enum):
 
 
 class CalcType(Enum):
+    """How a `PenaltyRule` converts a violation into a monetary amount."""
+
     PER_UNIT = "PER_UNIT"
     PERCENT_OF_PO = "PERCENT_OF_PO"
     FLAT_FEE = "FLAT_FEE"
@@ -65,11 +61,19 @@ DELAY_VIOLATION_TYPES = {"OTIF_LATE", "ASN_LATE"}
 
 @dataclass
 class PenaltyRule:
+    """A retailer's penalty terms for one violation type, pure and framework-free.
+
+    `__post_init__` guards the two mistakes that would silently corrupt every
+    downstream pricing calculation: `threshold_pct` loaded as a whole-number
+    percent instead of a fraction, and a TIERED rule missing its `tiers` list,
+    the only source of rates for that calc_type.
+    """
+
     rule_id: str
     violation_type: str  # e.g. "SHORT_SHIP", "OTIF_LATE", "FILL_RATE"
     calc_type: CalcType
     rate: float = 0.0  # meaning depends on calc_type; unused when tiers is set
-    threshold_pct: float = 0.0  # FRACTION, e.g. 0.02 for 2% -- never a whole-number percent.
+    threshold_pct: float = 0.0  # FRACTION: 0.02 means 2%, never a whole-number percent
     cap_amount: float | None = None
     tiers: list[PenaltyRuleTier] | None = None  # required when calc_type == TIERED
 
@@ -108,22 +112,23 @@ class OrderSnapshot:
 
 @dataclass
 class ViolationProjection:
+    """One projected violation and its priced/probability-weighted penalty."""
+
     violation_type: str
     rule_id: str
     probability: float
     penalty_amount: float
     expected_penalty_amount: float
-    # The persisted `penalties.penalty_projection` row's own surrogate id --
-    # unset (`None`) for a violation not yet round-tripped through
-    # `PenaltyProjectionRepository.save_result` (e.g. the reconstruction
-    # `app.services.penalties.mitigation.service._build_projection_result`
-    # does for engine input only). `ProjectionService.run_for_purchase_order`
-    # fills it in immediately after persisting, for the API response.
+    # Surrogate id of the persisted `penalties.penalty_projection` row. None for
+    # a violation not round-tripped through `save_result`, such as the
+    # engine-input-only reconstruction in `mitigation.service`.
     id: UUID | None = None
 
 
 @dataclass
 class ProjectionResult:
+    """Full projection output for one order: per-violation detail plus the stacked total."""
+
     order_id: str
     projection_date: date
     days_to_delivery: int

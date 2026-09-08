@@ -1,5 +1,4 @@
-"""Periodic penalty projection for a PO, rule, and projection date
-(renamed from `projected_fine`/`fine_projection`)."""
+"""Periodic penalty projection for a PO, rule, and projection date."""
 
 from datetime import date
 from uuid import UUID
@@ -11,6 +10,12 @@ from app.db.base import PENALTIES_SCHEMA, UUID_PK, Base, TimestampMixin, generat
 
 
 class PenaltyProjection(Base, TimestampMixin):
+    """Projected penalty row before any mitigation.
+
+    Stores daily penalty facts during scenario replay. Key fields: order_id,
+    violation_date, violation_type, projected_qty, unit_cost. Immutable after insert.
+    """
+
     __tablename__ = "penalty_projection"
     __table_args__ = (
         UniqueConstraint(

@@ -1,12 +1,4 @@
-"""API endpoints for `common.purchase_order`'s fulfillment facts:
-confirmations, shipments, and demand exceptions.
-
-Every fact below defaults to the PO's first line when a specific
-`purchase_order_line_id` isn't given in the request, the same
-single-primary-line convenience `ProjectionService.build_snapshot` and the
-seed data already use for a PO with exactly one line (the only case any
-worked example exercises).
-"""
+"""API endpoints for purchase order fulfillment facts."""
 
 from __future__ import annotations
 
@@ -33,12 +25,13 @@ router = APIRouter(tags=["purchase-orders"])
 
 
 def _first_line_id(purchase_orders: PurchaseOrderRepository, purchase_order_id: UUID) -> UUID:
+    """Resolve the first line ID for a purchase order, or raise if no lines exist."""
     lines = purchase_orders.list_lines(purchase_order_id)
     if not lines:
         raise ValidationError(
             code="PO_HAS_NO_LINES",
             message=(
-                f"Purchase order {purchase_order_id} has no lines -- add one first, or pass an "
+                f"Purchase order {purchase_order_id} has no lines: add one first, or pass an "
                 "explicit purchase_order_line_id."
             ),
         )
@@ -61,6 +54,7 @@ def add_confirmation(
     purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
     fulfillment: FulfillmentRepository = Depends(get_fulfillment_repository),
 ) -> Envelope[OrderConfirmationResponse]:
+    """Record an order confirmation with line-level confirmed quantities and delivery dates."""
     purchase_orders.require_purchase_order(purchase_order_id)
 
     confirmation = fulfillment.add_order_confirmation(
@@ -101,9 +95,9 @@ def list_confirmations(
 ) -> Envelope[list[OrderConfirmationLineResponse]]:
     """Return confirmation history across every line of the purchase order.
 
-    `FulfillmentRepository` has no "list every confirmation for a PO"
-    method (only per-line lookups) -- this aggregates across the PO's own
-    lines rather than returning nested confirmation headers.
+    `FulfillmentRepository` offers per-line lookups only, so this aggregates
+    across the PO's own lines rather than returning nested confirmation
+    headers.
     """
     purchase_orders.require_purchase_order(purchase_order_id)
     rows = [
@@ -130,6 +124,12 @@ def record_shipment(
     purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
     fulfillment: FulfillmentRepository = Depends(get_fulfillment_repository),
 ) -> Envelope[ShipmentResponse]:
+    """Record a shipment event for a purchase order.
+
+    Creates the delivery header the shipment attaches to on the fly,
+    defaulting `delivery_number` to `DELIV-{purchase_order_number}` when
+    the caller doesn't supply one.
+    """
     purchase_order = purchase_orders.require_purchase_order(purchase_order_id)
 
     delivery_number = body.delivery_number or f"DELIV-{purchase_order['purchase_order_number']}"
@@ -160,6 +160,10 @@ def list_shipments(
     purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
     fulfillment: FulfillmentRepository = Depends(get_fulfillment_repository),
 ) -> Envelope[list[ShipmentResponse]]:
+    """List all shipments recorded for a purchase order.
+
+    404s if the purchase order itself doesn't exist.
+    """
     purchase_orders.require_purchase_order(purchase_order_id)
     rows = fulfillment.list_shipments_for_purchase_order(purchase_order_id)
     return success_envelope([ShipmentResponse.model_validate(r) for r in rows])
@@ -181,6 +185,7 @@ def add_demand_exception(
     purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
     fulfillment: FulfillmentRepository = Depends(get_fulfillment_repository),
 ) -> Envelope[DemandExceptionResponse]:
+    """Record a demand exception (e.g., shortage or cancellation) for a purchase order line."""
     purchase_orders.require_purchase_order(purchase_order_id)
     line_id = body.purchase_order_line_id or _first_line_id(purchase_orders, purchase_order_id)
 
@@ -203,6 +208,7 @@ def list_demand_exceptions(
     purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
     fulfillment: FulfillmentRepository = Depends(get_fulfillment_repository),
 ) -> Envelope[list[DemandExceptionResponse]]:
+    """List all demand exceptions recorded for a purchase order's lines."""
     purchase_orders.require_purchase_order(purchase_order_id)
     rows = [
         row

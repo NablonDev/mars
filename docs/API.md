@@ -260,7 +260,7 @@ Flat, same reasoning as Projections/Mitigations above.
 
 Flat, same reasoning as Projections/Mitigations/Actual penalties above.
 Routes in `app/api/v1/penalties/disputes.py`, backed by
-`app.services.penalties.dispute.service.DisputeService`; schemas in
+`app.services.penalties.dispute.service.DisputeResolutionService`; schemas in
 `app/schemas/penalties/disputes.py`. `.../{dispute_id}/analyze`,
 `.../{dispute_id}/resolve`, and `.../{dispute_id}/summary` are sub-actions
 nested under the dispute's own id, not a second URL shape for the

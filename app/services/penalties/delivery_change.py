@@ -1,25 +1,9 @@
 """Business logic for the PO delivery-date change request/response lifecycle.
 
-Was `app/services/fine_projection/po_delivery_change.py`'s
-`PoDeliveryChangeRequestService` (renamed
-`PoDeliveryChangeRequestService`, folder-split per the approved
-plan). Rewritten against the Phase 2 `common`/`penalties` repositories.
-
-Ops fires a request asking a retailer for more delivery time, the retailer's decision
-is recorded (mock/manual entry -- no inbound webhook in this pass, see the design plan),
-and `PurchaseOrder.current_delivery_date`/`current_required_ship_date` are updated on
-ACCEPTED/COUNTERED. In every terminal case (ACCEPTED/COUNTERED/REJECTED/EXPIRED) the
-existing projection engine is re-triggered via `ProjectionService.run_for_purchase_order`
-so the same-day projection reflects the outcome instead of waiting for tomorrow's batch
--- see the design plan's "no shadow mitigation duplication" decision.
-
-The lead-time/SLA/threshold policy is per-retailer business data (`Retailer.extension_*`
-columns, read through `MasterDataRepository.get_extension_policy`), not app config --
-two retailers can have different lead-time and SLA rules.
-
-`PurchaseOrder.negotiation_status` is a denormalized current-state string with exactly
-one writer: this service. See the column comment on `PurchaseOrder.negotiation_status`
-and `PurchaseOrderRepository.update_negotiation_status`.
+A retailer's decision is recorded manually (no inbound webhook); every terminal
+outcome re-runs `ProjectionService.run_for_purchase_order` same-day instead of
+waiting for tomorrow's batch. `PurchaseOrder.negotiation_status` has exactly one
+writer: this service.
 """
 
 from __future__ import annotations
@@ -39,22 +23,23 @@ _TERMINAL_DECISIONS = {"ACCEPTED", "COUNTERED", "REJECTED"}
 
 
 def _utcnow() -> datetime:
-    """Naive UTC, matching this table's naive DateTime columns -- same convention
-    as `app/repositories/process/job_queue.py`'s `_utcnow()`."""
+    """Naive UTC, matching this table's naive DateTime columns."""
     return utc_now_naive()
 
 
 def _new_request_id() -> str:
-    """External-system correlation key, generated here (not by the caller)
-    so every request gets one regardless of entry point (API, seeding
-    replay, the ops CLI). Not API-visible -- see this module's docstring
-    and `PoDeliveryChangeRequestRepository.get_by_id` being the sole
-    lookup method."""
+    """Generate an external-system correlation key so every request gets one regardless of entry point."""
     return f"ext_{uuid4().hex[:12]}"
 
 
 @dataclass
 class PoDeliveryChangeRequestService:
+    """Orchestrates PO delivery-date change requests through their lifecycle.
+
+    On terminal decision, `current_required_ship_date` shifts by the same delta as the
+    delivery date to preserve the existing transit-day gap.
+    """
+
     purchase_orders: PurchaseOrderRepository
     delivery_change_requests: PoDeliveryChangeRequestRepository
     projection_service: ProjectionService
@@ -68,10 +53,7 @@ class PoDeliveryChangeRequestService:
         notes: str | None = None,
         now: datetime | None = None,
     ) -> dict:
-        """`now` is injectable so day-by-day scenario replay (seeding, tests) can
-        anchor requested_at/expires_at to a mock as-of date instead of wall-clock
-        time -- same pattern as `ProjectionService.run_for_purchase_order`'s
-        `projection_date` override."""
+        """`now` is injectable so scenario replay and tests can anchor timestamps to a mock as-of date."""
         purchase_order = self.purchase_orders.require_purchase_order(purchase_order_id)
 
         active = self.delivery_change_requests.find_active_for_purchase_order(purchase_order_id)
@@ -125,7 +107,7 @@ class PoDeliveryChangeRequestService:
         countered_delivery_date: date | None = None,
         now: datetime | None = None,
     ) -> dict:
-        """`now` is injectable for the same reason as create_request's -- see there."""
+        """`now` is injectable for the same reason as `create_request`'s."""
         row = self.delivery_change_requests.get_by_id(delivery_change_request_id)
         if row is None:
             raise NotFoundError(
@@ -187,7 +169,7 @@ class PoDeliveryChangeRequestService:
             else:
                 new_delivery_date = row["proposed_delivery_date"]
             # Shift required_ship_date by the same delta as the delivery-date change,
-            # preserving the existing transit-day gap (design plan, decision 2).
+            # preserving the existing transit-day gap.
             delta = new_delivery_date - row["baseline_delivery_date"]
             purchase_order = self.purchase_orders.require_purchase_order(purchase_order_id)
             current_required_ship_date = (
@@ -204,31 +186,32 @@ class PoDeliveryChangeRequestService:
         return updated
 
     def expire_stale(self, as_of: datetime | None = None) -> list[dict]:
+        """Mark pending PO delivery-change requests as EXPIRED if past their SLA.
+
+        Finds all PENDING requests whose SLA deadline has passed as of `as_of` (or
+        wall-clock time if omitted), marks each as EXPIRED, updates the purchase
+        order's negotiation_status to EXPIRED, and re-runs the projection with the
+        unchanged delivery date (current_delivery_date was never touched while PENDING).
+        Returns list of newly expired rows. Idempotent: subsequent calls find no newly
+        expired rows and return empty list."""
         resolved_as_of = as_of or _utcnow()
         expired = self.delivery_change_requests.find_expired(resolved_as_of)
 
         results = []
         for row in expired:
             updated = self.delivery_change_requests.mark_expired(row["id"], resolved_as_of)
-            # No PurchaseOrder date change -- current_delivery_date is already
-            # untouched while PENDING, so the existing projection cycle already
-            # is the fallback plan. negotiation_status still moves to EXPIRED.
+            # current_delivery_date is already untouched while PENDING; only negotiation_status changes.
             self.purchase_orders.update_negotiation_status(row["purchase_order_id"], "EXPIRED")
             self.projection_service.run_for_purchase_order(row["purchase_order_id"], resolved_as_of.date())
             results.append(updated)
         return results
 
     def list_history(self, purchase_order_id: UUID | None = None) -> list[dict]:
-        """`purchase_order_id` given: unchanged, one PO's full history.
-        Omitted: every request across every PO -- backs
-        `GET /delivery-change-requests` with no filter."""
+        """List delivery-change requests, scoped to one PO if given, or every PO otherwise."""
         return self.delivery_change_requests.list_history(purchase_order_id)
 
     def get_by_id(self, delivery_change_request_id: UUID) -> dict:
-        """Standalone fetch by the surrogate `id` -- backs
-        `GET /delivery-change-requests/{delivery_change_request_id}`. Same
-        not-found shape `record_response` already raises for an unknown
-        id."""
+        """Fetch a single delivery-change request by its surrogate id."""
         row = self.delivery_change_requests.get_by_id(delivery_change_request_id)
         if row is None:
             raise NotFoundError(

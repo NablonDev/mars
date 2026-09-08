@@ -1,27 +1,4 @@
-"""Repository for the shared `process.workflow_thread`/
-`workflow_thread_subject`/`human_action`/`processing_error` tables -- used
-by both the `penalties` and `cmir`/`po_validation` domains. Splits and
-replaces `app/repositories/observability.py` (797 lines doing two jobs),
-per the plan's §2 file map.
-
-**Real shape change, not a rename** -- `WorkflowThread` dropped almost every
-column the old `WorkflowThreadORM` carried (`batch_id`, `email_id`,
-`po_line_id`, `sender`, `subject`, `source_message_id`, `cmir_status`,
-`latest_snapshot`, `pending_action_id`): those either moved onto
-`cmir.EmailEvent` (sender/subject/source_message_id), normalized into
-`WorkflowThreadSubject`'s two-nullable-FK pair (email_id/po_line_id), fold
-into `metadata_json` (latest_snapshot/cmir_status -- no dedicated column
-replaces these; callers that need structured "cmir status" now read it out
-of `metadata_json` themselves), or are derived at read time instead of
-stored (`pending_action_id` -- the open `HumanAction` row for a thread, see
-`get_open_for_thread` below, now that `pending_human_actions` and
-`hitl_actions` are merged into one `human_action` table with a real
-lifecycle instead of a live FK pointer).
-
-Also switched, like `process/agent_registry.py`, from the old per-call
-`Database`-session pattern to the project's standard injected-`Session`
-pattern.
-"""
+"""Repository for process schema workflow and error tracking tables."""
 
 from __future__ import annotations
 
@@ -38,6 +15,7 @@ from app.utils.pagination import parse_cursor
 
 
 def _thread_to_dict(thread: WorkflowThread, subject: WorkflowThreadSubject | None) -> dict:
+    """Project a `WorkflowThread` row and its 1:1 subject row onto one caller-facing dict."""
     return {
         "id": thread.id,
         "job_item_id": thread.job_item_id,
@@ -54,6 +32,7 @@ def _thread_to_dict(thread: WorkflowThread, subject: WorkflowThreadSubject | Non
 
 
 def _human_action_to_dict(row: HumanAction) -> dict:
+    """Project a `HumanAction` row onto the plain dict shape returned to callers."""
     return {
         "id": row.id,
         "job_item_id": row.job_item_id,
@@ -74,6 +53,7 @@ def _human_action_to_dict(row: HumanAction) -> dict:
 
 
 def _processing_error_to_dict(row: ProcessingError) -> dict:
+    """Project a `ProcessingError` row onto the plain dict shape returned to callers."""
     return {
         "id": row.id,
         "job_item_id": row.job_item_id,
@@ -92,10 +72,18 @@ def _processing_error_to_dict(row: ProcessingError) -> dict:
 
 
 class WorkflowThreadRepository:
+    """One LangGraph run's persisted thread state, shared by CMIR and PO validation.
+
+    A thread's identity (which email or PO line it concerns) lives in the
+    1:1 `WorkflowThreadSubject` row rather than on `WorkflowThread` itself,
+    since exactly one of the two subject columns applies per domain.
+    """
+
     def __init__(self, session: Session) -> None:
         self._session = session
 
     def _get_subject(self, workflow_thread_id: UUID) -> WorkflowThreadSubject | None:
+        """Fetch a thread's 1:1 subject row, looked up manually since it is no relationship."""
         return self._session.get(WorkflowThreadSubject, workflow_thread_id)
 
     def create(
@@ -111,10 +99,9 @@ class WorkflowThreadRepository:
     ) -> dict:
         """Create a thread and its 1:1 subject row together.
 
-        Exactly one of `email_event_id`/`purchase_order_line_id` must be
-        set -- the DB CHECK (`num_nonnulls(...) = 1`) is Postgres-only raw
-        migration DDL (see `app.models.process.workflow.WorkflowThreadSubject`),
-        so this guard is the only enforcement SQLite gets.
+        Exactly one of `email_event_id` or `purchase_order_line_id` must be set. The
+        `num_nonnulls(...) = 1` CHECK exists only in Postgres migration DDL, so this
+        guard is the only enforcement SQLite gets.
         """
         if (email_event_id is None) == (purchase_order_line_id is None):
             raise ValueError(
@@ -142,16 +129,17 @@ class WorkflowThreadRepository:
         return _thread_to_dict(thread, subject)
 
     def get_by_id(self, workflow_thread_id: UUID) -> dict | None:
+        """Return a thread by id joined with its subject, or None if it doesn't exist."""
         thread = self._session.get(WorkflowThread, workflow_thread_id)
         if thread is None:
             return None
         return _thread_to_dict(thread, self._get_subject(workflow_thread_id))
 
     def get_latest_by_email_event(self, email_event_id: UUID) -> dict | None:
-        # Tiebreaker on id: SQLite's func.now() only has second resolution,
-        # so two threads created within the same second would otherwise tie
-        # on updated_at. id is a UUIDv7 (see generate_uuid7), itself
-        # time-ordered, so it disambiguates deterministically.
+        """Return the most recently updated thread for `email_event_id`, or None."""
+        # SQLite's func.now() has only second resolution, so threads created within
+        # one second tie on updated_at; the id is a time-ordered UUIDv7, which breaks
+        # the tie deterministically.
         row = self._session.scalars(
             select(WorkflowThreadSubject)
             .join(WorkflowThread, WorkflowThread.id == WorkflowThreadSubject.workflow_thread_id)
@@ -165,6 +153,7 @@ class WorkflowThreadRepository:
         return _thread_to_dict(thread, row) if thread is not None else None
 
     def get_latest_by_purchase_order_line(self, purchase_order_line_id: UUID) -> dict | None:
+        """Return the most recently updated thread for `purchase_order_line_id`, or None."""
         row = self._session.scalars(
             select(WorkflowThreadSubject)
             .join(WorkflowThread, WorkflowThread.id == WorkflowThreadSubject.workflow_thread_id)
@@ -185,6 +174,11 @@ class WorkflowThreadRepository:
         limit: int = 50,
         cursor: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
+        """Page through threads, filtered by status and/or stage, newest-updated first.
+
+        Returns the page alongside a cursor for the next page, or `None`
+        once the page is short of `limit` (no more results).
+        """
         stmt = select(WorkflowThread)
         if status is not None:
             stmt = stmt.where(WorkflowThread.status == status)
@@ -210,6 +204,12 @@ class WorkflowThreadRepository:
         error: str | None = None,
         completed: bool = False,
     ) -> None:
+        """Unconditionally advance a thread's status/stage; a no-op if the thread no longer exists.
+
+        Unlike `update_if_current`, this does not guard against a concurrent writer
+        having moved the thread, so use it only where the caller already owns the
+        thread exclusively, such as the single worker driving one LangGraph run.
+        """
         thread = self._session.get(WorkflowThread, workflow_thread_id)
         if thread is None:
             return
@@ -239,7 +239,15 @@ class WorkflowThreadRepository:
         error: str | None = None,
         completed: bool = False,
     ) -> bool:
-        """Optimistic-concurrency update, guarded on `updated_at`."""
+        """Optimistic-concurrency update, guarded on `updated_at`.
+
+        The `UPDATE` only matches a row whose `updated_at` still equals
+        `expected_updated_at`; returns `True` if it hit exactly one row and
+        `False` if another writer already advanced the thread since the
+        caller last read it (or the thread doesn't exist). Callers that get
+        `False` back are expected to re-read and retry rather than assume
+        the update went through, unlike `update_status`, which always writes.
+        """
         values: dict[str, Any] = {"status": status, "stage": stage, "updated_at": func.now()}
         if completed:
             values["current_node"] = None
@@ -266,9 +274,11 @@ class WorkflowThreadRepository:
         return result.rowcount == 1
 
     def get_stage(self, workflow_thread_id: UUID) -> dict | None:
+        """Alias for `get_by_id`, kept as its own name for call sites that only care about stage/status."""
         return self.get_by_id(workflow_thread_id)
 
     def get_snapshot(self, workflow_thread_id: UUID) -> dict | None:
+        """Return a thread's current state plus its full human-action history, oldest first."""
         thread = self._session.get(WorkflowThread, workflow_thread_id)
         if thread is None:
             return None
@@ -296,6 +306,11 @@ class WorkflowThreadRepository:
 
 
 class HumanActionRepository:
+    """Human-in-the-loop interrupts and their responses.
+
+    One row is both the pending request and, once answered, the audit-trail entry.
+    """
+
     def __init__(self, session: Session) -> None:
         self._session = session
 
@@ -310,6 +325,7 @@ class HumanActionRepository:
         action_type: str | None = None,
         state_snapshot: dict[str, Any] | None = None,
     ) -> UUID:
+        """Open a pending human action awaiting a response, returning its id."""
         row = HumanAction(
             job_item_id=job_item_id,
             workflow_thread_id=workflow_thread_id,
@@ -333,6 +349,7 @@ class HumanActionRepository:
         decision: str | None = None,
         reason: str | None = None,
     ) -> dict | None:
+        """Answer an open human action, returning None if it's already been completed or doesn't exist."""
         row = self._session.scalars(
             select(HumanAction).where(HumanAction.id == action_id, HumanAction.status == "open")
         ).first()
@@ -349,6 +366,7 @@ class HumanActionRepository:
         return _human_action_to_dict(row)
 
     def get_open_for_thread(self, workflow_thread_id: UUID) -> dict | None:
+        """Return the one still-open human action for a thread, or None if there isn't one."""
         row = self._session.scalars(
             select(HumanAction).where(
                 and_(HumanAction.workflow_thread_id == workflow_thread_id, HumanAction.status == "open")
@@ -357,6 +375,7 @@ class HumanActionRepository:
         return _human_action_to_dict(row) if row is not None else None
 
     def list_for_thread(self, workflow_thread_id: UUID) -> list[dict]:
+        """Return every human action (open and completed) for a thread, in the order they were requested."""
         rows = self._session.scalars(
             select(HumanAction)
             .where(HumanAction.workflow_thread_id == workflow_thread_id)
@@ -383,14 +402,11 @@ class HumanActionRepository:
         next_pending_state_snapshot: dict[str, Any] | None = None,
         completed: bool = False,
     ) -> UUID | None:
-        """Transactionally complete the open pending action for a thread,
-        optionally open the next one, and transition the thread.
+        """Complete a thread's open action, optionally open the next, and transition it.
 
-        Replaces the old `PostgresHITLStateRepository.apply_human_action`,
-        which also had to append a separate `hitl_actions` audit row -- the
-        merged `human_action` table makes that a no-op here: completing
-        this row already *is* the audit trail entry (see
-        `app.models.process.human_action.HumanAction`'s docstring).
+        Completing the row is itself the audit-trail entry, so no separate audit write
+        happens. Raises `ValueError` when no open action matches
+        `(pending_action_id, workflow_thread_id)`, leaving the thread untouched.
         """
         result = cast(
             CursorResult,
@@ -451,6 +467,11 @@ class HumanActionRepository:
 
 
 class ProcessingErrorRepository:
+    """Errors surfaced during job, agent, and workflow processing.
+
+    Kept independent of `HumanAction`, since not every error causes an interrupt.
+    """
+
     def __init__(self, session: Session) -> None:
         self._session = session
 
@@ -466,6 +487,7 @@ class ProcessingErrorRepository:
         node_name: str | None = None,
         raw_error_detail: dict[str, Any] | None = None,
     ) -> dict:
+        """Record one processing error, optionally scoped to a job item, agent run, and/or PO line."""
         row = ProcessingError(
             job_item_id=job_item_id,
             agent_run_id=agent_run_id,
@@ -481,6 +503,7 @@ class ProcessingErrorRepository:
         return _processing_error_to_dict(row)
 
     def list_for_job_item(self, job_item_id: UUID) -> list[dict]:
+        """Return every error logged against `job_item_id`, most recent first."""
         rows = self._session.scalars(
             select(ProcessingError)
             .where(ProcessingError.job_item_id == job_item_id)
@@ -489,6 +512,7 @@ class ProcessingErrorRepository:
         return [_processing_error_to_dict(r) for r in rows]
 
     def list_for_agent_run(self, agent_run_id: UUID) -> list[dict]:
+        """Return every error logged against `agent_run_id`, most recent first."""
         rows = self._session.scalars(
             select(ProcessingError)
             .where(ProcessingError.agent_run_id == agent_run_id)
@@ -497,10 +521,7 @@ class ProcessingErrorRepository:
         return [_processing_error_to_dict(r) for r in rows]
 
     def list_for_purchase_order_line(self, purchase_order_line_id: UUID) -> list[dict]:
-        """Errors for one PO-validation line, found directly rather than via
-        an intermediate `workflow_thread` -- covers errors logged before the
-        line ever reached a human interrupt (see
-        `PoValidationService.get_errors`)."""
+        """Return errors for one PO line, including those logged before any interrupt."""
         rows = self._session.scalars(
             select(ProcessingError)
             .where(ProcessingError.purchase_order_line_id == purchase_order_line_id)
@@ -509,6 +530,7 @@ class ProcessingErrorRepository:
         return [_processing_error_to_dict(r) for r in rows]
 
     def mark_resolved(self, processing_error_id: UUID, resolved_by: str) -> dict | None:
+        """Mark an error resolved and stamp who resolved it; returns None if the error doesn't exist."""
         row = self._session.get(ProcessingError, processing_error_id)
         if row is None:
             return None

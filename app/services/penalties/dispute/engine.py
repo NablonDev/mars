@@ -1,30 +1,23 @@
 """Deterministic dispute recompute-and-classify engine.
 
-Reuses `app.services.penalties.projection.shortage.price_shortage_penalty`/
-`app.services.penalties.projection.delay.price_delay_penalty` directly --
-the same calc-type formulas (PER_UNIT/PERCENT_OF_PO/FLAT_FEE/TIERED) the
-projection engine prices a *risk-adjusted* shortfall/delay with, fed here
-with REAL, final post-delivery facts instead (see `DisputeFacts`'s module
-docstring). This module never reimplements pricing logic -- only how much
-of a rule's shortfall/delay measure actually happened, which the pure
-pricing functions don't know how to compute themselves. Never calls
-`app.services.penalties.projection.shortage.shortfall_units_for_pricing` --
-that function's `ANTICIPATED_SHORTFALL_PCT` fallback is a pre-delivery risk
-estimate, meaningless once delivery is final.
+Reuses the projection engine's pricing functions (`price_shortage_penalty`,
+`price_delay_penalty`) unchanged, fed with real post-delivery facts rather than
+risk-adjusted estimates. Pricing logic is never reimplemented here; this module
+computes only how much of a rule's shortfall or delay measure actually
+happened. `shortfall_units_for_pricing` is deliberately never called, because
+its `ANTICIPATED_SHORTFALL_PCT` fallback is a pre-delivery risk estimate and is
+meaningless once delivery is final.
 
-**LLM never decides pay/no-pay/how-much** -- this module (and this module
-alone) does. `app.services.penalties.dispute.service.DisputeService.analyze`
-is the only caller; the dispute-summary agent only narrates a verdict this
-module already computed and persisted (see
-`app.services.penalties.dispute.summary_service`'s module docstring).
+The LLM never decides pay, no-pay, or how much; this module alone does.
+`DisputeResolutionService.analyze` is its only caller, and the dispute-summary agent only
+narrates a verdict already computed and persisted here.
 
-**Known, documented gap inherited unchanged from the projection engine**:
-`price_delay_penalty` raises `NotImplementedError` for a TIERED delay rule
-(tiered pricing is implemented for shortage rules only, banded by
-shortfall %, not for delay rules). `price_violation` catches that and
-re-raises `UnsupportedDisputeCalcError`; `DisputeService.analyze` wraps
-that into a clear `BusinessRuleError` rather than a raw `NotImplementedError`
-reaching an API caller.
+`price_delay_penalty` raises `NotImplementedError` for a TIERED delay rule, a
+gap inherited from the projection engine, where tiered pricing exists for
+shortage rules only. `price_violation` converts that into
+`UnsupportedDisputeCalcError`, which `DisputeResolutionService.analyze` turns into a
+`BusinessRuleError` rather than letting a raw `NotImplementedError` reach an
+API caller.
 """
 
 from __future__ import annotations
@@ -46,30 +39,25 @@ from app.services.penalties.projection.types import (
     PenaltyRule,
 )
 
-#: Amounts within this many dollars of each other are treated as a match
-#: (floating-point/rounding noise, not a genuine dispute) -- same 1-cent
-#: tolerance convention as `round(..., 2)` used throughout this codebase's
-#: money fields.
+#: Amounts within this many dollars of each other are treated as a match:
+#: floating-point noise, not a genuine dispute. Same 1-cent convention as the
+#: `round(..., 2)` applied to money fields throughout this codebase.
 ROUNDING_TOLERANCE = 0.01
 
 
 def compute_shortfall_units(facts: DisputeFacts) -> float:
-    """Real, final shortfall -- unlike
-    `app.services.penalties.projection.shortage.shortfall_units_for_pricing`,
-    never falls back to a risk-adjusted estimate: a dispute adjudicates what
-    actually was delivered, not what might have been. Caller must have
-    already confirmed `facts.delivered_qty is not None`."""
+    """Real, final shortfall; caller must have already confirmed `facts.delivered_qty is not None`."""
     assert facts.delivered_qty is not None
     return max(0.0, facts.order_qty - facts.delivered_qty)
 
 
 def compute_deadline(facts: DisputeFacts) -> date:
+    """Last date delivery could land without being late, grace period included."""
     return facts.required_delivery_date + timedelta(days=facts.grace_period_days)
 
 
 def compute_is_late(facts: DisputeFacts) -> bool:
-    """Caller must have already confirmed `facts.actual_delivery_date is
-    not None`."""
+    """Caller must have already confirmed `facts.actual_delivery_date is not None`."""
     assert facts.actual_delivery_date is not None
     return facts.actual_delivery_date > compute_deadline(facts)
 
@@ -77,15 +65,14 @@ def compute_is_late(facts: DisputeFacts) -> bool:
 def price_violation(rule: PenaltyRule, facts: DisputeFacts) -> tuple[float, dict]:
     """Price one rule's violation against real, final post-delivery facts.
 
-    Missing-fact guard runs first, before any math: a violation family
-    whose required fact was never recorded as-of the charge date raises
-    `InsufficientDataForDisputeError` -- never silently priced as if the
-    fact were confirmed zero/on-time (see `DisputeFacts`'s docstring).
+    The missing-fact guard runs before any math: a violation family whose
+    required fact was never recorded as of the charge date raises
+    `InsufficientDataForDisputeError` rather than being priced as though the
+    fact were a confirmed zero or an on-time delivery.
 
-    Returns `(computed_amount, calc_trace)` -- `calc_trace` is a small,
-    audit-trail dict (never machine-read back) capturing which family and
-    measure this rule used; `DisputeService.analyze` folds it into
-    `analysis_breakdown`.
+    The returned `calc_trace` is an audit-trail dict capturing which family and
+    measure the rule used. It is never read back by the engine;
+    `DisputeResolutionService.analyze` folds it into `analysis_breakdown`.
     """
     if rule.violation_type in SHORTAGE_VIOLATION_TYPES:
         if facts.delivered_qty is None:
@@ -109,8 +96,8 @@ def price_violation(rule: PenaltyRule, facts: DisputeFacts) -> tuple[float, dict
         deadline = compute_deadline(facts)
         is_late = facts.actual_delivery_date > deadline
         if not is_late:
-            # Delivered within the grace-period window -- no real violation
-            # occurred, regardless of what was charged.
+            # Delivered inside the grace-period window, so no real violation
+            # occurred regardless of what was charged.
             return 0.0, {
                 "violation_family": "DELAY",
                 "deadline": deadline,
@@ -135,26 +122,13 @@ def price_violation(rule: PenaltyRule, facts: DisputeFacts) -> tuple[float, dict
 def classify(
     computed_amount: float, claimed_amount: float, tolerance: float = ROUNDING_TOLERANCE
 ) -> tuple[DisputeVerdict, float]:
-    """Classify a dispute given the deterministically recomputed amount vs.
-    what the retailer actually claimed. Returns `(verdict, delta_amount)`
-    where `delta_amount = claimed_amount - computed_amount`.
+    """Classify a dispute from the recomputed amount against the retailer's claim.
 
-    Branch order matters -- `computed_amount == 0` is checked before the
-    tolerance check so a real violation that recomputes to exactly zero is
-    always NO_PAY, not PAY_FULL, even in the degenerate case where
-    `claimed_amount` also happens to be ~0.
-
-    - `computed_amount == 0` (no real violation occurred, or it fell within
-      the grace period): NO_PAY.
-    - `abs(delta) <= tolerance`: the retailer's charge matches what Mars's
-      own rule computes; PAY_FULL.
-    - `delta > tolerance` (`computed_amount < claimed_amount`): the retailer
-      overcharged relative to Mars's own rule; PAY_PARTIAL -- dispute the
-      delta.
-    - `delta < -tolerance` (`computed_amount > claimed_amount`): the
-      retailer undercharged relative to Mars's own rule. PAY_FULL -- pay
-      what was actually charged; the negative delta is recorded for audit
-      only, never volunteered as a reason to pay more (locked decision).
+    Branch order matters: the zero check precedes the tolerance check, so a real
+    violation recomputing to exactly zero is always NO_PAY even in the
+    degenerate case where the claim is also near zero. A negative delta (the
+    retailer undercharged) is recorded for audit only and never volunteered as a
+    reason to pay more, which is a locked decision.
     """
     delta = round(claimed_amount - computed_amount, 2)
 
@@ -168,17 +142,20 @@ def classify(
 
 
 def recompute_dispute(rule: PenaltyRule, facts: DisputeFacts, claimed_amount: float) -> DisputeCalculation:
-    """Full recompute-and-classify pass for one dispute."""
+    """Deterministically recompute and classify a single penalty dispute.
+
+    Raises `InsufficientDataForDisputeError` when a required post-delivery fact
+    is missing, or `UnsupportedDisputeCalcError` when the rule's calc_type has
+    no implementation for its violation family.
+    """
     computed_amount, calc_trace = price_violation(rule, facts)
     computed_amount = round(computed_amount, 2)
     verdict, delta_amount = classify(computed_amount, claimed_amount)
 
-    # Approximation, documented: a rule's cap is treated as "applied" when
-    # the final amount lands exactly on the cap. This can't distinguish a
-    # penalty that happens to equal the cap unclipped from one that was
-    # genuinely clipped -- reusing price_shortage_penalty/price_delay_penalty
-    # as pure black boxes (see this module's docstring) means this engine
-    # never sees the pre-cap amount to compare against.
+    # Approximation: a rule's cap counts as applied when the final amount lands
+    # exactly on it. Reusing the pricing functions as black boxes means this
+    # engine never sees the pre-cap amount, so it cannot tell a genuine clip
+    # from a penalty that coincidentally equals the cap.
     cap_amount = rule.cap_amount
     cap_applied = cap_amount is not None and computed_amount == round(cap_amount, 2)
     calc_trace = {**calc_trace, "cap_amount": cap_amount, "cap_applied": cap_applied}

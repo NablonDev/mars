@@ -1,5 +1,4 @@
-"""ORM models for the `penalties` schema (full `fine`/`fines` -> `penalty`/
-`penalties` domain rename)."""
+"""ORM models for the `penalties` schema."""
 
 from app.models.penalties.actual_penalty import ActualPenalty
 from app.models.penalties.dispute import PenaltyDispute

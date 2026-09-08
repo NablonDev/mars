@@ -1,9 +1,7 @@
-"""Dispute-resolution-exclusive seed data orchestration: rules, purchase
-orders, real post-delivery fulfillment facts, and `actual_penalty` charges
-for the eight dispute scenarios in `scenario_data_dispute.py`. Mirrors
-`app.services.seeding.projection`/`app.services.seeding.mitigation`'s
-shape -- data lives in `scenario_data_dispute.py`, this module only turns
-it into rows via the repository layer.
+"""Turns the dispute scenario fixtures into rows: rules, purchase orders, fulfillment facts, charges.
+
+The fixture data itself lives in `scenario_data_dispute.py`; this module only
+writes it through the repository layer.
 """
 
 from __future__ import annotations
@@ -31,8 +29,7 @@ def seed(
     master_data: MasterDataRepository,
     actual_penalties: ActualPenaltyRepository,
 ) -> dict[str, int]:
-    """Idempotent: safe to call repeatedly, skips anything that already
-    exists rather than erroring on a duplicate key."""
+    """Seed the dispute fixtures, skipping any rule or purchase order that already exists."""
     counts = {"dispute_rules": 0, "dispute_orders": 0, "dispute_actual_penalties": 0}
 
     for retailer_code in RETAILER_CODES:
@@ -104,12 +101,9 @@ def seed(
             )
 
         if scenario.actual_delivery_date is not None:
-            # Delay-family scenarios need a Shipment row (the delay fact
-            # source, see app.repositories.common.fulfillment.
-            # get_latest_shipment_for_purchase_order_not_after); a bare
-            # Delivery header is still required since Shipment.delivery_id
-            # is a real FK, even though the delivery's own
-            # actual_delivery_date is irrelevant to a delay dispute.
+            # Delay-family scenarios read their delay fact off a Shipment row. A bare
+            # Delivery header is still required because Shipment.delivery_id is a real
+            # FK, even though the delivery's own actual_delivery_date is irrelevant here.
             if delivery is None:
                 delivery = fulfillment.add_delivery(
                     delivery_number=f"DELIV-{scenario.purchase_order_number}",
@@ -118,10 +112,8 @@ def seed(
             fulfillment.add_shipment(
                 shipment_number=f"SHIP-{scenario.purchase_order_number}",
                 delivery_id=delivery["id"],
-                # recorded_at must be <= the scenario's invoice date --
-                # get_latest_shipment_for_purchase_order_not_after filters
-                # on it; the real (wall-clock) seeding time is irrelevant
-                # to these historical scenarios.
+                # recorded_at must be <= the scenario's invoice date, since
+                # get_latest_shipment_for_purchase_order_not_after filters on it.
                 recorded_at=datetime.combine(scenario.actual_delivery_date, datetime.min.time()),
                 actual_delivery_date=scenario.actual_delivery_date,
                 expected_delivery_date=scenario.requested_delivery_date,

@@ -23,6 +23,12 @@ def health(
     response: Response,
     database: Database = Depends(get_database),
 ) -> HealthResponse:
+    """Check application health and database connectivity.
+
+    Returns 503 with a degraded status instead of raising when the
+    connectivity probe fails, so callers get a structured health payload
+    either way.
+    """
     try:
         with database.engine.connect() as conn:
             conn.execute(text("SELECT 1"))

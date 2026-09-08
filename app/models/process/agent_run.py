@@ -10,8 +10,7 @@ from app.db.base import JSONB_OR_JSON, PROCESS_SCHEMA, UUID_PK, Base, TimestampM
 
 
 class AgentRun(Base, TimestampMixin):
-    """One row per independent agent execution (one email, one PO line,
-    one order projection, ...)."""
+    """One row per independent agent execution: one email, one PO line, one projection."""
 
     __tablename__ = "agent_run"
     __table_args__ = ({"schema": PROCESS_SCHEMA},)

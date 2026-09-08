@@ -9,6 +9,8 @@ from app.db.base import UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class Plant(Base, TimestampMixin):
+    """Manufacturing or distribution plant master data."""
+
     __tablename__ = "plant"
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
@@ -18,6 +20,8 @@ class Plant(Base, TimestampMixin):
 
 
 class StorageLocation(Base, TimestampMixin):
+    """Storage location within a plant for inventory segregation."""
+
     __tablename__ = "storage_location"
     __table_args__ = (
         UniqueConstraint("plant_id", "storage_location_code", name="uq_storage_location_plant_code"),
@@ -30,6 +34,8 @@ class StorageLocation(Base, TimestampMixin):
 
 
 class Warehouse(Base, TimestampMixin):
+    """Warehouse master data (distinct from plant/storage location)."""
+
     __tablename__ = "warehouse"
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)

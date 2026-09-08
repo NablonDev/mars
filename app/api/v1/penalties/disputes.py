@@ -1,21 +1,4 @@
-"""API endpoints for post-delivery penalty dispute resolution
-(`penalties.penalty_dispute`).
-
-Flat resource style (`/penalties/disputes`, not nested under
-`/purchase-orders/{id}/...`), matching every other route in this domain
-(`app.api.v1.penalties.projections`/`mitigations`) -- see those modules'
-docstrings for the full "no 2-3 URL shapes for one resource" rationale.
-`.../{dispute_id}/analyze`/`.../{dispute_id}/resolve`/`.../{dispute_id}/summary`
-stay nested under the dispute's own id -- sub-actions on one resource, not a
-second URL shape for the collection (mirrors
-`app/api/v1/common/delivery_change_requests.py`'s
-`.../{delivery_change_request_id}/response` convention).
-
-`analyze` is synchronous and returns the analyzed result immediately (no
-blocking human-approval gate -- locked design decision); `resolve` records a
-human decision on an already-ANALYZED dispute. The summary trigger/poll
-pair mirrors `app.api.v1.penalties.projections`'s own summary routes.
-"""
+"""API endpoints for post-delivery penalty dispute resolution."""
 
 from __future__ import annotations
 
@@ -40,7 +23,7 @@ from app.schemas.penalties.disputes import (
     DisputeSummaryResponse,
     DisputeSummaryStatusResponse,
 )
-from app.services.penalties.dispute.service import DisputeService
+from app.services.penalties.dispute.service import DisputeResolutionService
 from app.services.penalties.dispute.summary_service import DisputeSummaryService
 
 router = APIRouter(tags=["penalty-disputes"])
@@ -53,8 +36,9 @@ router = APIRouter(tags=["penalty-disputes"])
 )
 def open_penalty_dispute(
     body: DisputeOpenRequest,
-    service: DisputeService = Depends(get_dispute_service),
+    service: DisputeResolutionService = Depends(get_dispute_service),
 ) -> Envelope[DisputeResponse]:
+    """Open a dispute against an incurred penalty."""
     created = service.open_dispute(
         body.actual_penalty_id, body.reason_code, body.claimed_amount, notes=body.notes
     )
@@ -68,10 +52,12 @@ def open_penalty_dispute(
 def list_penalty_disputes(
     purchase_order_id: UUID | None = Query(default=None),
     purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
-    service: DisputeService = Depends(get_dispute_service),
+    service: DisputeResolutionService = Depends(get_dispute_service),
 ) -> Envelope[list[DisputeResponse]]:
-    """`purchase_order_id` given: every dispute for that PO (404 if the PO
-    itself doesn't exist). Omitted: every dispute across every PO."""
+    """List penalty disputes, optionally narrowed to one purchase order.
+
+    Naming a purchase order that does not exist is a 404.
+    """
     if purchase_order_id is not None:
         purchase_orders.require_purchase_order(purchase_order_id)
     rows = [DisputeResponse.model_validate(r) for r in service.list_for_purchase_order(purchase_order_id)]
@@ -84,8 +70,9 @@ def list_penalty_disputes(
 )
 def get_penalty_dispute(
     dispute_id: UUID,
-    service: DisputeService = Depends(get_dispute_service),
+    service: DisputeResolutionService = Depends(get_dispute_service),
 ) -> Envelope[DisputeResponse]:
+    """Retrieve a dispute by its ID."""
     return success_envelope(DisputeResponse.model_validate(service.get(dispute_id)))
 
 
@@ -95,11 +82,9 @@ def get_penalty_dispute(
 )
 def analyze_penalty_dispute(
     dispute_id: UUID,
-    service: DisputeService = Depends(get_dispute_service),
+    service: DisputeResolutionService = Depends(get_dispute_service),
 ) -> Envelope[DisputeResponse]:
-    """Synchronous: computes and persists the verdict immediately, moving
-    the dispute to ANALYZED. No job-queue involvement -- see this module's
-    docstring."""
+    """Compute and persist a dispute verdict synchronously, moving the dispute to ANALYZED."""
     analyzed = service.analyze(dispute_id)
     return success_envelope(DisputeResponse.model_validate(analyzed), message="Penalty dispute analyzed.")
 
@@ -111,8 +96,9 @@ def analyze_penalty_dispute(
 def resolve_penalty_dispute(
     dispute_id: UUID,
     body: DisputeResolveRequest,
-    service: DisputeService = Depends(get_dispute_service),
+    service: DisputeResolutionService = Depends(get_dispute_service),
 ) -> Envelope[DisputeResponse]:
+    """Resolve a dispute by accepting, rejecting, or overriding the verdict."""
     resolved = service.resolve(
         dispute_id,
         resolved_by=body.resolved_by,
@@ -133,6 +119,7 @@ def trigger_penalty_dispute_summary(
     response: Response,
     summary_service: DisputeSummaryService = Depends(get_dispute_summary_service),
 ) -> Envelope[DisputeSummaryStatusResponse]:
+    """Request or retrieve a summary analysis of a dispute, returning 202 if queued."""
     job = summary_service.get_or_schedule_for_dispute(dispute_id, force_regenerate=body.force_regenerate)
 
     if job.status == SummaryStatus.READY:
@@ -163,9 +150,10 @@ def get_penalty_dispute_summary(
     dispute_id: UUID,
     summary_service: DisputeSummaryService = Depends(get_dispute_summary_service),
 ) -> Envelope[DisputeSummaryStatusResponse]:
-    """Pure read -- never schedules generation. Mirrors
-    `app.api.v1.penalties.projections.get_penalty_projection_summary`'s
-    "never-requested is success, not 404" convention."""
+    """Poll a dispute summary job; never schedules one.
+
+    A dispute with no summary job on record succeeds with a null status rather than 404ing.
+    """
     try:
         job = summary_service.get_status_for_dispute(dispute_id)
     except NotFoundError as exc:

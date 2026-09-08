@@ -1,9 +1,4 @@
-"""SCD2 history of approved CMIR mappings -- not an append-only log.
-Exactly one `is_current = true` row per `(customer_identity_key,
-target_customer_material_ref_key)`, enforced by a partial unique index
-declared as raw migration DDL only (see the `cmir` schema revision) --
-not expressible as a portable ORM `Index(postgresql_where=...)` without
-silently becoming a full unique index on SQLite."""
+"""SCD2 history of approved CMIR mappings."""
 
 from datetime import date, datetime
 from uuid import UUID
@@ -15,6 +10,13 @@ from app.db.base import CMIR_SCHEMA, UUID_PK, Base, TimestampMixin, generate_uui
 
 
 class CmirRecord(Base, TimestampMixin):
+    """Approved customer-material identity mapping (SCD2 history).
+
+    Tracks CMIR relationships with validity intervals and supersession.
+    Keyed by (customer_identity_key, target_customer_material_ref_key);
+    format-normalized for lookup matching.
+    """
+
     __tablename__ = "cmir_record"
     __table_args__ = ({"schema": CMIR_SCHEMA},)
 

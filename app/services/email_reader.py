@@ -1,3 +1,5 @@
+"""IMAP polling client for pulling CMIR dispute emails out of a Gmail inbox."""
+
 from __future__ import annotations
 
 import email as email_lib
@@ -18,6 +20,7 @@ class GmailImapReader:
         self._config = config
 
     def _connect(self) -> imaplib.IMAP4_SSL:
+        """Open and authenticate a new IMAP session; caller must log out when done."""
         mail = imaplib.IMAP4_SSL(self._config.imap_server, self._config.imap_port)
         mail.login(self._config.address, self._config.password)
         return mail
@@ -29,6 +32,15 @@ class GmailImapReader:
         subject_contains: str | None = None,
         unread_only: bool = True,
     ) -> list[EmailMessage]:
+        """Fetch matching messages from INBOX as a fresh IMAP session per call.
+
+        Searches messages since `lookback_days` ago, optionally filtered to
+        UNSEEN, and subject-matched against `subject_contains` (or the
+        configured default search subject). Only the newest `limit` (or
+        `max_per_run`) matches are actually fetched and parsed; earlier
+        matches are left untouched on the server. A search failure returns
+        an empty list rather than raising.
+        """
         mail = self._connect()
         mail.select("INBOX")
 
@@ -72,6 +84,7 @@ class GmailImapReader:
         return messages
 
     def mark_as_read(self, imap_id: str) -> None:
+        """Flag one message as Seen so it's excluded from future unread-only fetches."""
         mail = self._connect()
         mail.select("INBOX")
         mail.store(imap_id, "+FLAGS", "\\Seen")
@@ -79,6 +92,12 @@ class GmailImapReader:
 
     @staticmethod
     def _extract_body(message: email_lib.message.Message) -> str:
+        """Extract readable text from a (possibly multipart) email, preferring plain text.
+
+        For a multipart message, returns the first text/plain or text/html part
+        found (HTML is stripped to text via BeautifulSoup); returns "" if
+        neither part decodes cleanly or none is present.
+        """
         if not message.is_multipart():
             payload = message.get_payload(decode=True)
             return payload.decode(errors="ignore") if isinstance(payload, bytes) else ""

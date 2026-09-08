@@ -1,5 +1,4 @@
-"""Post-delivery penalty recorded against a PO (renamed from
-`actual_fine`)."""
+"""Post-delivery penalty recorded against a PO."""
 
 from datetime import date
 from uuid import UUID
@@ -11,6 +10,11 @@ from app.db.base import PENALTIES_SCHEMA, UUID_PK, Base, TimestampMixin, generat
 
 
 class ActualPenalty(Base, TimestampMixin):
+    """Post-delivery penalty recorded against a purchase order.
+
+    Tracks invoiced or deducted penalties with dispute status. Immutable after insert.
+    """
+
     __tablename__ = "actual_penalty"
     __table_args__ = ({"schema": PENALTIES_SCHEMA},)
 

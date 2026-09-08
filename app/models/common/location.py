@@ -9,6 +9,11 @@ from app.db.base import UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class RetailerLocation(Base, TimestampMixin):
+    """Retailer-owned delivery/ship-to location.
+
+    Stores address and metadata for a retail location. Keyed by (retailer_id, location_code).
+    """
+
     __tablename__ = "retailer_location"
     __table_args__ = (
         UniqueConstraint("retailer_id", "location_code", name="uq_retailer_location_retailer_code"),

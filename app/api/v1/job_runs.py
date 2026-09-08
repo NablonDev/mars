@@ -1,30 +1,4 @@
-"""API endpoints for the generic `process.job_run`/`job_item` batch
-trigger/status/items -- the `penalties` domain's batch triggers.
-
-These routes operate on the shared `process` schema, not the `penalties`
-domain alone -- the same rationale that places `workflow_threads`/
-`processing_errors` top-level rather than under a domain folder. CMIR email
-ingestion is triggered exclusively via the dedicated `POST /cmir/email-events`
-route (`app/api/v1/cmir.py`), not through here.
-
-`POST /job-runs` dispatches on `body.job_type`: `PENALTY_PROJECTION_BATCH`
-(mapped internally to `JobTaskType.ORDER_RUN`) runs the penalty-projection
-batch; `PENALTY_MITIGATION_BATCH` (mapped internally to
-`JobTaskType.MITIGATION_RUN`) computes mitigation options for every OPEN
-purchase order with an existing projection -- mirrors the projection batch's
-own shape (see `_trigger_penalty_mitigation_batch` below); `PENALTY_FULL_RUN_BATCH`
-(mapped internally to `JobTaskType.PENALTY_FULL_RUN`) runs the requested
-subset of projection/projection_summary/mitigation/mitigation_summary steps,
-in that fixed dependency order, for every purchase order matching a scope
-(see `_trigger_penalty_full_run_batch` below). `GET /job-runs/{id}` and
-`.../items` are domain-agnostic (they key purely off `job_run_id`, a generic
-`process.job_run` UUID) and need no per-`job_type` handling.
-
-No generic "list every job_run, optionally filtered by job_type" endpoint
-exists here -- `JobQueueRepository` has no such query (only
-`get_run_summary`/`list_run_items`, both scoped to one known `job_run_id`) --
-the same kind of capability gap as `CmirRunService.list_runs(view="batches")`.
-"""
+"""API endpoints for job run batch triggers, status, and item listing."""
 
 from __future__ import annotations
 
@@ -82,6 +56,7 @@ _EXECUTION_NOTES: dict[str, str] = {
 
 
 def _execution_note(job_queue_backend: str) -> str:
+    """Return a human-readable message describing how jobs are processed by the configured backend."""
     return _EXECUTION_NOTES.get(
         job_queue_backend,
         f"Enqueued under job_queue_backend={job_queue_backend!r}; pickup timing depends on that backend.",
@@ -100,8 +75,7 @@ def trigger_job_run(
     job_dispatcher: JobDispatcher = Depends(get_job_dispatcher),
     settings: Settings = Depends(get_settings),
 ) -> Envelope[JobRunResponse]:
-    """Dispatches on `body.job_type` (Pydantic discriminated union -- see
-    `app.schemas.penalties.batches.JobRunRequest`)."""
+    """Enqueue a batch job run, dispatching on the `job_type` discriminator."""
     if isinstance(body, PenaltyMitigationBatchRequest):
         return _trigger_penalty_mitigation_batch(
             body,
@@ -183,8 +157,8 @@ def _trigger_penalty_projection_batch(
             max_attempts=settings.job_queue.max_attempts,
         )
         # A collision may return an item belonging to an earlier run, or a
-        # context row already attached to it -- only attach/dispatch items
-        # created for this run.
+        # context row already attached to it, so only attach and dispatch
+        # items created for this run.
         if item is None or item["job_run_id"] != run["id"]:
             continue
         if job_item_context.get(item["id"]) is None:
@@ -229,25 +203,7 @@ def _trigger_penalty_mitigation_batch(
     job_dispatcher: JobDispatcher,
     settings: Settings,
 ) -> Envelope[JobRunResponse]:
-    """Enqueue a mitigation-compute batch for every OPEN purchase order that
-    already has a persisted penalty projection.
-
-    Eligibility mirrors exactly what `MitigationService.run_for_purchase_
-    order` (`app/services/penalties/mitigation/service.py`) itself checks
-    for a single PO/date: a projection must already exist. There, an
-    absent projection raises `BusinessRuleError(code="NO_PROJECTION_
-    EXISTS")`; here, a purchase order with no projection at all is simply
-    skipped rather than failing the whole batch. `PenaltyProjectionRepository.
-    get_latest` resolves each purchase order's *own* latest projection date
-    -- unlike the projection batch, there is no single shared date every PO
-    is evaluated against, so `body` (`PenaltyMitigationBatchRequest`) carries
-    no `projection_date` to override.
-
-    Only creates and dispatches jobs; a worker actually computing and
-    persisting the mitigation options for each item is
-    `app.workers.penalty_mitigation.run_mitigation`, routed from
-    `app/workers/dispatch.py`.
-    """
+    """Enqueue mitigation-compute batch for every OPEN PO with a penalty projection."""
     run_date = utc_today()
     open_purchase_orders = purchase_orders.list_purchase_orders(order_status="OPEN")
 
@@ -263,20 +219,18 @@ def _trigger_penalty_mitigation_batch(
         requested_item_count=len(open_purchase_orders),
     )
     # `projection_date` here is this run's own trigger date, not a domain
-    # input -- see the docstring above; each dispatched item's own
-    # penalty_job_item_context row carries the purchase order's actual
-    # projection date. penalty_job_run_context is write-only bookkeeping
-    # today (nothing reads it back), so this nominal value is safe.
+    # input; each dispatched item's own penalty_job_item_context row carries
+    # the purchase order's actual projection date. penalty_job_run_context is
+    # write-only bookkeeping today, so this nominal value is safe.
     job_run_context.create(job_run_id=run["id"], projection_date=run_date)
 
     item_ids: list[UUID] = []
     for purchase_order in open_purchase_orders:
         latest_projection = projections.get_latest(purchase_order["id"])
         if latest_projection is None:
-            # No projection exists yet for this PO -- not eligible for
-            # mitigation, mirroring MitigationService.run_for_purchase_
-            # order's own NO_PROJECTION_EXISTS check. Skip, don't fail the
-            # batch.
+            # No projection exists yet for this PO, so it is not eligible for
+            # mitigation, mirroring MitigationService.run_for_purchase_order's
+            # own NO_PROJECTION_EXISTS check. Skip, don't fail the batch.
             continue
 
         projection_date = latest_projection["projection_date"]
@@ -288,8 +242,8 @@ def _trigger_penalty_mitigation_batch(
             max_attempts=settings.job_queue.max_attempts,
         )
         # A collision may return an item belonging to an earlier run, or a
-        # context row already attached to it -- only attach/dispatch items
-        # created for this run.
+        # context row already attached to it, so only attach and dispatch
+        # items created for this run.
         if item is None or item["job_run_id"] != run["id"]:
             continue
         if job_item_context.get(item["id"]) is None:
@@ -341,24 +295,7 @@ def _trigger_penalty_full_run_batch(
     job_dispatcher: JobDispatcher,
     settings: Settings,
 ) -> Envelope[JobRunResponse]:
-    """Enqueue a combined projection -> projection_summary -> mitigation ->
-    mitigation_summary run for every purchase order matching `body.scope` --
-    only the requested `body.steps` run per item, always in that fixed
-    dependency order regardless of the order `steps` was submitted in (see
-    `app.workers.penalty_full_run.run_full_run`, dispatched from
-    `JobTaskType.PENALTY_FULL_RUN` in `app/workers/dispatch.py`).
-
-    `steps` (and the run's resolved `projection_date`) travel per-item on
-    `process.job_item.metadata` rather than a new `penalty_job_item_context`
-    column -- see `JobQueueRepository.enqueue`'s `metadata` param.
-
-    Eligibility mirrors `_trigger_penalty_mitigation_batch` exactly when
-    `"projection"` is not itself one of the requested steps: a purchase
-    order needs an already-persisted projection for `mitigation`/
-    `mitigation_summary` to run against, or it is skipped, not failed. When
-    `"projection"` IS requested, every matching purchase order is eligible --
-    this run will produce one.
-    """
+    """Enqueue a full penalty workflow run for matching purchase orders."""
     run_date = body.projection_date or utc_today()
     needs_existing_projection = "projection" not in body.steps
 
@@ -385,9 +322,9 @@ def _trigger_penalty_full_run_batch(
         trigger_type=JobRunType.MANUAL_BATCH,
         requested_item_count=len(matching_purchase_orders),
     )
-    # `projection_date` here is this run's own trigger/override date -- each
-    # dispatched item's own penalty_job_item_context row carries the
-    # purchase order's actual (per-item) projection date; see
+    # `projection_date` here is this run's own trigger/override date; each
+    # dispatched item's own penalty_job_item_context row carries the purchase
+    # order's actual per-item projection date. See
     # _trigger_penalty_mitigation_batch's identical note.
     job_run_context.create(job_run_id=run["id"], projection_date=run_date)
 
@@ -398,8 +335,8 @@ def _trigger_penalty_full_run_batch(
         if needs_existing_projection:
             latest_projection = projections.get_latest(purchase_order["id"])
             if latest_projection is None:
-                # No projection exists yet, and this run isn't producing
-                # one either -- not eligible. Skip, don't fail the batch.
+                # No projection exists yet, and this run isn't producing one
+                # either, so it is not eligible. Skip, don't fail the batch.
                 continue
             projection_date = latest_projection["projection_date"]
         else:
@@ -414,8 +351,8 @@ def _trigger_penalty_full_run_batch(
             metadata=item_metadata,
         )
         # A collision may return an item belonging to an earlier run, or a
-        # context row already attached to it -- only attach/dispatch items
-        # created for this run.
+        # context row already attached to it, so only attach and dispatch
+        # items created for this run.
         if item is None or item["job_run_id"] != run["id"]:
             continue
         if job_item_context.get(item["id"]) is None:
@@ -463,6 +400,7 @@ def get_job_run_status(
     session: Session = Depends(get_session),
     job_queue: JobQueueRepository = Depends(get_job_queue_repository),
 ) -> Envelope[JobRunStatusResponse]:
+    """Retrieve the execution status and completion state of a job run."""
     # A run with zero items is valid; absence of the JobRun distinguishes
     # "run does not exist" from "run exists but has no items".
     if session.get(JobRun, job_run_id) is None:
@@ -499,6 +437,7 @@ def list_job_run_items(
     offset: int = Query(default=0, ge=0),
     job_queue: JobQueueRepository = Depends(get_job_queue_repository),
 ) -> Envelope[JobItemListResponse]:
+    """List items in a job run, optionally filtered by status, with pagination."""
     rows = job_queue.list_run_items(job_run_id, status=status, limit=limit, offset=offset)
 
     items = [

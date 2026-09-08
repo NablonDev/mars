@@ -1,19 +1,4 @@
-"""Registry of LLM agents, merging what were two tables (`agent` +
-`prompt_version`) into one: one row per (agent, prompt version) pair.
-
-`process.agent.system_prompt` is a new persistent store of LLM
-system-level instructions -- a future prompt-injection surface once the
-runtime load lands (see the approved Phase 1 plan's security note). No
-live risk in Phase 1 (seeded only from version-controlled source in
-`scripts/seed/seed_agents.py`), but no user-writable path may ever reach
-this column and no API endpoint may expose a write to it.
-
-`uq_agent_one_active_per_code` -- a partial unique index on `(agent_code)
-WHERE is_active`, guaranteeing at most one active prompt version per agent
--- is migration-only raw DDL (see the `process` schema revision), never a
-model declaration: it's the same "postgresql_where= is silently dropped on
-SQLite" problem as `cmir_record`'s and `job_item`'s partial indexes.
-"""
+"""Registry of LLM agents with versioned prompts."""
 
 from uuid import UUID
 
@@ -25,12 +10,7 @@ from app.models.enums import AgentDomain
 
 
 def _check_domain_in_sql() -> str:
-    """Build a deterministic SQL IN expression from `AgentDomain`, same
-    helper style as `app/models/process/job.py::_check_in_sql` (sorted
-    values keep generated DDL deterministic across runs). Unlike
-    `workflow_thread_subject`'s `num_nonnulls` CHECK, a plain `IN (...)`
-    expression is portable SQL -- it compiles safely on SQLite too, so
-    this stays a model-level `CheckConstraint`, not migration-only DDL."""
+    """Build a portable, deterministic SQL IN expression from `AgentDomain`'s own members."""
     values = ", ".join(f"'{value.value}'" for value in sorted(AgentDomain))
     return f"domain IN ({values})"
 

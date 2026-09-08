@@ -1,12 +1,10 @@
-"""Orchestrates the dispute lifecycle: open, analyze (deterministic verdict
-compute-and-persist), resolve/override, and read.
+"""Orchestrates the dispute lifecycle: open, analyze, resolve or override, and read.
 
-No LangGraph, no job-queue for `analyze()` -- synchronous, per the locked
-design decision (a human never blocks on approval before a verdict is
-written; they resolve/override it afterward via a plain API call). Mirrors
-`app.services.penalties.delivery_change.PoDeliveryChangeRequestService`'s
-shape (a dataclass of injected repositories/services, one method per
-lifecycle transition).
+`analyze()` is synchronous, with no LangGraph and no job queue, per a locked
+design decision: a human never blocks on approval before a verdict is written,
+and resolves or overrides it afterward through a plain API call. The shape
+mirrors `PoDeliveryChangeRequestService`, a dataclass of injected dependencies
+with one method per lifecycle transition.
 """
 
 from __future__ import annotations
@@ -36,13 +34,12 @@ _TERMINAL_STATUSES = {DisputeStatus.RESOLVED, DisputeStatus.OVERRIDDEN}
 
 
 def _to_rule_value(rule_row: dict, tiers) -> PenaltyRuleValue:
-    """Convert a `PenaltyRuleRepository.list_rules_effective_on` dict row
-    into the pure-engine `PenaltyRuleValue` dataclass `recompute_dispute`
-    needs -- same conversion `PenaltyRuleRepository.list_rules_for_retailer`
-    does inline for the projection engine, duplicated narrowly here since
-    that method returns dataclasses already and carries no
-    `grace_period_days`/dict escape hatch (see
-    `app.services.penalties.dispute.types`'s module docstring)."""
+    """Convert a `list_rules_effective_on` dict row into the pure-engine rule dataclass.
+
+    `list_rules_for_retailer` does the same conversion inline for the projection
+    engine, but hands back dataclasses that carry no `grace_period_days`, so it
+    cannot be reused here.
+    """
     return PenaltyRuleValue(
         rule_id=str(rule_row["id"]),
         violation_type=rule_row["violation_type"],
@@ -55,7 +52,15 @@ def _to_rule_value(rule_row: dict, tiers) -> PenaltyRuleValue:
 
 
 @dataclass
-class DisputeService:
+class DisputeResolutionService:
+    """Manages penalty disputes through their lifecycle.
+
+    A dispute contests an `actual_penalty` charge: opened as OPEN, moved to
+    ANALYZED once the engine has produced a verdict, then closed as RESOLVED or
+    OVERRIDDEN. Analysis is synchronous, which leaves narrative generation as
+    the only asynchronous work in the domain.
+    """
+
     purchase_orders: PurchaseOrderRepository
     disputes: PenaltyDisputeRepository
     actual_penalties: ActualPenaltyRepository
@@ -69,12 +74,12 @@ class DisputeService:
         claimed_amount: float,
         notes: str | None = None,
     ) -> dict:
-        """Opens a new dispute against an already-recorded
-        `actual_penalty` charge. Enforces "at most one OPEN/ANALYZED
-        dispute per charge" -- a retailer can amend a charge, producing a
-        second dispute cycle once the first is terminal (RESOLVED/
-        OVERRIDDEN); see `PenaltyDisputeRepository.find_active_for_actual_
-        penalty`'s docstring."""
+        """Open a new dispute against an already-recorded `actual_penalty` charge.
+
+        At most one OPEN or ANALYZED dispute may exist per charge. A retailer
+        amending a charge gets a second dispute cycle only once the first has
+        reached a terminal status.
+        """
         actual_penalty = self.actual_penalties.get(actual_penalty_id)
         if actual_penalty is None:
             raise NotFoundError(
@@ -104,28 +109,16 @@ class DisputeService:
         )
 
     def analyze(self, dispute_id: UUID, now: datetime | None = None) -> dict:
-        """Loads real, final post-delivery facts as-of the historical
-        charge date, resolves the effective rule, runs the deterministic
-        engine, and persists the verdict -- moves the dispute to ANALYZED.
+        """Compute and persist the deterministic verdict, moving the dispute to ANALYZED.
 
-        Raises, leaving the dispute completely untouched (still OPEN/
-        whatever it was, no partial write):
-        - `BusinessRuleError(code="NO_MATCHING_RULE_FOR_DISPUTE")` -- no
-          rule was effective for the charge's `(retailer, violation_type)`
-          on the charge date.
-        - `BusinessRuleError(code="INSUFFICIENT_DATA_FOR_DISPUTE")` -- the
-          fact this violation family needs (delivered_qty for SHORTAGE,
-          actual_delivery_date for DELAY) was never recorded as-of the
-          charge date.
-        - `BusinessRuleError(code="DISPUTE_CALC_NOT_SUPPORTED")` -- the
-          effective rule's calc_type cannot be priced for this violation
-          family (a TIERED delay rule today).
+        Facts and the effective rule are resolved as of the historical charge
+        date, not today. Every failure path raises before any write, so a failed
+        analysis leaves the dispute untouched.
 
-        Re-analyzable while still OPEN or already ANALYZED (e.g. a rule
-        record was corrected after the first pass); refuses once RESOLVED/
-        OVERRIDDEN -- a human decision has already been recorded on top of
-        a verdict, and silently recomputing underneath it would strand that
-        decision against a different verdict.
+        Re-analyzable while OPEN or already ANALYZED, for instance after a rule
+        record is corrected. Refused once RESOLVED or OVERRIDDEN: a human
+        decision is already recorded on top of a verdict, and recomputing
+        underneath it would strand that decision against a different verdict.
         """
         dispute = self._require_dispute(dispute_id)
         if dispute["dispute_status"] in _TERMINAL_STATUSES:
@@ -156,10 +149,9 @@ class DisputeService:
                     f"(dispute {dispute_id})."
                 ),
             )
-        # Deterministic tie-break when more than one rule matched (should not
-        # normally happen -- effective date ranges for the same retailer/
-        # violation_type are expected not to overlap): the most recently
-        # effective rule wins.
+        # Deterministic tie-break when more than one rule matched, which is not
+        # expected: effective date ranges for the same retailer and
+        # violation_type should never overlap. Most recently effective wins.
         rule_row = max(matching, key=lambda r: r["effective_start_date"])
 
         tiers = (
@@ -170,14 +162,11 @@ class DisputeService:
         rule_value = _to_rule_value(rule_row, tiers)
 
         fulfillment = self.projection_service.fulfillment
-        # order_qty/unit_price/required_delivery_date come from the same
-        # snapshot-assembly logic the projection engine uses (including its
-        # current_delivery_date-falls-back-to-requested_delivery_date
-        # precedence) -- safe here because a dispute always runs after
-        # delivery is final. snapshot.confirmed_qty is deliberately unused:
-        # it comes from order_confirmation (the pre-delivery promise), not
-        # the real, final delivered quantity a dispute must use (see
-        # DisputeFacts's module docstring).
+        # order_qty, unit_price, and required_delivery_date reuse the projection
+        # engine's snapshot assembly, which is safe because a dispute always
+        # runs after delivery is final. snapshot.confirmed_qty is deliberately
+        # unused: it comes from order_confirmation, the pre-delivery promise,
+        # not the final delivered quantity a dispute must adjudicate on.
         snapshot = self.projection_service.build_snapshot(dispute["purchase_order_id"], as_of_date)
         delivered_qty = fulfillment.get_delivered_quantity_for_purchase_order_not_after(
             dispute["purchase_order_id"], as_of_date
@@ -255,9 +244,12 @@ class DisputeService:
         override_reason: str | None = None,
         now: datetime | None = None,
     ) -> dict:
-        """Requires ANALYZED status. `override_verdict` set -> OVERRIDDEN
-        (requires `override_reason`); otherwise -> RESOLVED (accepts the
-        engine's own verdict as-is)."""
+        """Close out a dispute; requires ANALYZED status.
+
+        `override_verdict` set moves it to OVERRIDDEN and requires
+        `override_reason`; otherwise it becomes RESOLVED, accepting the engine's
+        own verdict unchanged.
+        """
         dispute = self._require_dispute(dispute_id)
         if dispute["dispute_status"] != DisputeStatus.ANALYZED:
             raise ValidationError(
@@ -284,12 +276,15 @@ class DisputeService:
         )
 
     def get(self, dispute_id: UUID) -> dict:
+        """Fetch one dispute by id, regardless of its lifecycle status."""
         return self._require_dispute(dispute_id)
 
     def list_for_purchase_order(self, purchase_order_id: UUID | None = None) -> list[dict]:
+        """List disputes, optionally scoped to one purchase order; all statuses included."""
         return self.disputes.list_for_purchase_order(purchase_order_id)
 
     def _require_dispute(self, dispute_id: UUID) -> dict:
+        """Fetch a dispute by id or raise `NotFoundError`, one shared shape for every caller."""
         dispute = self.disputes.get_by_id(dispute_id)
         if dispute is None:
             raise NotFoundError(

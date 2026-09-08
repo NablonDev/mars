@@ -1,5 +1,4 @@
-"""Penalty rules and their optional tiered bands (renamed from
-`fine_rule`/`fine_rule_tier`, full fine -> penalty domain rename)."""
+"""Penalty rules and their optional tiered bands."""
 
 from datetime import date
 from uuid import UUID
@@ -11,6 +10,12 @@ from app.db.base import PENALTIES_SCHEMA, UUID_PK, Base, TimestampMixin, generat
 
 
 class PenaltyRule(Base, TimestampMixin):
+    """Penalty rule defining charge calculation for a retailer and violation type.
+
+    Supports multiple calc types: PER_UNIT, PERCENT_OF_PO, FLAT_FEE, or TIERED.
+    Immutable after insert; lifetime controlled by effective_start/end dates.
+    """
+
     __tablename__ = "penalty_rule"
     __table_args__ = ({"schema": PENALTIES_SCHEMA},)
 
@@ -30,7 +35,11 @@ class PenaltyRule(Base, TimestampMixin):
 
 
 class PenaltyRuleTier(Base, TimestampMixin):
-    """One tier band belonging to a tiered penalty rule."""
+    """One tier band for a tiered penalty rule.
+
+    Defines a rate applicable to a shortage/delay percentage range.
+    Keyed by (rule_id, tier_code); immutable after insert.
+    """
 
     __tablename__ = "penalty_rule_tier"
     __table_args__ = (

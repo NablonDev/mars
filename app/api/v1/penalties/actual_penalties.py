@@ -1,12 +1,4 @@
-"""API endpoints for `penalties.actual_penalty` -- the realized, post-delivery
-penalty a purchase order actually incurred, as distinct from a penalty
-projection (forecast) or a penalty mitigation (action taken to reduce one).
-
-Every route below is flat (`/penalties/actual-penalties`, not nested under
-`/purchase-orders/{purchase_order_id}/...`) -- same "no 2-3 different URL
-shapes for one resource" reasoning as `app.api.v1.penalties.projections`/
-`mitigations`; see that module's docstring for the full rationale.
-"""
+"""API endpoints for actual penalties incurred by purchase orders."""
 
 from __future__ import annotations
 
@@ -34,6 +26,10 @@ def add_actual_penalty(
     purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
     actual_penalties: ActualPenaltyRepository = Depends(get_actual_penalty_repository),
 ) -> Envelope[ActualPenaltyResponse]:
+    """Record an actual penalty incurred for a purchase order.
+
+    404s if the purchase order doesn't exist before recording anything.
+    """
     purchase_orders.require_purchase_order(body.purchase_order_id)
     created = actual_penalties.add_actual_penalty(**body.model_dump())
     return success_envelope(ActualPenaltyResponse.model_validate(created), message="Actual penalty recorded.")
@@ -48,21 +44,20 @@ def list_actual_penalties(
     purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
     actual_penalties: ActualPenaltyRepository = Depends(get_actual_penalty_repository),
 ) -> Envelope[list[ActualPenaltyResponse]]:
-    """`purchase_order_id` given: every actual penalty for that PO (404 if
-    the PO itself doesn't exist) -- unchanged from the old nested route.
-    Omitted: every actual penalty across every PO."""
+    """List incurred penalties, optionally narrowed to one purchase order.
+
+    Naming a purchase order that does not exist is a 404.
+    """
     if purchase_order_id is not None:
         purchase_orders.require_purchase_order(purchase_order_id)
     rows = actual_penalties.list_actual_penalties(purchase_order_id=purchase_order_id)
     return success_envelope([ActualPenaltyResponse.model_validate(r) for r in rows])
 
 
-# NOTE: unlike `app.api.v1.penalties.projections`/`mitigations`, there is no
-# literal `/penalties/actual-penalties/<something>` sibling route (no
-# `/summary` action here) -- `{actual_penalty_id}` only ever competes for a
-# path one segment longer than `GET /penalties/actual-penalties` itself, so
-# registration order can't swallow a literal route the way it could there.
-# Still registered after the two routes above, for readability/consistency.
+# NOTE: this prefix has no literal sibling route (no `/summary` action), so
+# `{actual_penalty_id}` cannot shadow one the way it can in
+# `app.api.v1.penalties.projections`/`mitigations`. Registered last anyway,
+# for consistency with those modules.
 @router.get(
     "/penalties/actual-penalties/{actual_penalty_id}",
     response_model=Envelope[ActualPenaltyResponse],

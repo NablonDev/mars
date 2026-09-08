@@ -1,5 +1,4 @@
-"""Shared UTC clock helpers -- avoids re-deriving `date`/naive-`datetime`
-variants of `datetime.now(UTC)` at every call site."""
+"""Shared UTC clock helpers, so no call site re-derives its own `datetime.now(UTC)`."""
 
 from __future__ import annotations
 
@@ -17,6 +16,5 @@ def utc_today() -> date:
 
 
 def utc_now_naive() -> datetime:
-    """Current time, UTC, with tzinfo stripped -- for columns/APIs that
-    expect a naive datetime already understood to be UTC."""
+    """Current UTC time with tzinfo stripped, for columns that expect a naive value."""
     return utc_now().replace(tzinfo=None)

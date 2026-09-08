@@ -35,18 +35,22 @@ _REDACTED = "***"
 
 
 def get_request_id() -> str:
+    """Return the request ID bound to the current context, or the unknown-request sentinel."""
     return _request_id.get()
 
 
 def set_request_id(request_id: str) -> Token[str]:
+    """Bind request_id to the current context and return a token for the matching reset."""
     return _request_id.set(request_id)
 
 
 def reset_request_id(token: Token[str]) -> None:
+    """Restore the context var to its value before the paired set_request_id call."""
     _request_id.reset(token)
 
 
 def _redact(text: str) -> str:
+    """Return text with bearer tokens, URL credentials, and secret-like assignments masked."""
     text = _BEARER_TOKEN.sub(rf"\1{_REDACTED}", text)
     text = _URL_CREDENTIALS.sub(rf"\1{_REDACTED}\2", text)
     return _SECRET_ASSIGNMENT.sub(rf"\1\2{_REDACTED}", text)
@@ -56,6 +60,7 @@ class RequestIdFilter(logging.Filter):
     """Add the current request ID to records that do not already have one."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Stamp the record with the current request ID if it doesn't already have one."""
         if not hasattr(record, "request_id"):
             record.request_id = get_request_id()
         return True
@@ -65,6 +70,7 @@ class JsonFormatter(logging.Formatter):
     """Format log records as single-line JSON objects."""
 
     def format(self, record: logging.LogRecord) -> str:
+        """Render a log record as a single-line, redacted JSON object."""
         payload: dict[str, object] = {
             "request_id": getattr(record, "request_id", UNKNOWN_REQUEST_ID),
             "timestamp": datetime.fromtimestamp(
@@ -93,7 +99,7 @@ _configured = False
 
 
 def configure_logging(level: str = "INFO", *, force: bool = False) -> None:
-    """Configure application and Uvicorn logging as structured JSON."""
+    """Set up structured JSON logging for the app and Uvicorn."""
 
     global _configured
 

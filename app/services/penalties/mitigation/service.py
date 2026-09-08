@@ -1,22 +1,16 @@
-"""Orchestrates one mitigation-ranking run: reload the purchase order's
-already-persisted projection for the day, load cause/cost inputs, run the
-pure engine, persist the ranked options, return the result.
+"""Orchestrates one mitigation-ranking run.
 
-Was `app/services/fine_mitigation/service.py`'s `FineMitigationService`
-(renamed `MitigationService`, folder-split per the approved plan).
-Rewritten against the Phase 2 `common`/`penalties` repositories.
+Reloads the purchase order's already-persisted projection for the day, loads
+cause and cost inputs, runs the pure engine, persists the ranked options, and
+returns the result.
 
-Mirrors `app.services.penalties.projection.service.ProjectionService`'s
-shape. The key difference from that service: mitigation evaluates against
-a projection that has *already run and been persisted*
-(`penalty_projection`, via `PenaltyProjectionRepository`) -- it never calls
-`app.services.penalties.projection.ProjectionEngine.project` itself, except
-indirectly through `ProjectionService.build_snapshot` to reconstruct the
-same `OrderSnapshot` the day's already-persisted projection was computed
-from. This module reconstructs the pure-engine `ProjectionResult` dataclass
-from the persisted rows so
-`app.services.penalties.mitigation.engine.MitigationEngine` (which is typed
-against that dataclass, not a repository dict) can be called unchanged.
+Shape mirrors `ProjectionService`, but mitigation evaluates against a
+projection that has already run and been persisted; it never calls
+`ProjectionEngine.project` itself, except indirectly through
+`ProjectionService.build_snapshot` to rebuild the same `OrderSnapshot` the
+day's projection was computed from. The pure-engine `ProjectionResult`
+dataclass is reconstructed from the persisted rows so `MitigationEngine`,
+typed against that dataclass rather than a repository dict, works unchanged.
 """
 
 from __future__ import annotations
@@ -49,11 +43,12 @@ def _build_projection_result(
     stacking_mode: str,
     day_rows: list[dict],
 ) -> ProjectionResult:
-    """Reconstructs the pure-engine ProjectionResult from persisted
-    penalty_projection rows for one day, the same reconstruction
-    `SummaryServiceBase`'s projection subclass performs for the LLM-context
-    shape -- kept independent here since this needs the actual dataclass,
-    not a Pydantic context row."""
+    """Rebuild the pure-engine `ProjectionResult` from one day's persisted rows.
+
+    The projection summary service performs the same reconstruction for its
+    LLM-context shape, but needs a Pydantic context row rather than the
+    dataclass, so the two are kept independent.
+    """
     violations = [
         ViolationProjection(
             violation_type=row["violation_type"],
@@ -94,6 +89,12 @@ def _build_projection_result(
 
 @dataclass
 class MitigationService:
+    """Evaluates mitigation actions against a single purchase order's projection.
+
+    Mirrors `ProjectionService`'s structure but operates on already-persisted
+    projection data, never re-running the projection engine itself.
+    """
+
     purchase_orders: PurchaseOrderRepository
     rules: PenaltyRuleRepository
     master_data: MasterDataRepository
@@ -107,6 +108,12 @@ class MitigationService:
         purchase_order_id: UUID,
         projection_date: date | None = None,
     ) -> tuple[date, list[MitigationOption]]:
+        """Evaluate and persist mitigation actions for a purchase order's projection.
+
+        `projection_date` defaults to today. Raises `NotFoundError` for an
+        unknown purchase order and `BusinessRuleError` when no projection was
+        persisted for that date, since there is then no baseline to rank against.
+        """
         purchase_order = self.purchase_orders.get_purchase_order(purchase_order_id)
         if purchase_order is None:
             raise NotFoundError(
@@ -128,11 +135,10 @@ class MitigationService:
                 ),
             )
 
-        # "Current" stacking mode, not whatever override (if any) produced
-        # the historical projection -- same choice ProjectionService's own
-        # default path makes; individual violations' expected_penalty_amount
-        # values are computed independently of stacking mode, so only the
-        # aggregate total is affected.
+        # Current stacking mode, not whatever override produced the historical
+        # projection, matching ProjectionService's own default path. Each
+        # violation's expected_penalty_amount is computed independently of
+        # stacking mode, so only the aggregate total is affected.
         stacking_mode = self.master_data.get_stacking_mode(purchase_order["retailer_id"])
         projection = _build_projection_result(purchase_order_id, projection_date, stacking_mode, day_rows)
 

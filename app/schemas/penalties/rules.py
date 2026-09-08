@@ -1,7 +1,4 @@
-"""API schemas for `penalties.penalty_rule`/`penalty_rule_tier`.
-
-Was `app/schemas/fine_rules.py`'s `FineRuleRequest`/`FineRuleResponse`
-(`rule_id` -> `rule_code`, `retailer_id` now a UUID surrogate)."""
+"""API schemas for `penalties.penalty_rule`/`penalty_rule_tier`."""
 
 from __future__ import annotations
 
@@ -13,12 +10,16 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class PenaltyRuleTierSchema(BaseModel):
+    """One rate band of a `calc_type=TIERED` penalty rule."""
+
     band_min: float = Field(ge=0.0, le=1.0)
     band_max: float = Field(ge=0.0, le=1.01)  # 1.01 lets a top band close "30%+" as (0.30, 1.01)
     rate: float
 
 
 class PenaltyRuleRequest(BaseModel):
+    """Request body for creating/updating a `penalty_rule`."""
+
     rule_code: str
     retailer_id: UUID
     violation_type: str
@@ -28,7 +29,7 @@ class PenaltyRuleRequest(BaseModel):
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="FRACTION, e.g. 0.02 for 2% -- never a whole-number percent.",
+        description="FRACTION, e.g. 0.02 for 2%; never a whole-number percent.",
     )
     cap_amount: float | None = None
     grace_period_days: int = 0
@@ -39,12 +40,15 @@ class PenaltyRuleRequest(BaseModel):
 
     @model_validator(mode="after")
     def _tiered_requires_tiers(self) -> PenaltyRuleRequest:
+        """Enforce that a `calc_type=TIERED` rule supplies at least one tier band."""
         if self.calc_type == "TIERED" and not self.tiers:
             raise ValueError("calc_type=TIERED requires at least one tier band")
         return self
 
 
 class PenaltyRuleResponse(BaseModel):
+    """Response shape for a `penalty_rule` row."""
+
     id: UUID
     rule_code: str
     retailer_id: UUID

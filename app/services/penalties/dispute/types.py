@@ -1,32 +1,21 @@
 """Enums, errors, and data structures for the penalty-dispute engine.
 
-Framework-free, same posture as `app.services.penalties.projection.types`:
-no SQLAlchemy/FastAPI imports here or in `engine.py` (this package reuses
-`app.services.penalties.projection.shortage`/`.delay`'s pricing functions
-directly rather than reimplementing them -- see `engine.py`'s docstring).
-Note `app.core.exceptions` itself imports FastAPI (its handler registration
-lives in the same module as the exception classes), so the two error types
-below are plain `ValueError` subclasses, not `app.core.exceptions.
-BusinessRuleError` -- `app.services.penalties.dispute.service.DisputeService.
-analyze` is the only place these get translated into the real
+Framework-free, matching `app.services.penalties.projection.types`: no
+SQLAlchemy or FastAPI imports here or in `engine.py`. `app.core.exceptions`
+registers its FastAPI handlers in the same module as its exception classes, so
+the two error types below subclass plain `ValueError` instead;
+`DisputeResolutionService.analyze` is the only place they become the
 `BusinessRuleError(code=...)` an API caller sees.
 
-`DisputeFacts` is deliberately NOT `app.services.penalties.projection.types.
-OrderSnapshot`: the projection engine's snapshot mixes real facts with
-probability-driving inputs (production_status, appointment_status, carrier
-reliability, ...) that a post-delivery dispute has no use for -- a dispute
-adjudicates what actually happened, not what might happen. `DisputeFacts`
-carries only the real, final facts the pricing functions need, plus
-`grace_period_days` (not a field on
-`app.services.penalties.projection.types.PenaltyRule` -- that dataclass's
-contract is explicitly frozen; see its module docstring).
+`DisputeFacts` is deliberately not `OrderSnapshot`. The projection snapshot
+mixes real facts with probability-driving inputs (production status,
+appointment status, carrier reliability) that a post-delivery dispute has no
+use for. `DisputeFacts` carries only the final facts the pricing functions
+need, plus `grace_period_days`, which `PenaltyRule`'s frozen contract excludes.
 
-`delivered_qty` comes from actual delivery (`common.delivery`/
-`delivery_line`), never from `order_confirmation` -- that table is the
-retailer's pre-delivery promise, not what actually shipped. A dispute
-adjudicates money after the fact, so it must use the real, final quantity
-(see `app.repositories.common.fulfillment.
-get_delivered_quantity_for_purchase_order_not_after`).
+`delivered_qty` comes from actual delivery (`common.delivery`,
+`delivery_line`), never from `order_confirmation`: that table holds the
+retailer's pre-delivery promise, not what actually shipped.
 """
 
 from __future__ import annotations
@@ -37,46 +26,49 @@ from enum import Enum
 
 
 class DisputeVerdict(Enum):
+    """Outcome of comparing the claimed penalty amount against the computed one."""
+
     NO_PAY = "NO_PAY"
     PAY_PARTIAL = "PAY_PARTIAL"
     PAY_FULL = "PAY_FULL"
 
 
 class InsufficientDataForDisputeError(ValueError):
-    """Raised by `engine.price_violation`, before any pricing math, when a
-    fact this violation's family needs was never recorded as-of the
-    historical charge date (`delivered_qty` for SHORTAGE,
-    `actual_delivery_date` for DELAY). Missing must never collapse into
-    "confirmed zero"/"confirmed on time" -- that would let the engine
-    wrongly refuse (or wrongly grant) a charge based on absence of data.
-    `DisputeService.analyze` catches this and re-raises
+    """A fact the violation family needs was never recorded as of the charge date.
+
+    That is `delivered_qty` for SHORTAGE, `actual_delivery_date` for DELAY.
+    Missing must never collapse into "confirmed zero" or "confirmed on time",
+    which would let the engine refuse or grant a charge on absence of data.
+    `DisputeResolutionService.analyze` re-raises this as
     `BusinessRuleError(code="INSUFFICIENT_DATA_FOR_DISPUTE")`, leaving the
-    dispute untouched (still OPEN)."""
+    dispute OPEN.
+    """
 
 
 class UnsupportedDisputeCalcError(ValueError):
-    """Raised by `engine.price_violation` when the effective rule's
-    `calc_type` cannot be priced for this violation family at all --
-    today, only a TIERED delay rule (`price_delay_penalty` has no tiered
-    branch; tiered pricing exists for shortage rules only, banded by
-    shortfall %, not for delay rules banded by days-late). `DisputeService.
-    analyze` catches this and re-raises
-    `BusinessRuleError(code="DISPUTE_CALC_NOT_SUPPORTED")`, leaving the
-    dispute untouched (still OPEN)."""
+    """The effective rule's `calc_type` cannot be priced for this violation family.
+
+    Today that means only a TIERED delay rule: tiered pricing exists for
+    shortage rules alone, banded by shortfall percentage rather than days late.
+    `DisputeResolutionService.analyze` re-raises this as
+    `BusinessRuleError(code="DISPUTE_CALC_NOT_SUPPORTED")`, leaving the dispute
+    OPEN.
+    """
 
 
 @dataclass
 class DisputeFacts:
-    """Real, final post-delivery facts as of the historical charge date --
-    never the probability-driven/risk-adjusted estimates
-    `app.services.penalties.projection` uses."""
+    """Real, final post-delivery facts as of the historical charge date.
+
+    Never the probability-driven estimates `app.services.penalties.projection`
+    works from.
+    """
 
     order_qty: int
     unit_price: float
-    # Real, final delivered quantity as of the charge date -- None means no
-    # delivery fact is on record at all as of that date (never "confirmed
-    # zero"; see InsufficientDataForDisputeError). SHORTAGE-family disputes
-    # only.
+    # Real, final delivered quantity as of the charge date. None means no
+    # delivery fact is on record at that date, never "confirmed zero" (see
+    # InsufficientDataForDisputeError). SHORTAGE-family disputes only.
     delivered_qty: float | None
     required_delivery_date: date
     # None if no delivery/shipment fact is on record yet. DELAY-family
@@ -93,7 +85,7 @@ class DisputeCalculation:
     claimed_amount: float
     delta_amount: float  # claimed_amount - computed_amount
     verdict: DisputeVerdict
-    # Audit trail feeding `analysis_breakdown` -- violation family, the
-    # shortfall/lateness measure actually used, cap info. Never read back
-    # by the engine itself.
+    # Audit trail feeding `analysis_breakdown`: violation family, the shortfall
+    # or lateness measure actually used, cap info. Never read back by the
+    # engine itself.
     calc_trace: dict

@@ -1,3 +1,5 @@
+"""Composition root wiring config, repositories, agents, and LangGraph runtimes into a singleton Container."""
+
 from __future__ import annotations
 
 import logging
@@ -5,9 +7,6 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-# Previous implementation using MemorySaver.
-# Replaced by PostgreSQL Checkpointer for durable LangGraph resume support.
-# from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.postgres import PostgresSaver
 
 from app.agents.cmir.graph import build_graph
@@ -68,6 +67,13 @@ class Container:
 
     @classmethod
     def build(cls) -> Container:
+        """Construct (or return the cached) process-wide Container.
+
+        Wires repositories, agent nodes, and both LangGraph graphs (CMIR
+        and PO validation) against one shared database session and one
+        shared PostgresSaver checkpointer, then caches the result on
+        `_instance` for subsequent calls.
+        """
         if cls._instance is not None:
             return cls._instance
 
@@ -117,8 +123,6 @@ class Container:
         )
 
         logger.info("Initializing LangGraph PostgreSQL Checkpointer...")
-        # Previous implementation using MemorySaver kept for easy rollback.
-        # checkpointer = MemorySaver()
         checkpointer = resources.enter_context(
             PostgresSaver.from_conn_string(checkpoint_dsn(config.database.url, LANGGRAPH_SCHEMA))
         )
@@ -169,6 +173,7 @@ class Container:
 
     @classmethod
     def close(cls) -> None:
+        """Tear down the cached Container's resources and clear the singleton so the next build() starts fresh."""
         if cls._instance is None:
             return
         cls._instance._resource_stack.close()

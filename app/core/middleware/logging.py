@@ -11,6 +11,8 @@ logger = logging.getLogger("app.access")
 
 
 class AccessLogMiddleware:
+    """ASGI middleware that logs one line per HTTP request with method, path, status, and duration."""
+
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
@@ -24,6 +26,7 @@ class AccessLogMiddleware:
         logged = False
 
         def log_once() -> None:
+            """Emit the access-log line once, guarding against the send hook and the finally block both firing."""
             nonlocal logged
 
             if logged:
@@ -49,6 +52,7 @@ class AccessLogMiddleware:
             )
 
         async def send_with_status(message: Message) -> None:
+            """Capture the response status, forward the message, then log once the body is fully sent."""
             nonlocal status
 
             if message["type"] == "http.response.start":

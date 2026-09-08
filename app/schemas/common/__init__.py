@@ -1,11 +1,4 @@
-"""API schemas for the `common` domain: master data, purchase orders,
-fulfillment facts, and PO delivery-change-requests, plus the shared
-`HealthResponse`.
-
-Was the flat `app/schemas/fine_master_data.py`/`orders.py` plus the
-standalone `app/schemas/common.py` (this package's `__init__` absorbs that
-module -- a package and a same-named top-level module can't coexist).
-"""
+"""API schemas for master data, purchase orders, fulfillment facts, and delivery changes."""
 
 from __future__ import annotations
 
@@ -55,6 +48,8 @@ from app.schemas.common.purchase_orders import (
 
 
 class HealthResponse(BaseModel):
+    """Response shape for the service health-check endpoint."""
+
     status: Literal["ok", "degraded"]
     database: Literal["ok", "unreachable"]
 

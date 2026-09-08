@@ -1,6 +1,4 @@
-"""Purchase order header and line -- renamed from `sales_order`/single-line
-combined model. Header/line kept split (not merged) per the ERP redesign:
-a confirmation or delivery can partially cover a multi-line PO."""
+"""Purchase order header and line, split so one confirmation or delivery can partially cover a PO."""
 
 from datetime import date
 from uuid import UUID
@@ -12,6 +10,13 @@ from app.db.base import JSONB_OR_JSON, UUID_PK, Base, TimestampMixin, generate_u
 
 
 class PurchaseOrder(Base, TimestampMixin):
+    """Purchase order header (one row per order).
+
+    Tracks order metadata, retailer assignment, and delivery-negotiation state.
+    Immutable core fields (order_date, requested_delivery_date); current_delivery_date
+    and negotiation_status mutable for delivery change request (DCR) tracking.
+    """
+
     __tablename__ = "purchase_order"
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
@@ -35,6 +40,12 @@ class PurchaseOrder(Base, TimestampMixin):
 
 
 class PurchaseOrderLine(Base, TimestampMixin):
+    """Purchase order line (one or more per purchase order).
+
+    Tracks line-level inventory, pricing, and fulfillment details.
+    Keyed by (purchase_order_id, line_number); immutable after insert.
+    """
+
     __tablename__ = "purchase_order_line"
     __table_args__ = (
         UniqueConstraint("purchase_order_id", "line_number", name="uq_purchase_order_line_po_line_number"),
@@ -55,13 +66,9 @@ class PurchaseOrderLine(Base, TimestampMixin):
         UUID_PK, ForeignKey("retailer_location.id"), nullable=True
     )
     ordered_quantity: Mapped[float] = mapped_column(Numeric(18, 3))
-    # Kept from the pre-ERP-split `sales_order` model (which carried this at
-    # order/single-line granularity): the penalty-projection engine's PERCENT_OF_PO
-    # and TIERED calc types derive po_value = ordered_quantity * unit_price
-    # (see app/services/penalties/projection/{shortage,delay}.py). Not in
-    # docs/redesigned-schema.md's common.po_line table (drafted without this
-    # requirement in view) -- added back at line grain, not header grain, since
-    # price is genuinely per-line, not per-PO.
+    # The projection engine's PERCENT_OF_PO and TIERED calc types derive
+    # po_value = ordered_quantity * unit_price. Price sits at line grain, not
+    # header grain, because it genuinely varies per line.
     unit_price: Mapped[float] = mapped_column(Numeric(10, 2))
     uom: Mapped[str | None] = mapped_column(String(30), nullable=True)
     requested_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)

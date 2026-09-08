@@ -1,8 +1,4 @@
-"""API schemas for the `penalties` domain: rules, projections, mitigations,
-batch job-runs, and the seed/replay admin endpoints.
-
-Was the flat `app/schemas/fine_rules.py`, `fine_projection/*.py`,
-`fine_mitigation/*.py`, `fine_runs.py`, `batches.py`, `admin.py`."""
+"""API schemas for rules, projections, mitigations, batch job runs, and the admin endpoints."""
 
 from __future__ import annotations
 

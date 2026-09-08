@@ -1,11 +1,11 @@
-"""Thin penalty-projection-summary service: delegates the shared
-get_or_schedule/reuse/lifecycle machinery to `SummaryServiceBase`, supplying
-only what's genuinely different -- which repositories back the projection
-history, the projection-summary agent/prompt, and how the mandatory context
-and content fingerprint are assembled.
+"""Penalty-projection-summary service.
 
-Was `app/services/fine_projection/summary.py`'s `FineProjectionSummaryService`.
-Reads/writes the merged `penalties.penalty_summary` table via
+Delegates the shared get_or_schedule, reuse, and lifecycle machinery to
+`SummaryServiceBase`, supplying only the projection-specific parts: which
+repositories back the projection history, which agent and prompt to use, and
+how the mandatory context and content fingerprint are assembled.
+
+Reads and writes the merged `penalties.penalty_summary` table under
 `summary_type=SummaryType.PROJECTION` (see `_summary_base.py`).
 """
 
@@ -44,7 +44,7 @@ from app.repositories.penalties.job_context import PenaltyJobItemContextReposito
 from app.repositories.penalties.summary import PenaltySummaryRepository
 from app.repositories.process.agent_registry import AgentRegistryRepository
 from app.repositories.process.job_queue import JobQueueRepository
-from app.services.penalties._summary_base import (  # noqa: F401 -- SummaryJob re-exported via __init__
+from app.services.penalties._summary_base import (  # noqa: F401  (SummaryJob re-exported via __init__)
     SummaryJob,
     SummaryServiceBase,
 )
@@ -73,10 +73,12 @@ class PenaltyProjectionSummaryOutputWithReuse(PenaltyProjectionSummaryOutput):
 class ProjectionSummaryService(
     SummaryServiceBase[PenaltyProjectionSummaryContext, PenaltyProjectionSummaryOutputWithReuse]
 ):
-    """Thin subclass supplying only what's genuinely different from the
-    mitigation summary service -- the extra, domain-specific repositories,
-    which agent/prompt, and how the mandatory context/fingerprint/tools are
-    built. Everything else is `SummaryServiceBase`'s shared logic."""
+    """Projection-specific half of the shared summary-service machinery.
+
+    Supplies the extra domain repositories, the agent and prompt, and how the
+    mandatory context, fingerprint, and tool set are built.
+    `SummaryServiceBase` owns everything else.
+    """
 
     summary_type = SummaryType.PROJECTION
     summary_domain = "projection"
@@ -128,6 +130,13 @@ class ProjectionSummaryService(
     # ------------------------------------------------------------------
 
     def _validate(self, purchase_order_id: UUID, as_of_date: date | None) -> tuple[dict, date, list[dict]]:
+        """Confirm the purchase order and its projection history exist and are in range.
+
+        `as_of_date` must fall between the earliest recorded projection date and
+        today; a date outside that window has nothing real to narrate. The
+        returned `history` is unbounded, because bounding it to `as_of_date`
+        belongs to `_assemble_mandatory_context`.
+        """
         logger.info(
             "Penalty projection summary requested for purchase_order_id=%s as_of_date=%s",
             purchase_order_id,
@@ -171,18 +180,23 @@ class ProjectionSummaryService(
         return purchase_order, as_of_date, history
 
     def _history_for_generation(self, purchase_order_id: UUID, as_of_date: date) -> list[dict]:
+        """Every projection row on record for this order; the job was validated at schedule time."""
         return self.projections.list_history(purchase_order_id)
 
     def _assemble_mandatory_context(
         self, purchase_order: dict, as_of_date: date, history: list[dict]
     ) -> PenaltyProjectionSummaryContext:
+        """Build the mandatory (non-tool-fetched) LLM context for one projection narrative.
+
+        `history` is bounded to rows on or before `as_of_date` so a backfilled
+        request cannot leak future rows into what the narrative treats as
+        current. `actual_outcomes` stays `None` until the order is DELIVERED,
+        which distinguishes "not yet known" from "known to be empty".
+        """
         purchase_order_id = purchase_order["id"]
         retailer_id = purchase_order["retailer_id"]
         rules = self.rules.list_rules_for_retailer(retailer_id)
 
-        # Bound every history row to <= as_of_date -- otherwise a
-        # historical/backfilled request leaks future rows into the
-        # context and "current" becomes ambiguous.
         bounded_history = [row for row in history if row["projection_date"] <= as_of_date]
 
         active_rules = [
@@ -268,6 +282,12 @@ class ProjectionSummaryService(
         )
 
     def _resolve_sku_description(self, primary_line: dict | None, purchase_order_id: UUID) -> str:
+        """Best-effort human-readable label for the order's primary line.
+
+        Falls back through SKU description, SKU code, retailer material code,
+        material id, then the purchase-order id, so the narrative always has
+        something to reference even when master data is incomplete.
+        """
         if primary_line is None:
             return str(purchase_order_id)
         if primary_line["sku_id"] is not None:
@@ -283,9 +303,11 @@ class ProjectionSummaryService(
     def _build_daily_history(
         self, purchase_order_id: UUID, bounded_history: list[dict]
     ) -> list[DailyHistoryEntry]:
-        """One entry per distinct projection_date, combining that day's
-        engine outputs (from `penalty_projection`, via `bounded_history`)
-        with that day's inputs (via `ProjectionService.build_snapshot`)."""
+        """One entry per distinct projection_date.
+
+        Combines that day's engine outputs from `bounded_history` with that
+        day's inputs from `ProjectionService.build_snapshot`.
+        """
         entries: list[DailyHistoryEntry] = []
 
         for day in sorted({row["projection_date"] for row in bounded_history}):
@@ -340,6 +362,12 @@ class ProjectionSummaryService(
         return _compute_content_fingerprint(context)
 
     def _build_tools(self, purchase_order: dict, as_of_date: date) -> list[BaseTool]:
+        """Build this call's bounded tool set: carrier reliability, actual penalties, tier bands.
+
+        `order_status` is passed through directly rather than wrapped in a tool
+        so the prompt can gate whether the actual-penalties tool is worth
+        calling at all; it returns rows only once the order is DELIVERED.
+        """
         purchase_order_id = purchase_order["id"]
         retailer_id = purchase_order["retailer_id"]
         return build_penalty_projection_summary_tools(
@@ -361,6 +389,7 @@ class ProjectionSummaryService(
         tools: list[BaseTool],
         heartbeat: Callable[[], None] | None,
     ) -> PenaltySummaryOutputBase:
+        """Delegate to `PenaltyProjectionAgent.generate_projection_summary` for the tool-calling loop."""
         return self._agent.generate_projection_summary(
             context,
             order_id=order_id,
@@ -374,6 +403,12 @@ class ProjectionSummaryService(
     # ------------------------------------------------------------------
 
     def _get_carrier_reliability(self, carrier_id: str) -> dict[str, Any]:
+        """Tool implementation: look up a carrier's on-time-reliability record by id.
+
+        `carrier_id` arrives as a raw string from tool-call arguments. Both a
+        malformed and an unknown id degrade to `{"found": False}`, so the agent
+        loop never crashes on a bad lookup.
+        """
         try:
             carrier = self.master_data.get_carrier(UUID(str(carrier_id)))
         except ValueError:
@@ -383,6 +418,12 @@ class ProjectionSummaryService(
         return {**carrier, "found": True}
 
     def _get_tier_bands(self, retailer_id: UUID, rule_id: str) -> dict[str, Any]:
+        """Tool implementation: the tier bands for one TIERED penalty rule, for the agent to cite verbatim.
+
+        Returns `{"rule_id": ..., "found": False}` when the rule can't be
+        resolved for this retailer, so the agent loop degrades gracefully
+        instead of crashing on an unknown or stale `rule_id`.
+        """
         rules = self.rules.list_rules_for_retailer(retailer_id)
         rule = next((rule for rule in rules if rule.rule_id == rule_id), None)
 
@@ -405,12 +446,12 @@ def _fmt_number(value: float) -> str:
 
 
 def _compute_content_fingerprint(context: PenaltyProjectionSummaryContext) -> str:
-    """Hash the facts that determine the generated narrative -- a pure,
-    DB-free function over the engine's outputs for the "current" day plus
-    material facts, deliberately excluding `as_of_date`/
-    `current_projection_date`, any generated-at timestamp, and
-    `days_to_delivery`. Kept as a free function (not a method) so it can be
-    unit-tested without constructing a full `ProjectionSummaryService`.
+    """Hash the facts that determine the generated narrative.
+
+    A pure, DB-free function over the current day's engine outputs and material
+    facts. Deliberately excludes `as_of_date`, `current_projection_date`, any
+    generated-at timestamp, and `days_to_delivery`, so a later re-run over
+    unchanged facts fingerprints identically.
     """
     current_entry = context.daily_history[-1] if context.daily_history else None
 

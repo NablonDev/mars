@@ -1,26 +1,4 @@
-"""CMIR-specific extension tables for `process.job_run`/`process.job_item`.
-
-Kept domain-owned rather than folded into `process`: their columns are
-genuinely different per domain, and a single generic table would need a
-JSONB catch-all, strictly worse than two thin typed extension tables (see
-the approved Phase 1 plan's gap-fill answers).
-
-**Deviation from the approved plan, forced by the plan's own SQLite
-translation rule:** the plan's exact file list says these tables should
-keep the bare names `job_run_context`/`job_item_context` in both `cmir`
-and `penalties` (distinguished only by Postgres schema), with just the
-Python class names prefixed. But section 1.1 of the same plan requires
-`apply_sqlite_schema_translation` to map *all four* schemas to `None` on
-SQLite -- which collapses both same-named tables into one unqualified
-namespace and makes `Base.metadata.create_all()` fail with "table
-job_run_context already exists" (SQLite has no schema concept, so nothing
-short of ATTACHing separate SQLite databases -- out of scope; the plan
-caps `app/db/session.py` changes at two lines -- could keep them apart).
-Table names are prefixed to match the already-adopted Python class prefix
-(`cmir_job_run_context`/`cmir_job_item_context` here,
-`penalty_job_run_context`/`penalty_job_item_context` in
-`app/models/penalties/job_context.py`) instead.
-"""
+"""CMIR-specific extension tables for job run and job item context."""
 
 from uuid import UUID
 
@@ -54,15 +32,12 @@ class CmirJobRunContext(Base, TimestampMixin):
 
 
 class CmirJobItemContext(Base, TimestampMixin):
-    """Extends `process.job_item` with which email or PO line this work
-    item is about.
+    """Extends `process.job_item` with the email or PO line a work item covers.
 
-    Exactly one of `email_event_id` / `purchase_order_line_id` should be
-    set -- enforced by `CHECK (num_nonnulls(email_event_id,
-    purchase_order_line_id) = 1)` on PostgreSQL, declared as raw migration
-    DDL only (see the `cmir` schema revision), never here: `num_nonnulls`
-    doesn't exist on SQLite and would break `Base.metadata.create_all()`
-    for the whole test suite.
+    Exactly one of `email_event_id` or `purchase_order_line_id` is set. The
+    `CHECK (num_nonnulls(...) = 1)` enforcing that lives in raw migration DDL
+    only, because `num_nonnulls` does not exist on SQLite and would break
+    `Base.metadata.create_all()` for the test suite.
     """
 
     __tablename__ = "cmir_job_item_context"

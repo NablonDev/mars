@@ -1,14 +1,4 @@
-"""Repository for the purchase-order header/line pair (`common.purchase_order`,
-`common.purchase_order_line`). Was `app/repositories/order.py`; header/line
-kept split per the ERP redesign (see app/models/common/purchase_order.py) --
-a confirmation or delivery can partially cover a multi-line PO.
-
-Raises the collapsed `NotFoundError(code="PO_NOT_FOUND")` /
-`ConflictError(code="PO_ALREADY_EXISTS")` from `app.core.exceptions`
-(Phase 6 collapse) -- the message is passed the purchase order's business
-number (`purchase_order_number`) or, for id-keyed lookups where no number is
-available, its stringified surrogate id.
-"""
+"""Repository for purchase-order header/line pairs."""
 
 from __future__ import annotations
 
@@ -25,12 +15,10 @@ from app.utils.pagination import parse_cursor
 
 
 def describe_no_open_orders(counts: dict[str, int]) -> str | None:
-    """Explain a zero-OPEN-purchase-order batch, or None when there is
-    nothing to explain (no purchase orders at all, or some are OPEN after
-    all).
+    """Explain a zero-OPEN-purchase-order batch, or None when there is nothing to explain.
 
-    A batch that enqueues nothing because every PO is DELIVERED looks
-    identical to a broken one in the logs, so both callers say which it is.
+    A batch that enqueues nothing because every PO is DELIVERED looks identical to a
+    broken one in the logs, so both callers say which it is.
     """
     if counts.get("OPEN") or not counts:
         return None
@@ -38,12 +26,13 @@ def describe_no_open_orders(counts: dict[str, int]) -> str | None:
     breakdown = ", ".join(f"{status}={count}" for status, count in sorted(counts.items()))
     return (
         f"No OPEN purchase orders to enqueue, but {sum(counts.values())} purchase order(s) exist "
-        f"({breakdown}). Nothing will run until a purchase order is OPEN -- re-seed, or reopen the "
+        f"({breakdown}). Nothing will run until a purchase order is OPEN: re-seed, or reopen the "
         "existing purchase orders."
     )
 
 
 def _purchase_order_to_dict(row: PurchaseOrder) -> dict:
+    """Serialize a PurchaseOrder row into a dict."""
     return {
         "id": row.id,
         "purchase_order_number": row.purchase_order_number,
@@ -56,9 +45,6 @@ def _purchase_order_to_dict(row: PurchaseOrder) -> dict:
         "source_system": row.source_system,
         "source_document_type": row.source_document_type,
         "source_document_number": row.source_document_number,
-        # Raw column values, possibly None -- callers that need the
-        # *effective* date (falling back to requested_delivery_date/
-        # required_ship_date) should COALESCE explicitly.
         "current_delivery_date": row.current_delivery_date,
         "current_required_ship_date": row.current_required_ship_date,
         "negotiation_status": row.negotiation_status,
@@ -66,6 +52,7 @@ def _purchase_order_to_dict(row: PurchaseOrder) -> dict:
 
 
 def _purchase_order_line_to_dict(row: PurchaseOrderLine) -> dict:
+    """Serialize a PurchaseOrderLine row into a dict."""
     return {
         "id": row.id,
         "purchase_order_id": row.purchase_order_id,
@@ -78,11 +65,6 @@ def _purchase_order_line_to_dict(row: PurchaseOrderLine) -> dict:
         "storage_location_id": row.storage_location_id,
         "ship_to_location_id": row.ship_to_location_id,
         "ordered_quantity": float(row.ordered_quantity),
-        # Deliberate Phase 3 fix (flagged in the phase report): omitted here
-        # despite being a real, required column the model comment explains
-        # was added back specifically so the projection engine's
-        # PERCENT_OF_PO/TIERED calc types can read it -- ProjectionService.
-        # build_snapshot's line aggregation needs it.
         "unit_price": float(row.unit_price),
         "uom": row.uom,
         "requested_delivery_date": row.requested_delivery_date,
@@ -94,18 +76,28 @@ def _purchase_order_line_to_dict(row: PurchaseOrderLine) -> dict:
 
 
 class PurchaseOrderRepository:
+    """Access layer for purchase_order and purchase_order_line facts.
+
+    Also owns the PO's status transitions and the negotiation-lifecycle
+    fields (`current_delivery_date`, `current_required_ship_date`,
+    `negotiation_status`) that `PoDeliveryChangeRequestService` alone writes.
+    """
+
     def __init__(self, session: Session) -> None:
         self._session = session
 
     def _get_row(self, purchase_order_id: UUID) -> PurchaseOrder | None:
+        """Fetch the ORM row for a purchase order id, or None if not found."""
         return self._session.get(PurchaseOrder, purchase_order_id)
 
     def _get_row_by_number(self, purchase_order_number: str) -> PurchaseOrder | None:
+        """Fetch the ORM row for a purchase order number, or None if not found."""
         return self._session.scalars(
             select(PurchaseOrder).where(PurchaseOrder.purchase_order_number == purchase_order_number)
         ).first()
 
     def _get_line_row(self, purchase_order_line_id: UUID) -> PurchaseOrderLine | None:
+        """Fetch the ORM row for a purchase order line id, or None if not found."""
         return self._session.get(PurchaseOrderLine, purchase_order_line_id)
 
     # ------------------------------------------------------------------
@@ -113,6 +105,7 @@ class PurchaseOrderRepository:
     # ------------------------------------------------------------------
 
     def create_purchase_order(self, purchase_order_number: str, **fields) -> dict:
+        """Create a purchase order, raising `ConflictError` if `purchase_order_number` already exists."""
         if self._get_row_by_number(purchase_order_number) is not None:
             raise ConflictError(
                 code="PO_ALREADY_EXISTS",
@@ -125,14 +118,17 @@ class PurchaseOrderRepository:
         return _purchase_order_to_dict(row)
 
     def get_purchase_order(self, purchase_order_id: UUID) -> dict | None:
+        """Fetch a purchase order by id, or None if not found."""
         row = self._get_row(purchase_order_id)
         return _purchase_order_to_dict(row) if row is not None else None
 
     def get_by_number(self, purchase_order_number: str) -> dict | None:
+        """Fetch a purchase order by its business number, or None if not found."""
         row = self._get_row_by_number(purchase_order_number)
         return _purchase_order_to_dict(row) if row is not None else None
 
     def require_purchase_order(self, purchase_order_id: UUID) -> dict:
+        """Fetch a purchase order by id, raising `NotFoundError` if it doesn't exist."""
         purchase_order = self.get_purchase_order(purchase_order_id)
         if purchase_order is None:
             raise NotFoundError(
@@ -147,11 +143,7 @@ class PurchaseOrderRepository:
         order_status: str | None = None,
         purchase_order_ids: list[UUID] | None = None,
     ) -> list[dict]:
-        """`purchase_order_ids`, when given, restricts the result to those
-        ids -- AND'd with `order_status` if both are given (the
-        `PenaltyFullRunScope` schema validator normally prevents both being
-        meaningfully set at once; this stays additive and doesn't crash
-        either way)."""
+        """List purchase orders, narrowed by `order_status` and `purchase_order_ids` (AND'd)."""
         stmt = select(PurchaseOrder)
         if order_status:
             stmt = stmt.where(PurchaseOrder.order_status == order_status)
@@ -169,6 +161,7 @@ class PurchaseOrderRepository:
         return {status: count for status, count in rows}
 
     def set_order_status(self, purchase_order_id: UUID, order_status: str) -> None:
+        """Set a purchase order's `order_status`, raising `NotFoundError` if it doesn't exist."""
         row = self._get_row(purchase_order_id)
         if row is None:
             raise NotFoundError(
@@ -185,10 +178,11 @@ class PurchaseOrderRepository:
         current_delivery_date: date,
         current_required_ship_date: date,
     ) -> None:
-        """Apply an accepted/countered delivery-date change to the PO's
-        effective dates. See PoDeliveryChangeRequestService --
-        the only intended caller, since these two columns are otherwise
-        immutable after PO creation."""
+        """Apply an accepted or countered date change to the PO's effective dates.
+
+        `PoDeliveryChangeRequestService` is the only intended caller: both columns are
+        otherwise immutable after PO creation.
+        """
         row = self._get_row(purchase_order_id)
         if row is None:
             raise NotFoundError(
@@ -201,10 +195,7 @@ class PurchaseOrderRepository:
         self._session.flush()
 
     def update_negotiation_status(self, purchase_order_id: UUID, negotiation_status: str) -> None:
-        """Set `PurchaseOrder.negotiation_status`. SINGLE WRITER: only
-        `PoDeliveryChangeRequestService` may call this -- see the
-        column comment on `PurchaseOrder.negotiation_status` for the full
-        rule."""
+        """Set `negotiation_status`; `PoDeliveryChangeRequestService` is its only writer."""
         row = self._get_row(purchase_order_id)
         if row is None:
             raise NotFoundError(
@@ -220,6 +211,7 @@ class PurchaseOrderRepository:
     # ------------------------------------------------------------------
 
     def add_line(self, purchase_order_id: UUID, line_number: str, ordered_quantity: float, **fields) -> dict:
+        """Create a purchase order line under an existing purchase order."""
         row = PurchaseOrderLine(
             purchase_order_id=purchase_order_id,
             line_number=line_number,
@@ -231,16 +223,12 @@ class PurchaseOrderRepository:
         return _purchase_order_line_to_dict(row)
 
     def get_line(self, purchase_order_line_id: UUID) -> dict | None:
+        """Fetch a purchase order line by id, or None if not found."""
         row = self._get_line_row(purchase_order_line_id)
         return _purchase_order_line_to_dict(row) if row is not None else None
 
     def update_line_status(self, purchase_order_line_id: UUID, line_status: str) -> None:
-        """Deliberate Phase 3 addition (flagged in the phase report):
-        deferred by Phase 2, no `purchase_order_line.line_status` writer
-        existed at all. `PoValidationService`'s own transitions (e.g.
-        AWAITING_DECISION on first interrupt) need one directly -- the old
-        pre-restructure service called this same shape
-        (`PoLineRepository.update_status`) itself, not a graph node."""
+        """Set a PO line's `line_status`, raising `NotFoundError` if the line is unknown."""
         row = self._get_line_row(purchase_order_line_id)
         if row is None:
             raise NotFoundError(
@@ -252,6 +240,7 @@ class PurchaseOrderRepository:
         self._session.flush()
 
     def list_lines(self, purchase_order_id: UUID) -> list[dict]:
+        """List all lines for a purchase order, ordered by line number."""
         rows = self._session.scalars(
             select(PurchaseOrderLine)
             .where(PurchaseOrderLine.purchase_order_id == purchase_order_id)
@@ -267,18 +256,13 @@ class PurchaseOrderRepository:
         limit: int = 50,
         cursor: str | None = None,
     ) -> tuple[list[dict], str | None]:
-        """Cross-PO `purchase_order_line` listing filtered by `line_status`
-        (a single value, or any of a sequence), paginated on `updated_at` --
-        same cursor convention as `WorkflowThreadRepository.list_threads`
-        (`app.utils.pagination.parse_cursor`). `line_status=None` lists
-        every line regardless of status.
+        """List `purchase_order_line` rows across POs by status, newest first.
 
-        `purchase_order_id`, when given, scopes the listing to one PO's own
-        lines (SQL-filtered, replacing what used to be the separate
-        `list_lines(purchase_order_id)` nested route) -- combines with
-        `line_status` rather than overriding it, so `purchase_order_id=<id>,
-        line_status=None` still returns that PO's lines regardless of
-        status."""
+        `line_status` takes a single value or a sequence; `None` lists every status.
+        `purchase_order_id` narrows the listing to one PO and combines with
+        `line_status` rather than replacing it. Pagination is keyed on `updated_at`,
+        the same cursor convention as `WorkflowThreadRepository.list_threads`.
+        """
         stmt = select(PurchaseOrderLine)
         if purchase_order_id is not None:
             stmt = stmt.where(PurchaseOrderLine.purchase_order_id == purchase_order_id)
@@ -301,11 +285,11 @@ class PurchaseOrderRepository:
         plant_id: UUID,
         exclude_purchase_order_id: UUID,
     ) -> list[UUID]:
-        """Other OPEN purchase orders whose line draws on the same
-        material/plant (production line). Mirrors the old
-        list_open_orders_for_sku_location, re-keyed on
-        (material_id, plant_id) -- production_schedule's own key -- rather
-        than (sku_id, location_id)."""
+        """Return other OPEN purchase orders drawing on the same material and plant.
+
+        Keyed on (material_id, plant_id) to match `production_schedule`, so the result
+        is every order competing for the same production line.
+        """
         rows = self._session.scalars(
             select(PurchaseOrderLine.purchase_order_id)
             .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
@@ -324,12 +308,7 @@ class PurchaseOrderRepository:
     # ------------------------------------------------------------------
 
     def truncate_all(self) -> None:
-        """Deletes every purchase_order_line row, then every purchase_order
-        row. Caller must first clear every other table that FK-references
-        either (order_confirmation*, delivery*, shipment, production_*,
-        demand_exception -- see FulfillmentRepository.truncate_all --
-        plus mitigation_input/mitigation_option and the penalties tables)
-        in FK-safe order before calling this."""
+        """Delete both PO tables; every FK-referencing table must be cleared first."""
         self._session.execute(delete(PurchaseOrderLine))
         self._session.execute(delete(PurchaseOrder))
         self._session.flush()

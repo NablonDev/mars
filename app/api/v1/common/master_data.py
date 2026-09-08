@@ -1,7 +1,8 @@
-"""API endpoints for `common`-schema master data: retailers, retailer-owned
-locations, SKUs, materials/material-masters, plants, and carriers.
+"""API endpoints for `common`-schema master data.
 
-Was `app/api/v1/fine_master_data.py`."""
+Covers retailers, retailer-owned locations, SKUs, materials and
+material-masters, plants, and carriers.
+"""
 
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ def create_retailer(
     body: RetailerRequest,
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[RetailerResponse]:
+    """Create a new retailer record."""
     created = master_data.add_retailer(**body.model_dump())
     return success_envelope(RetailerResponse.model_validate(created), message="Retailer created.")
 
@@ -46,6 +48,7 @@ def create_retailer(
 def list_retailers(
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[list[RetailerResponse]]:
+    """List all retailers."""
     rows = [RetailerResponse.model_validate(r) for r in master_data.list_retailers()]
     return success_envelope(rows)
 
@@ -60,6 +63,7 @@ def create_retailer_location(
     body: RetailerLocationRequest,
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[RetailerLocationResponse]:
+    """Create a location for a retailer."""
     created = master_data.add_retailer_location(retailer_id=retailer_id, **body.model_dump())
     return success_envelope(RetailerLocationResponse.model_validate(created), message="Location created.")
 
@@ -69,6 +73,7 @@ def list_retailer_locations(
     retailer_id: UUID,
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[list[RetailerLocationResponse]]:
+    """List all locations for a retailer."""
     rows = [
         RetailerLocationResponse.model_validate(r) for r in master_data.list_retailer_locations(retailer_id)
     ]
@@ -80,6 +85,7 @@ def create_sku(
     body: SkuRequest,
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[SkuResponse]:
+    """Create a new SKU (stock keeping unit)."""
     created = master_data.add_sku(**body.model_dump())
     return success_envelope(SkuResponse.model_validate(created), message="SKU created.")
 
@@ -88,6 +94,7 @@ def create_sku(
 def list_skus(
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[list[SkuResponse]]:
+    """List all SKUs."""
     rows = [SkuResponse.model_validate(r) for r in master_data.list_skus()]
     return success_envelope(rows)
 
@@ -97,6 +104,7 @@ def create_material(
     body: MaterialRequest,
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[MaterialResponse]:
+    """Create a new material."""
     created = master_data.add_material(**body.model_dump())
     return success_envelope(MaterialResponse.model_validate(created), message="Material created.")
 
@@ -105,6 +113,7 @@ def create_material(
 def list_materials(
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[list[MaterialResponse]]:
+    """List all materials."""
     rows = [MaterialResponse.model_validate(r) for r in master_data.list_materials()]
     return success_envelope(rows)
 
@@ -118,6 +127,7 @@ def create_material_master(
     body: MaterialMasterRequest,
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[MaterialMasterResponse]:
+    """Create a material master record."""
     created = master_data.add_material_master(**body.model_dump())
     return success_envelope(
         MaterialMasterResponse.model_validate(created), message="Material master created."
@@ -128,6 +138,7 @@ def create_material_master(
 def list_material_masters(
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[list[MaterialMasterResponse]]:
+    """List all material masters."""
     rows = [MaterialMasterResponse.model_validate(r) for r in master_data.list_material_masters()]
     return success_envelope(rows)
 
@@ -137,6 +148,7 @@ def create_plant(
     body: PlantRequest,
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[PlantResponse]:
+    """Create a new plant (manufacturing facility)."""
     created = master_data.add_plant(**body.model_dump())
     return success_envelope(PlantResponse.model_validate(created), message="Plant created.")
 
@@ -145,6 +157,7 @@ def create_plant(
 def list_plants(
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[list[PlantResponse]]:
+    """List all plants."""
     rows = [PlantResponse.model_validate(r) for r in master_data.list_plants()]
     return success_envelope(rows)
 
@@ -154,6 +167,7 @@ def create_carrier(
     body: CarrierRequest,
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[CarrierResponse]:
+    """Create a new carrier (shipping provider)."""
     created = master_data.add_carrier(**body.model_dump())
     return success_envelope(CarrierResponse.model_validate(created), message="Carrier created.")
 
@@ -162,6 +176,7 @@ def create_carrier(
 def list_carriers(
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[list[CarrierResponse]]:
+    """List all carriers."""
     rows = [CarrierResponse.model_validate(r) for r in master_data.list_carriers()]
     return success_envelope(rows)
 
@@ -171,6 +186,10 @@ def get_carrier(
     carrier_id: UUID,
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> Envelope[CarrierResponse]:
+    """Retrieve a single carrier by its ID.
+
+    Raises 404 if no carrier exists with that id.
+    """
     row = master_data.get_carrier(carrier_id)
     if row is None:
         raise NotFoundError(

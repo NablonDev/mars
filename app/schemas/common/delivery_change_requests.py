@@ -1,11 +1,4 @@
-"""API schemas for `po_delivery_change_request` (common/unqualified schema).
-
-Was `app/schemas/fine_projection/po_delivery_change_requests.py`. Flattened
-to `/delivery-change-requests` (was nested under
-`/purchase-orders/{purchase_order_id}/delivery-change-requests`) -- see
-`app/api/v1/common/delivery_change_requests.py`'s module docstring for
-the same flattening rationale already applied to
-`app.api.v1.penalties.projections`/`mitigations`."""
+"""API schemas for `po_delivery_change_request` (unqualified schema)."""
 
 from __future__ import annotations
 
@@ -26,21 +19,14 @@ class DeliveryChangeRequestCreate(BaseModel):
 
 
 class DeliveryChangeResponseRequest(BaseModel):
-    """Body for POST .../delivery-change-requests/{delivery_change_request_id}/response --
-    mock/manual retailer-response entry.
-
-    Only self-contained validation lives here (presence of
-    countered_delivery_date iff decision == COUNTERED); the "must fall
-    strictly between baseline_delivery_date and proposed_delivery_date" rule
-    needs the stored request row and is enforced in
-    PoDeliveryChangeRequestService.record_response.
-    """
+    """Manual retailer-response entry for `POST .../{delivery_change_request_id}/response`."""
 
     decision: Literal["ACCEPTED", "COUNTERED", "REJECTED"]
     countered_delivery_date: date | None = None
 
     @model_validator(mode="after")
     def _countered_date_matches_decision(self) -> DeliveryChangeResponseRequest:
+        """Enforce that `countered_delivery_date` is set if and only if `decision` is COUNTERED."""
         if self.decision == "COUNTERED" and self.countered_delivery_date is None:
             raise ValueError("countered_delivery_date is required when decision=COUNTERED")
         if self.decision != "COUNTERED" and self.countered_delivery_date is not None:
@@ -49,6 +35,8 @@ class DeliveryChangeResponseRequest(BaseModel):
 
 
 class DeliveryChangeRequestResponse(BaseModel):
+    """Response shape for a `po_delivery_change_request` row."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID

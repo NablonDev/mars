@@ -21,6 +21,11 @@ def create_penalty_rule(
     body: PenaltyRuleRequest,
     rules: PenaltyRuleRepository = Depends(get_penalty_rule_repository),
 ) -> Envelope[PenaltyRuleResponse]:
+    """Create a penalty rule for a retailer's violation type.
+
+    Passes through the calculation config (rate, threshold, cap, grace
+    period, effective dates) and any tiered-rate schedule as-is.
+    """
     tiers = [t.model_dump() for t in body.tiers] if body.tiers else None
     created = rules.add_rule(
         rule_code=body.rule_code,
@@ -44,5 +49,6 @@ def list_penalty_rules(
     retailer_id: UUID | None = Query(default=None),
     rules: PenaltyRuleRepository = Depends(get_penalty_rule_repository),
 ) -> Envelope[list[PenaltyRuleResponse]]:
+    """List all penalty rules, optionally filtered by retailer."""
     rows = [PenaltyRuleResponse.model_validate(r) for r in rules.list_rules(retailer_id)]
     return success_envelope(rows)
