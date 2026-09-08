@@ -261,7 +261,7 @@ def test_delay_one_day_beyond_grace_period_is_penalized():
 def test_delay_tiered_raises_unsupported_calc():
     """Known, documented gap inherited unchanged from
     `app.services.penalties.projection.delay.price_delay_penalty` -- tiered
-    pricing is implemented for shortage rules only. `DisputeService.analyze`
+    pricing is implemented for shortage rules only. `DisputeResolutionService.analyze`
     is the layer that turns this into a `BusinessRuleError(code=
     "DISPUTE_CALC_NOT_SUPPORTED")`."""
     rule = PenaltyRule(

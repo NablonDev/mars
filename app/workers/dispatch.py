@@ -1,18 +1,7 @@
-"""Execute one claimed job item.
+"""Dispatch table routing one claimed job item to its domain worker.
 
-Dispatch table only -- the actual per-task-type work lives in the two
-domain modules this file imports from (`app/workers/penalty_projection.py`,
-`app/workers/penalty_mitigation.py`, was `fine_projection.py`/
-`fine_mitigation.py` -- `fine`/`fines` -> `penalty`/`penalties` rename, per
-the approved plan's naming convention). This split keeps the two penalty
-sub-domains' job-execution logic from being interleaved in one function,
-which used to make it easy to change one domain's handling and miss the
-other's.
-
-`ClaimedJob.task_type` was renamed `item_type` (see `app.queue.types`'
-module docstring -- it matches `process.job_item.item_type`, the real
-discriminator column, now that the domain-shaped business key moved off
-`ClaimedJob` entirely).
+Nothing but routing lives here: the per-task-type work sits in the domain modules
+imported below, so the penalty sub-domains' execution logic never interleaves.
 """
 
 from __future__ import annotations
@@ -33,31 +22,19 @@ from app.workers.penalty_projection import run_projection, run_summary
 def execute_job(
     job: ClaimedJob,
     database: Database,
-    # Part of the fixed handler contract (see loop.py's execute_job_fn seam) --
-    # unused today, kept so a future settings-driven knob needs no signature change.
+    # Part of the fixed handler contract (see loop.py's execute_job_fn seam): unused
+    # today, kept so a future settings-driven knob needs no signature change.
     settings: Settings,
     llm: AzureOpenAIChatClient,
     heartbeat: Callable[[], None] | None = None,
 ) -> None:
-    """Execute one job; exception classification is handled by the worker loop.
+    """Execute one job; the worker loop classifies any exception raised here.
 
-    ORDER_RUN runs projection then summary. PROJECTION_SUMMARY_REGEN runs summary only
-    and requires an existing projection. MITIGATION_RUN computes and persists
-    fresh mitigation options for a purchase order against its already-
-    persisted projection (dispatched from the PENALTY_MITIGATION_BATCH
-    entry point, `app/api/v1/job_runs.py::_trigger_penalty_mitigation_batch`
-    -- mitigation options are also still computable synchronously via the
-    single-PO API route, `app/api/v1/penalties/mitigations.py`, unchanged by
-    this addition). MITIGATION_SUMMARY_REGEN runs the mitigation summary
-    only and requires already-persisted mitigation options
-    (mitigation_option). DISPUTE_SUMMARY_REGEN generates only the LLM
-    narrative for an already-ANALYZED `penalty_dispute` row -- the verdict
-    itself is always computed synchronously via the API
-    (`app/api/v1/penalties/disputes.py`), never by a queued job. PENALTY_FULL_RUN (dispatched from
-    PENALTY_FULL_RUN_BATCH,
-    `app/api/v1/job_runs.py::_trigger_penalty_full_run_batch`) runs only the
-    requested subset of the four steps above, in that fixed dependency
-    order -- see `app/workers/penalty_full_run.py::run_full_run`.
+    Each regeneration type requires its upstream facts to be persisted already: a
+    projection for PROJECTION_SUMMARY_REGEN, mitigation options for
+    MITIGATION_SUMMARY_REGEN, and an ANALYZED penalty_dispute for
+    DISPUTE_SUMMARY_REGEN, whose verdict only ever comes from the synchronous API.
+    PENALTY_FULL_RUN runs the requested subset of the other steps in dependency order.
     """
     if job.item_type == JobTaskType.ORDER_RUN:
         run_projection(job, database)

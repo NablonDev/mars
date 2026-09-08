@@ -1,8 +1,4 @@
-"""API schemas for `penalties.penalty_dispute` requests/responses and the
-dispute-summary trigger/poll contract. Mirrors
-`app.schemas.penalties.projections`'s shape for the summary
-request/response/status trio.
-"""
+"""API schemas for `penalties.penalty_dispute` and its summary trigger/poll contract."""
 
 from __future__ import annotations
 
@@ -25,11 +21,9 @@ class DisputeOpenRequest(BaseModel):
 
 
 class DisputeResolveRequest(BaseModel):
-    """Body for POST /penalties/disputes/{dispute_id}/resolve. Accepting the
-    engine's own verdict: omit `override_verdict`. Overriding it:
-    `override_reason` is required -- same "field X required when field Y is
-    set" validator convention as
-    `app.schemas.common.delivery_change_requests.DeliveryChangeResponseRequest`.
+    """Body for `POST /penalties/disputes/{dispute_id}/resolve`.
+
+    Omit `override_verdict` to accept the engine's own verdict.
     """
 
     resolved_by: str
@@ -38,6 +32,7 @@ class DisputeResolveRequest(BaseModel):
 
     @model_validator(mode="after")
     def _override_reason_required_with_override_verdict(self) -> DisputeResolveRequest:
+        """Enforce that `override_reason` is set if and only if `override_verdict` is set."""
         if self.override_verdict is not None and not self.override_reason:
             raise ValueError("override_reason is required when override_verdict is set")
         if self.override_verdict is None and self.override_reason is not None:
@@ -46,6 +41,8 @@ class DisputeResolveRequest(BaseModel):
 
 
 class DisputeAnalysisBreakdownFacts(BaseModel):
+    """Raw order/delivery facts the dispute engine used to compute its verdict."""
+
     order_qty: int
     unit_price: float
     delivered_qty: float | None = None
@@ -58,6 +55,8 @@ class DisputeAnalysisBreakdownFacts(BaseModel):
 
 
 class DisputeAnalysisBreakdown(BaseModel):
+    """Explanation of a dispute's verdict: the rule applied, the facts, and the delta."""
+
     rule_id: str
     rule_code: str
     calc_type: str
@@ -72,6 +71,8 @@ class DisputeAnalysisBreakdown(BaseModel):
 
 
 class DisputeResponse(BaseModel):
+    """Response shape for a `penalty_dispute` row."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -101,6 +102,8 @@ class DisputeSummaryRequest(BaseModel):
 
 
 class DisputeSummaryResponse(BaseModel):
+    """Response shape for a generated dispute narrative summary."""
+
     model_config = ConfigDict(from_attributes=True)
 
     order_id: str
@@ -115,9 +118,7 @@ class DisputeSummaryResponse(BaseModel):
 
 
 class DisputeSummaryStatusResponse(BaseModel):
-    """Same "genuine never-requested state is success, not 404" convention
-    as `PenaltyProjectionSummaryStatusResponse` -- see that model's
-    docstring."""
+    """Poll response for a dispute summary; a null `status` means never requested, not missing."""
 
     dispute_id: UUID
     as_of_date: date | None

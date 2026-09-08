@@ -23,6 +23,11 @@ def create_app(
     po_service: PoValidationService | None = None,
     settings: Settings | None = None,
 ) -> FastAPI:
+    """Build the FastAPI app, wiring middleware, routers, and exception handlers.
+
+    `service`/`po_service` let tests inject fakes directly; left as None, the
+    lifespan builds the real LangGraph-backed services on startup instead.
+    """
     resolved = settings or get_settings()
     configure_logging(resolved.app.log_level)
 
@@ -36,9 +41,9 @@ def create_app(
             pool_timeout=resolved.database.pool_timeout,
         )
         app.state.job_queue = build_job_queue(resolved, app.state.database)
-        # CMIR/PO-validation services carry their own composition root
-        # (LangGraph + a shared Postgres checkpointer) -- built here unless a
-        # test already injected a fake via create_app(service=...).
+        # CMIR/PO-validation services carry their own composition root (LangGraph
+        # plus a shared Postgres checkpointer), built here unless a test already
+        # injected a fake via create_app(service=...).
         if app.state.service is None:
             app.state.service = build_service()
         if app.state.po_service is None:

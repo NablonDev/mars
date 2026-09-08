@@ -1,8 +1,4 @@
-"""Calculates shortage probability and shortage-related penalties.
-
-Moved unchanged from `app/services/fine_projection/shortage.py` (Phase 3 --
-services move/folder-split); only the import path below changed.
-"""
+"""Shortage probability and pricing calculations."""
 
 from app.services.penalties.projection.types import CalcType, OrderSnapshot, PenaltyRule, ProductionStatus
 
@@ -24,6 +20,11 @@ SHORTAGE_LOCKED_IN_PROBABILITY = 0.95
 
 
 def _gap_points(gap_pct: float) -> int:
+    """Score the confirmed shortfall gap, as a fraction of order_qty, toward the composite risk score.
+
+    Ceilings at 40, weighting an already-confirmed cut above the status and
+    days-to-delivery components, which are weaker evidence.
+    """
     if gap_pct <= 0:
         return 0
     if gap_pct < 0.10:
@@ -34,6 +35,7 @@ def _gap_points(gap_pct: float) -> int:
 
 
 def _days_points(days_to_delivery: int) -> int:
+    """Score how little time remains to close a shortfall before the requested delivery date."""
     if days_to_delivery >= 8:
         return 0
     if days_to_delivery >= 4:
@@ -44,6 +46,11 @@ def _days_points(days_to_delivery: int) -> int:
 
 
 def _score_to_probability(score: int) -> float:
+    """Map the composite shortage risk score onto a calibrated probability.
+
+    Anything above the top band falls through to 0.92, never a full 1.0: even
+    a heavily-scored order can still recover before requested delivery.
+    """
     bands = [(10, 0.05), (25, 0.15), (45, 0.35), (65, 0.55), (85, 0.75)]
     for upper, prob in bands:
         if score <= upper:
@@ -52,7 +59,13 @@ def _score_to_probability(score: int) -> float:
 
 
 def _demand_exception_points(s: OrderSnapshot) -> int:
-    # Count the exception only before a confirmed cut or status escalation.
+    """Add a small early-warning score for a flagged demand exception.
+
+    Counts only while the order is still ON_TRACK with quantity fully
+    confirmed. Once status escalates or a real gap opens, `_gap_points` and
+    `STATUS_POINTS` capture the same signal, and scoring it here as well
+    would overweight it.
+    """
     if (
         s.demand_exception_flagged
         and s.production_status == ProductionStatus.ON_TRACK
@@ -63,6 +76,12 @@ def _demand_exception_points(s: OrderSnapshot) -> int:
 
 
 def compute_shortage_probability(s: OrderSnapshot) -> float:
+    """Estimate the probability this order ships short of its full order quantity.
+
+    Short-circuits to `SHORTAGE_LOCKED_IN_PROBABILITY` once shipment has
+    happened with a gap already confirmed. That constant is 0.95 rather than
+    1.0 because a correction can still be recorded after the fact.
+    """
     actual_shortfall = s.order_qty - s.confirmed_qty
     if s.actual_ship_date is not None and actual_shortfall > 0:
         return SHORTAGE_LOCKED_IN_PROBABILITY
@@ -79,8 +98,7 @@ def compute_shortage_probability(s: OrderSnapshot) -> float:
 
 
 def shortfall_units_for_pricing(s: OrderSnapshot) -> float:
-    """Real confirmed shortfall if one exists, otherwise a risk-adjusted
-    estimate driven by production status. Real data always wins."""
+    """Confirmed shortfall when one exists, otherwise a status-driven estimate."""
     actual_shortfall = s.order_qty - s.confirmed_qty
     if actual_shortfall > 0:
         return float(actual_shortfall)
@@ -88,17 +106,29 @@ def shortfall_units_for_pricing(s: OrderSnapshot) -> float:
 
 
 def _price_tiered(rule: PenaltyRule, measure: float, po_value: float) -> float:
+    """Price a TIERED rule from the single band containing `measure`.
+
+    Bands are half-open (`band_min <= measure < band_max`), so no boundary is
+    ambiguous. Returns 0.0 both for a rule with no tiers and for a `measure`
+    above every band: a gap left at the top means no penalty, not an error.
+    """
     if not rule.tiers:
         return 0.0
     for tier in rule.tiers:
         if tier.band_min <= measure < tier.band_max:
             return tier.rate * po_value
-    return 0.0  # measure fell above every defined band -- no matching tier
+    return 0.0
 
 
 def price_shortage_penalty(
     rule: PenaltyRule, order_qty: int, unit_price: float, shortfall_units: float
 ) -> float:
+    """Price a shortage violation's monetary penalty under one rule's calc_type.
+
+    `threshold_pct` is a grace band: only the shortfall beyond
+    `threshold_pct * order_qty` is penalized, and a shortfall fully inside the
+    band prices to 0.0 regardless of calc_type.
+    """
     threshold_units = rule.threshold_pct * order_qty
     penalized_units = max(0.0, shortfall_units - threshold_units)
     if penalized_units <= 0:

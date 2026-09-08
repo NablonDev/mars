@@ -1,10 +1,4 @@
-"""`DisputeAgent`: owns the bounded tool-calling loop for dispute-summary
-generation. Structurally identical to
-`app.agents.penalties.projection.agent.PenaltyProjectionAgent` -- see that
-module's docstring for the shared reasoning (system prompt loaded from
-`process.agent`'s active row, not the `prompts.v1` import directly;
-`MAX_TOOL_ROUNDS` bound).
-"""
+"""Bounded tool-calling loop for penalty dispute summary generation."""
 
 from __future__ import annotations
 
@@ -32,17 +26,19 @@ _UPSTREAM_FAILURE_CODE = "PENALTY_DISPUTE_SUMMARY_UPSTREAM_FAILED"
 
 
 def _json_default(value: Any) -> Any:
+    """Serialize a date as ISO 8601; fall back to str() for anything else json.dumps can't handle."""
     if isinstance(value, date):
         return value.isoformat()
     return str(value)
 
 
 def _wrap_data(payload: dict | list) -> str:
+    """Serialize payload and wrap it in <DATA> tags marking it as untrusted, non-instructional content."""
     body = json.dumps(payload, default=_json_default, sort_keys=True)
     return f"<DATA>\n{body}\n</DATA>"
 
 
-class DisputeAgent:
+class DisputeResolutionAgent:
     """The dispute sub-domain's LLM tool-calling loop."""
 
     def __init__(
@@ -67,6 +63,15 @@ class DisputeAgent:
         tools: list[BaseTool],
         heartbeat: Callable[[], None] | None = None,
     ) -> DisputeSummaryOutput:
+        """Run the bounded tool-calling loop and return the dispute-narration summary.
+
+        Seeds the conversation with the active dispute-agent's system prompt and the
+        dispute context wrapped as untrusted <DATA>, then lets the model call the
+        supplied tools for up to MAX_TOOL_ROUNDS - 1 rounds before forcing a final,
+        tool-free response. Invokes heartbeat (if given) before each LLM call so a
+        long-running worker isn't reaped mid-generation. Raises ExternalServiceError
+        if the provider call fails or the model returns no usable text.
+        """
         active_agent = self._active_agent_row()
         messages: list[BaseMessage] = [
             SystemMessage(content=active_agent["system_prompt"]),
@@ -142,6 +147,7 @@ class DisputeAgent:
         )
 
     def _active_agent_row(self) -> dict:
+        """Fetch the active process.agent row for this agent code, or raise ExternalServiceError."""
         active = self._agent_registry.get_active(self._agent_code)
         if active is None:
             raise ExternalServiceError(
@@ -155,6 +161,7 @@ class DisputeAgent:
 
     @staticmethod
     def _invoke_heartbeat(heartbeat: Callable[[], None] | None, order_id: str) -> None:
+        """Best-effort heartbeat; callback failures never abort generation."""
         if heartbeat is None:
             return
         try:

@@ -1,10 +1,4 @@
-"""Repository for `penalties.penalty_dispute`.
-
-Modeled after `app.repositories.common.delivery_change_request.
-PoDeliveryChangeRequestRepository` (create/get/list/find-active/record-
-terminal-state/truncate) -- see `app.models.penalties.dispute.PenaltyDispute`'s
-module docstring for the full shape rationale.
-"""
+"""Repository for penalty_dispute."""
 
 from __future__ import annotations
 
@@ -21,6 +15,7 @@ _ACTIVE_STATUSES = (DisputeStatus.OPEN, DisputeStatus.ANALYZED)
 
 
 def _to_dict(row: PenaltyDispute) -> dict:
+    """Serialize a PenaltyDispute row into a dict."""
     return {
         "id": row.id,
         "dispute_number": row.dispute_number,
@@ -45,6 +40,13 @@ def _to_dict(row: PenaltyDispute) -> dict:
 
 
 class PenaltyDisputeRepository:
+    """Access layer for penalty_dispute rows.
+
+    Tracks the retailer-facing dispute lifecycle for a charged penalty:
+    OPEN -> ANALYZED (by the deterministic dispute engine) -> RESOLVED or
+    OVERRIDDEN (by a human decision).
+    """
+
     def __init__(self, session: Session) -> None:
         self._session = session
 
@@ -56,6 +58,7 @@ class PenaltyDisputeRepository:
         claimed_amount: float,
         notes: str | None = None,
     ) -> dict:
+        """Open a new penalty dispute in OPEN status for a charged penalty."""
         row = PenaltyDispute(
             actual_penalty_id=actual_penalty_id,
             purchase_order_id=purchase_order_id,
@@ -69,22 +72,23 @@ class PenaltyDisputeRepository:
         return _to_dict(row)
 
     def _get_row(self, dispute_id: UUID) -> PenaltyDispute | None:
+        """Fetch the ORM row for a dispute id, or None if not found."""
         return self._session.scalars(select(PenaltyDispute).where(PenaltyDispute.id == dispute_id)).first()
 
     def get_by_id(self, dispute_id: UUID) -> dict | None:
+        """Fetch a dispute by id, or None if not found."""
         row = self._get_row(dispute_id)
         return _to_dict(row) if row is not None else None
 
     def get_by_number(self, dispute_number: str) -> dict | None:
+        """Fetch a dispute by its business number, or None if not found."""
         row = self._session.scalars(
             select(PenaltyDispute).where(PenaltyDispute.dispute_number == dispute_number)
         ).first()
         return _to_dict(row) if row is not None else None
 
     def list_for_actual_penalty(self, actual_penalty_id: UUID) -> list[dict]:
-        """Every dispute ever opened against one charge, oldest first -- a
-        charge can have more than one dispute cycle over time (see
-        `find_active_for_actual_penalty`'s docstring)."""
+        """Return every dispute opened against one charge, oldest first."""
         rows = self._session.scalars(
             select(PenaltyDispute)
             .where(PenaltyDispute.actual_penalty_id == actual_penalty_id)
@@ -93,12 +97,12 @@ class PenaltyDisputeRepository:
         return [_to_dict(r) for r in rows]
 
     def find_active_for_actual_penalty(self, actual_penalty_id: UUID) -> dict | None:
-        """Latest OPEN/ANALYZED dispute for a charge, if any -- backs the
-        "at most one OPEN/ANALYZED dispute per charge" rule in
-        `DisputeService.open_dispute`. A charge can have more than one
-        dispute over time -- once a prior one is terminal (RESOLVED/
-        OVERRIDDEN), a new one may be opened (e.g. the retailer amends the
-        charge)."""
+        """Return the latest OPEN or ANALYZED dispute for a charge, or None.
+
+        Backs the at-most-one-active-dispute-per-charge rule in
+        `DisputeResolutionService.open_dispute`. A charge may accumulate several disputes over
+        time: once the prior one is terminal, a new one can be opened.
+        """
         row = self._session.scalars(
             select(PenaltyDispute)
             .where(
@@ -111,10 +115,7 @@ class PenaltyDisputeRepository:
         return _to_dict(row) if row is not None else None
 
     def list_for_purchase_order(self, purchase_order_id: UUID | None = None) -> list[dict]:
-        """`purchase_order_id` given: every dispute for that PO. Omitted:
-        every dispute across every PO -- mirrors
-        `PenaltyProjectionRepository.list_projections`'s own optional
-        `purchase_order_id` filter."""
+        """Return every dispute for one PO, or across all POs when the filter is omitted."""
         query = select(PenaltyDispute)
         if purchase_order_id is not None:
             query = query.where(PenaltyDispute.purchase_order_id == purchase_order_id)
@@ -132,12 +133,12 @@ class PenaltyDisputeRepository:
         analysis_breakdown: dict,
         analyzed_at: datetime,
     ) -> dict:
-        """Persist the deterministic engine's verdict, moving the dispute to
-        ANALYZED. Idempotent on re-analyze: calling this again for the same
-        `dispute_id` (e.g. a rule was corrected and the dispute
-        re-adjudicated) overwrites the prior verdict/breakdown rather than
-        erroring -- `DisputeService.analyze` is the one place that decides
-        whether re-analysis of a non-OPEN dispute is allowed."""
+        """Persist the engine's verdict, moving the dispute to ANALYZED.
+
+        Re-analyzing the same `dispute_id` overwrites the prior verdict and breakdown
+        instead of erroring; `DisputeResolutionService.analyze` decides whether a non-OPEN
+        dispute may be re-analyzed at all. Raises `ValueError` for an unknown id.
+        """
         row = self._get_row(dispute_id)
         if row is None:
             raise ValueError(f"No penalty dispute found with id={dispute_id!r}")
@@ -161,6 +162,10 @@ class PenaltyDisputeRepository:
         override_verdict: str | None = None,
         override_reason: str | None = None,
     ) -> dict:
+        """Resolve or override a dispute, recording who decided it and when.
+
+        Raises `ValueError` if no row exists for `dispute_id`.
+        """
         row = self._get_row(dispute_id)
         if row is None:
             raise ValueError(f"No penalty dispute found with id={dispute_id!r}")
@@ -174,12 +179,6 @@ class PenaltyDisputeRepository:
         return _to_dict(row)
 
     def truncate_all(self) -> None:
-        """Deletes every penalty_dispute row, for a force-reseed. FKs to
-        actual_penalty/penalty_rule/purchase_order, so must run before those
-        repositories' `truncate_all()` clear them. `penalty_summary` no
-        longer FKs to this table (see its module docstring) -- ordering
-        against `PenaltySummaryRepository.truncate_all()` no longer
-        matters, though `PenaltySeedingService._truncate_seeded_tables`
-        still runs it first for tidiness."""
+        """Delete every dispute; must run before the actual-penalty, rule and PO truncates."""
         self._session.execute(delete(PenaltyDispute))
         self._session.flush()

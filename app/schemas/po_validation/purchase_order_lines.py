@@ -1,14 +1,6 @@
-"""API schemas for `POST /api/v1/po-validation/purchase-order-lines` (was
-`POST /ingest/po-lines`) and the flat `GET /api/v1/purchase-order-lines`
-cross-PO listing (was `GET /po-lines`).
+"""API schemas for PO-line ingest and the cross-PO `GET /api/v1/purchase-order-lines` listing.
 
-Class names drop the stale `po_line`/`Po*` abbreviation in favor of the full
-`purchase_order_line` wording (approved plan's locked-in naming decision),
-per §6's "Rename DTO classes dropping stale prefixes where the rest of the
-rename already applies elsewhere." Wire-level payload field names
-(`po_number`, `po_line_number`, ...) are left unchanged -- they are read
-directly by `PoValidationService._ingest_one_line` (`payload["po_number"]`,
-...), a service-layer contract out of scope for this API-surface phase.
+Wire field names keep the short `po_number`/`po_line_number` form the service layer reads.
 """
 
 from __future__ import annotations
@@ -20,6 +12,8 @@ from app.schemas.common.purchase_orders import PurchaseOrderLineResponse
 
 
 class IngestPurchaseOrderLineItem(BaseModel):
+    """One line of an ingest request, as received from the source order system."""
+
     po_number: str
     po_line_number: str
     customer_id: str
@@ -31,48 +25,35 @@ class IngestPurchaseOrderLineItem(BaseModel):
 
 
 class IngestPurchaseOrderLinesRequest(BaseModel):
+    """Request body for `POST /api/v1/po-validation/purchase-order-lines`."""
+
     lines: list[IngestPurchaseOrderLineItem] = Field(min_length=1)
 
 
 class PurchaseOrderLineIngestSummary(BaseModel):
+    """Per-line outcome of an ingest request: the line, its status, and its thread if any."""
+
     po_line_id: str
     batch_id: str
     po_number: str
     po_line_number: str
     status: str
     thread_id: str | None = None
-    # `PoValidationService._ingest_one_line`'s touchless path always sends
-    # `None`; once a `workflow_thread` exists (first interrupt or later),
-    # this is that thread's real `updated_at` -- round-trippable straight
-    # into `POST /workflow-threads/{thread_id}/decisions`' `expected_updated_at`
-    # without an intermediate GET, so it uses the same `IsoDatetime` as
-    # `WorkflowThreadResponse.updated_at` (see that type's docstring).
+    # `None` on the touchless path; otherwise the thread's real `updated_at`, round-trippable
+    # straight into a decision request's `expected_updated_at` without an intermediate GET.
     updated_at: IsoDatetime | None = None
 
 
 class IngestPurchaseOrderLinesResponse(BaseModel):
+    """Response shape for `POST /api/v1/po-validation/purchase-order-lines`."""
+
     batch_id: str
     total_lines: int
     lines: list[PurchaseOrderLineIngestSummary]
 
 
 class PurchaseOrderLinesListResponse(BaseModel):
-    """The one `purchase_order_line` listing shape -- backed by
-    `PurchaseOrderRepository.list_lines_by_status` (see
-    `PoValidationService.list_ready_lines`'s docstring). `purchase_order_id`
-    and `status` are both optional, independent filters:
-
-    - both omitted: the "ready" set (`READY_FOR_SO_CREATION`/
-      `READY_FOR_SO_CREATION_PARTIAL`) across every PO.
-    - `purchase_order_id` given, `status` omitted: every line for that PO
-      regardless of status (the old nested single-PO route's behavior).
-    - `status` given: filters on exactly that `line_status`, optionally also
-      scoped to one PO.
-
-    Replaces what used to be two routes (this flat, paginated, cross-PO
-    listing, and a separate unpaginated `GET /purchase-orders/{purchase_order_id}/lines`)
-    -- see `app/api/v1/po_validation.py`'s module docstring.
-    """
+    """Paginated `purchase_order_line` listing, optionally filtered by PO and line status."""
 
     items: list[PurchaseOrderLineResponse]
     next_cursor: str | None = None

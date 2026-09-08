@@ -9,6 +9,8 @@ from app.db.base import UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class Carrier(Base, TimestampMixin):
+    """Shipping carrier master data with historical performance."""
+
     __tablename__ = "carrier"
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)

@@ -1,4 +1,4 @@
-"""Order confirmation header and line -- historized, append-only facts."""
+"""Order confirmation header and line: historized, append-only facts."""
 
 from datetime import date, datetime
 from uuid import UUID
@@ -10,6 +10,11 @@ from app.db.base import UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class OrderConfirmation(Base, TimestampMixin):
+    """Order confirmation header (vendor acknowledgment of PO).
+
+    Historized, append-only fulfillment fact; one row per confirmation event.
+    """
+
     __tablename__ = "order_confirmation"
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
@@ -20,6 +25,11 @@ class OrderConfirmation(Base, TimestampMixin):
 
 
 class OrderConfirmationLine(Base, TimestampMixin):
+    """Confirmation line matching a PO line with confirmed quantity/date.
+
+    Keyed by (order_confirmation_id, purchase_order_line_id).
+    """
+
     __tablename__ = "order_confirmation_line"
     __table_args__ = (
         UniqueConstraint(

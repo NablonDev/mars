@@ -1,6 +1,4 @@
-"""One row per human decision/answer -- merges what were the separate
-`pending_human_actions` (open/completed interrupt) and `hitl_actions`
-(audit trail of the answer) tables into one."""
+"""One row per human decision, covering both the open interrupt and its answer's audit trail."""
 
 from datetime import datetime
 from uuid import UUID
@@ -12,6 +10,12 @@ from app.db.base import JSONB_OR_JSON, PROCESS_SCHEMA, UUID_PK, Base, TimestampM
 
 
 class HumanAction(Base, TimestampMixin):
+    """Human decision or answer to an agent interrupt.
+
+    Tracks request payload, response, and actor identity for HITL workflows.
+    Lifecycle: open (pending) → completed (responded).
+    """
+
     __tablename__ = "human_action"
     __table_args__ = ({"schema": PROCESS_SCHEMA},)
 

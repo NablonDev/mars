@@ -9,6 +9,8 @@ from app.db.base import UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class Sku(Base, TimestampMixin):
+    """Stock keeping unit (SKU) master data."""
+
     __tablename__ = "sku"
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)

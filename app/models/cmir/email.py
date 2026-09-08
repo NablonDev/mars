@@ -11,8 +11,7 @@ from app.db.base import CMIR_SCHEMA, JSONB_OR_JSON, UUID_PK, Base, TimestampMixi
 
 
 class EmailEvent(Base, TimestampMixin):
-    """One row per inbound email, doubling as the Service Bus queue's work
-    item."""
+    """One row per inbound email, doubling as the Service Bus queue's work item."""
 
     __tablename__ = "email_event"
     __table_args__ = ({"schema": CMIR_SCHEMA},)

@@ -1,36 +1,15 @@
-"""Dispute-resolution seed *data* only -- fixture rules and scenario
-descriptors, no repository access (same data/orchestration split as
-`scenario_data_projection.py`/`projection.py` and
-`scenario_data_mitigation.py`/`mitigation.py`). The orchestration that
-turns these into real rows lives in `app.services.seeding.dispute.seed`,
-wired into `PenaltySeedingService.seed_disputes()`.
+"""Dispute-resolution seed data: fixture rules and scenario descriptors, no repository access.
 
-Before this module, the codebase had zero `ActualPenalty` rows, zero
-TIERED-calc_type rule, zero rule with `grace_period_days > 0`, and zero
-lapsed rule anywhere (confirmed by direct exploration). This module adds
-one of each, plus eight dedicated purchase orders (their own fulfillment
-data, never touching the four existing worked-example POs or mutating any
-of the four existing seeded rules in `scenario_data_projection.py`), one
-scenario each, covering every verdict branch
-(`app.services.penalties.dispute.engine`) and every documented error path
-(`app.services.penalties.dispute.service.DisputeService.analyze`).
+Eight dedicated purchase orders with their own fulfillment data cover every
+verdict branch and error path; they never touch the four worked-example POs.
+Three retailers isolate the rules from each other so that rule matching in
+`PenaltyRuleRepository.list_rules_effective_on` is unambiguous per scenario:
+`RET-DSPA` holds two ordinary effective rules, `RET-DSPB` the grace-period and
+TIERED rules, `RET-DSPC` the lapsed rule.
 
-Three new retailers isolate the new rules from each other and from the
-four existing worked examples, so rule matching in
-`PenaltyRuleRepository.list_rules_effective_on` is unambiguous per
-scenario:
-
-- `RET-DSPA`: two ordinary, currently-effective rules (SHORT_SHIP
-  PER_UNIT, OTIF_LATE PER_UNIT, no grace) -- scenarios (a)-(e).
-- `RET-DSPB`: the grace-period delay rule and the TIERED shortage rule --
-  scenarios (f)-(g).
-- `RET-DSPC`: the lapsed rule, still effective at an earlier historical
-  date -- scenario (h), proving `list_rules_effective_on` correctly
-  includes a since-lapsed rule for a historical charge.
-
-Each scenario's numbers are hand-computed here and asserted against in
-`tests/unit/services/test_dispute_seed_scenarios.py` -- see that module for
-the worked arithmetic behind every `expected_*` field below.
+Every `expected_*` field is hand-computed here and asserted against in
+`tests/unit/services/test_dispute_seed_scenarios.py`, which carries the
+worked arithmetic.
 """
 
 from __future__ import annotations
@@ -44,6 +23,8 @@ ViolationFamily = Literal["SHORTAGE", "DELAY"]
 
 @dataclass(frozen=True)
 class DisputeRuleFixture:
+    """One `penalty_rule` row's seed fixture, isolated to a dedicated `RET-DSP*` retailer for dispute-scenario testing."""
+
     rule_code: str
     retailer_code: str
     violation_type: str
@@ -59,10 +40,11 @@ class DisputeRuleFixture:
 
 @dataclass(frozen=True)
 class DisputeScenarioFixture:
-    """One dedicated PO + its fulfillment facts + one `actual_penalty`
-    charge. `expected_*` fields are what
-    `tests/unit/services/test_dispute_seed_scenarios.py` asserts
-    `DisputeService.analyze()` actually produces."""
+    """One dedicated PO, its fulfillment facts, and one `actual_penalty` charge.
+
+    The `expected_*` fields are what `DisputeResolutionService.analyze()` must produce for
+    this scenario.
+    """
 
     key: str
     description: str
@@ -141,7 +123,7 @@ PLANT_CODE = "PLANT-DSP"
 SCENARIOS: list[DisputeScenarioFixture] = [
     DisputeScenarioFixture(
         key="correct_shortage",
-        description="(a) Correct shortage charge -- claimed matches computed within tolerance -> PAY_FULL.",
+        description="(a) Correct shortage charge: claimed matches computed within tolerance -> PAY_FULL.",
         purchase_order_number="ORD-DSP-A1",
         retailer_code="RET-DSPA",
         material_code=MATERIAL_CODE,
@@ -162,7 +144,7 @@ SCENARIOS: list[DisputeScenarioFixture] = [
     ),
     DisputeScenarioFixture(
         key="overcharged_shortage",
-        description="(b) Overcharged shortage -- claimed > computed -> PAY_PARTIAL.",
+        description="(b) Overcharged shortage: claimed > computed -> PAY_PARTIAL.",
         purchase_order_number="ORD-DSP-A2",
         retailer_code="RET-DSPA",
         material_code=MATERIAL_CODE,
@@ -174,7 +156,7 @@ SCENARIOS: list[DisputeScenarioFixture] = [
         required_ship_date=date(2026, 6, 8),
         violation_type="SHORT_SHIP",
         invoice_or_deduction_date=date(2026, 6, 12),
-        claimed_amount=80.0,  # computed is $50 -- retailer overcharged by $30
+        claimed_amount=80.0,  # computed is $50, so the retailer overcharged by $30
         delivered_qty=90.0,
         actual_delivery_date=None,
         expected_verdict="PAY_PARTIAL",
@@ -183,7 +165,7 @@ SCENARIOS: list[DisputeScenarioFixture] = [
     ),
     DisputeScenarioFixture(
         key="undercharged_delay",
-        description="(c) Undercharged delay -- claimed < computed -> PAY_FULL, negative delta_amount.",
+        description="(c) Undercharged delay: claimed < computed -> PAY_FULL, negative delta_amount.",
         purchase_order_number="ORD-DSP-A3",
         retailer_code="RET-DSPA",
         material_code=MATERIAL_CODE,
@@ -195,7 +177,7 @@ SCENARIOS: list[DisputeScenarioFixture] = [
         required_ship_date=date(2026, 6, 8),
         violation_type="OTIF_LATE",
         invoice_or_deduction_date=date(2026, 6, 20),
-        claimed_amount=200.0,  # computed is $300 (rate 3.0 x 100 units) -- retailer undercharged
+        claimed_amount=200.0,  # computed is $300 (rate 3.0 x 100 units), so undercharged
         delivered_qty=100.0,
         actual_delivery_date=date(2026, 6, 15),  # 5 days late, no grace period on this rule
         expected_verdict="PAY_FULL",
@@ -292,7 +274,7 @@ SCENARIOS: list[DisputeScenarioFixture] = [
     DisputeScenarioFixture(
         key="lapsed_rule",
         description=(
-            "(h) A since-lapsed rule, still effective at the historical charge date -- proves "
+            "(h) A since-lapsed rule, still effective at the historical charge date: proves "
             "list_rules_effective_on includes a historically-active-but-now-lapsed rule."
         ),
         purchase_order_number="ORD-DSP-C1",

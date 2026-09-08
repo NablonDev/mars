@@ -1,4 +1,4 @@
-"""Delivery header/line and the shipment fact -- historized, append-only."""
+"""Delivery header, delivery line, and the shipment fact: historized, append-only."""
 
 from datetime import date, datetime
 from uuid import UUID
@@ -10,6 +10,12 @@ from app.db.base import UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class Delivery(Base, TimestampMixin):
+    """Delivery header (partial or full fulfillment of a PO).
+
+    Tracks dates and status for a shipment covering one or more PO lines.
+    Append-only; one row per delivery event.
+    """
+
     __tablename__ = "delivery"
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
@@ -31,6 +37,11 @@ class Delivery(Base, TimestampMixin):
 
 
 class DeliveryLine(Base, TimestampMixin):
+    """Delivery line matching a PO line with actual delivered quantity.
+
+    Keyed by (delivery_id, purchase_order_line_id).
+    """
+
     __tablename__ = "delivery_line"
     __table_args__ = (
         UniqueConstraint("delivery_id", "purchase_order_line_id", name="uq_delivery_line_delivery_po_line"),
@@ -45,7 +56,10 @@ class DeliveryLine(Base, TimestampMixin):
 
 
 class Shipment(Base, TimestampMixin):
-    """Historized, append-only shipment facts; one row per update."""
+    """Historized shipment facts (append-only) capturing status snapshots.
+
+    One row per status update; tracks dates, carrier, and transit information.
+    """
 
     __tablename__ = "shipment"
 

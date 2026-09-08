@@ -1,23 +1,4 @@
-"""API endpoints for `penalties.mitigation_option`: compute/list ranked
-mitigation options for a projection, and the mitigation-summary
-trigger/poll contract.
-
-Mitigation options are keyed by `(purchase_order_id, projection_date)`, not by
-their own FK to `penalty_projection` (no such FK exists -- see
-`app.models.penalties.mitigation.MitigationOption`'s docstring). Every route
-below accepts that pair directly, OR a `projection_id` resolved to the pair
-via `_resolve_projection` (`PenaltyProjectionRepository.get_by_id` first) --
-kept as a convenience alias, not the only way in.
-
-Routes are flat (`/penalties/mitigations`, not nested under
-`/purchase-orders/{id}/...` or `/penalty-projections/{id}/...`) for the same
-reason `app.api.v1.penalties.projections` is flat -- see that module's
-docstring.
-
-`POST /penalties/mitigations/summary` exists as a trigger endpoint symmetric
-to the projection-summary one: without it, `include=summary` below could
-never have anything to show.
-"""
+"""API endpoints for penalty mitigation options and summaries."""
 
 from __future__ import annotations
 
@@ -54,13 +35,13 @@ from app.services.penalties.mitigation.summary_service import MitigationSummaryS
 router = APIRouter(tags=["penalty-mitigations"])
 
 # Used by the GET routes below (list, get-one). `POST /penalties/mitigations`
-# no longer accepts `include=` at all -- a compute call always returns the
-# bare mitigation-options result, with `summary` left unset; fetch it via
-# the GET routes below instead.
+# accepts no `include=`: a compute call always returns the bare
+# mitigation-options result with `summary` unset, fetched via the GET routes.
 _INCLUDE_SUMMARY = parse_include(frozenset({"summary"}))
 
 
 def _resolve_projection(projections: PenaltyProjectionRepository, projection_id: UUID) -> tuple[UUID, date]:
+    """Load a projection and return its purchase order ID and projection date."""
     row = projections.get_by_id(projection_id)
     if row is None:
         raise NotFoundError(
@@ -78,24 +59,7 @@ def _resolve_purchase_order_and_date(
     purchase_order_id: UUID | None,
     projection_date: date | None,
 ) -> tuple[UUID, date]:
-    """Shared either-or resolution for the GET list route's query params --
-    the POST run route enforces the identical "exactly one shape" rule at
-    the schema level via `PenaltyMitigationRunRequest`'s model validator;
-    query params have no equivalent body-model validator, so it's done here
-    instead.
-
-    The direct `purchase_order_id` + `projection_date` shape also confirms
-    the purchase order itself exists (`PurchaseOrderRepository.
-    require_purchase_order` -- same repository call/`NotFoundError(code=
-    "PO_NOT_FOUND")` convention `run_for_purchase_order` already raises on
-    the POST/compute routes, and `list_penalty_projections`/
-    `get_penalty_exposure` already use on their own GET side) -- otherwise
-    an unknown `purchase_order_id` would 200 with an empty `options: []`
-    indistinguishable from "no mitigations computed yet for a real PO". The
-    `projection_id` shape needs no separate check: `_resolve_projection`
-    already 404s on an unknown id, and a resolved projection's
-    `purchase_order_id` is a real FK, so it can never reference a
-    nonexistent purchase order."""
+    """Resolve either a projection_id or a (purchase_order_id, projection_date) pair."""
     has_projection_id = projection_id is not None
     has_purchase_order_id = purchase_order_id is not None
     has_projection_date = projection_date is not None
@@ -119,9 +83,7 @@ def _resolve_purchase_order_and_date(
 
 
 def _try_get_summary_job(service: MitigationSummaryService, purchase_order_id: UUID, as_of_date: date | None):
-    """Pure read -- see `app.api.v1.penalties.projections`'s sibling helper
-    for why any `AppError` (not just `NotFoundError`) here means "nothing
-    to include", not the whole request's error."""
+    """Resolve the cached summary job for one (PO, date), or `None` if there is nothing to show."""
     try:
         return service.get_status(purchase_order_id, as_of_date=as_of_date)
     except AppError:
@@ -134,9 +96,7 @@ def _attach_summary(
     purchase_order_id: UUID,
     projection_date: date,
 ) -> None:
-    """Shared by the single-mitigation GET, the list GET, and the run POST
-    below -- mirrors `app.api.v1.penalties.projections._attach_summary`'s
-    shape exactly."""
+    """Attach a mitigation summary to a response row if one exists and is ready."""
     job = _try_get_summary_job(service, purchase_order_id, projection_date)
     if job is None:
         return
@@ -156,6 +116,7 @@ def list_penalty_mitigations(
     mitigation_summary_service: MitigationSummaryService = Depends(get_mitigation_summary_service),
     include: set[str] = Depends(_INCLUDE_SUMMARY),
 ) -> Envelope[MitigationOptionsResponse]:
+    """List mitigation options for a projection by ID or (purchase_order_id, projection_date)."""
     resolved_purchase_order_id, resolved_projection_date = _resolve_purchase_order_and_date(
         projections,
         purchase_orders,
@@ -186,10 +147,7 @@ def run_penalty_mitigations(
     mitigation_options: MitigationOptionRepository = Depends(get_mitigation_option_repository),
     mitigation_service: MitigationService = Depends(get_mitigation_service),
 ) -> Envelope[MitigationOptionsResponse]:
-    """Compute mitigation options. Does not accept `include=` -- the
-    response never carries `summary`; fetch it separately via
-    `GET /penalties/mitigations` (or the get-one route) once the options
-    exist."""
+    """Compute and persist mitigation options for a projection."""
     # `PenaltyMitigationRunRequest`'s own model validator already guarantees
     # exactly one of the two shapes was supplied.
     if body.projection_id is not None:
@@ -200,14 +158,10 @@ def run_penalty_mitigations(
         purchase_order_id, projection_date = body.purchase_order_id, body.projection_date
 
     resolved_date, _ = mitigation_service.run_for_purchase_order(purchase_order_id, projection_date)
-    # `run_for_purchase_order` returns the pure-engine `MitigationOption`
-    # dataclasses it just persisted -- no `id`/`purchase_order_id`/
-    # `projection_date` (see `app.services.penalties.mitigation.types`),
-    # unlike this repository's dict shape (same `projected_penalty_after`
-    # field, plus its own surrogate `id`) that `MitigationOptionResponse`
-    # is built against. Re-reading the rows `save_results` just wrote keeps
-    # this route's response shape consistent with the sibling GET endpoint
-    # below, at the cost of one extra read.
+    # `run_for_purchase_order` returns pure-engine `MitigationOption`
+    # dataclasses, which carry no `id`/`purchase_order_id`/`projection_date`.
+    # Re-reading the rows it just persisted keeps this response shape
+    # consistent with the sibling GET route, at the cost of one extra read.
     options = mitigation_options.list_for_date(purchase_order_id, resolved_date)
     details = [MitigationOptionDetailResponse.model_validate(o) for o in options]
     return success_envelope(
@@ -230,6 +184,7 @@ def trigger_penalty_mitigation_summary(
     response: Response,
     mitigation_summary_service: MitigationSummaryService = Depends(get_mitigation_summary_service),
 ) -> Envelope[PenaltyMitigationSummaryStatusResponse]:
+    """Request or retrieve a summary of mitigation options, returning 202 if queued."""
     job = mitigation_summary_service.get_or_schedule(
         body.purchase_order_id, as_of_date=body.as_of_date, force_regenerate=body.force_regenerate
     )
@@ -265,18 +220,7 @@ def get_penalty_mitigation_summary(
     as_of_date: date | None = Query(default=None),
     mitigation_summary_service: MitigationSummaryService = Depends(get_mitigation_summary_service),
 ) -> Envelope[PenaltyMitigationSummaryStatusResponse]:
-    """Dedicated read equivalent of `?include=summary` elsewhere -- lets a
-    caller poll a summary job without re-fetching its mitigation options.
-    Pure read: never schedules generation, only the POST sibling above can
-    enqueue one.
-
-    The genuine "never requested" case is `success: true`, `status: None`,
-    `summary: None` -- see `app.api.v1.penalties.projections.
-    get_penalty_projection_summary`'s docstring, this route's exact mirror,
-    for the full reasoning. A `purchase_order_id` that doesn't correspond
-    to any real purchase order, or an `as_of_date` `get_status` itself
-    rejects, are genuine caller errors and still propagate as such.
-    """
+    """Poll the status of a mitigation summary job without refetching options."""
     try:
         job = mitigation_summary_service.get_status(purchase_order_id, as_of_date=as_of_date)
     except NotFoundError as exc:
@@ -303,13 +247,11 @@ def get_penalty_mitigation_summary(
     )
 
 
-# NOTE: `GET /penalties/mitigations/{mitigation_id}` (below) MUST be
-# registered after the two literal `/penalties/mitigations/summary` routes
-# above -- FastAPI/Starlette matches routes in registration order, and a
-# `{mitigation_id}` path parameter greedily matches the literal segment
-# `summary` too. Registering it first would silently swallow
-# `GET /penalties/mitigations/summary` as a 422 UUID-parse failure on
-# `mitigation_id="summary"` instead of ever reaching the dedicated route.
+# NOTE: `GET /penalties/mitigations/{mitigation_id}` MUST stay registered after
+# the two literal `/penalties/mitigations/summary` routes above. Starlette
+# matches in registration order, and `{mitigation_id}` greedily matches the
+# literal `summary` segment too, which would turn that route into a 422
+# UUID-parse failure.
 @router.get(
     "/penalties/mitigations/{mitigation_id}",
     response_model=Envelope[MitigationOptionDetailResponse],

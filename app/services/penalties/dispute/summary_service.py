@@ -1,48 +1,30 @@
-"""Dispute-summary service: a plain, structural subclass of
-`SummaryServiceBase` -- exactly like `MitigationSummaryService` -- that
-implements only the shared hook contract (`_validate`/`_history_for_
-generation`/`_assemble_mandatory_context`/`_compute_content_fingerprint`/
-`_build_tools`/`_output_with_reuse_cls`/`_generate`) and otherwise uses the
-base class's `get_or_schedule`/`get_status`/`run_generation` unchanged.
-Reads/writes `penalties.penalty_summary` via `summary_type=SummaryType.
-DISPUTE`, keyed by the exact same `(purchase_order_id, summary_type,
-as_of_date)` triple as PROJECTION/MITIGATION -- no dispute-specific
-repository methods, no separate lookup path. An earlier pass gave DISPUTE
-its own `dispute_id`-keyed entry points/repository methods; reverted (see
-`app.models.penalties.summary.PenaltySummary`'s module docstring for why,
-and for the known limitation this reintroduces).
+"""Dispute-summary service.
 
-The one genuine structural difference from `MitigationSummaryService`:
-callers (the API layer, the worker) address a dispute by `dispute_id`, not
-by `(purchase_order_id, as_of_date)`, so `get_or_schedule_for_dispute`/
-`get_status_for_dispute` below translate a `dispute_id` into its owning
-`purchase_order_id` + `as_of_date=dispute["analyzed_at"].date()` and then
-call straight through to the base class's shared, generic methods --
-`summary_type=DISPUTE`, same as every other type. `_dispute_id_value`
-records which dispute the current call is about so the hooks below (which
-only ever receive `purchase_order_id`/`as_of_date`) can still assemble
-per-dispute context; this is instance bookkeeping for hook implementations,
-not a second persistence path.
+A structural subclass of `SummaryServiceBase` that implements only the shared
+hook contract and otherwise uses the base class's `get_or_schedule`,
+`get_status`, and `run_generation` unchanged. Reads and writes
+`penalties.penalty_summary` under `summary_type=SummaryType.DISPUTE`, keyed by
+the same `(purchase_order_id, summary_type, as_of_date)` triple as PROJECTION
+and MITIGATION, with no dispute-specific repository methods.
 
-**Known limitation reintroduced by this translation:** because the base
-class's identity is `(purchase_order_id, summary_type, as_of_date)`, two
-disputes on the same PO analyzed the same calendar day resolve to the same
-summary row and collide -- the second `analyze()`'s narrative generation
-overwrites the first dispute's summary row. See `app.models.penalties.
-summary.PenaltySummary`'s module docstring and `docs/architecture/
-penalty-summary-future-redesign.md` for the full writeup and the proposed
-real fix. This does NOT affect `penalty_dispute.verdict`/`computed_amount`/
-`delta_amount` (set by `analyze()`/`resolve()`, stored only on
-`penalty_dispute`) -- only the LLM narrative text can be momentarily
-wrong/cross-shown for one of the two disputes until regenerated.
+Callers address a dispute by `dispute_id`, so `get_or_schedule_for_dispute` and
+`get_status_for_dispute` translate one into its owning `purchase_order_id` plus
+`as_of_date=dispute["analyzed_at"].date()` before delegating to the generic
+base methods. `_dispute_id_value` records which dispute the current call is
+about, so the hooks, which only ever receive `purchase_order_id` and
+`as_of_date`, can still assemble per-dispute context. It is instance
+bookkeeping, not a second persistence path.
+
+Known limitation of that translation: two disputes on one PO analyzed the same
+calendar day resolve to the same summary row, so the second generation
+overwrites the first dispute's narrative. Only narrative text is affected;
+`penalty_dispute.verdict`, `computed_amount`, and `delta_amount` are stored on
+`penalty_dispute` alone. See `docs/architecture/penalty-summary-future-redesign.md`
+for the proposed fix.
 
 A narrative can never be requested before a verdict exists:
-`_require_analyzed_dispute` refuses an OPEN dispute up front.
-
-The LLM only narrates the already-persisted verdict -- it never computes
-one; see `app.services.penalties.dispute.engine`'s module docstring and
-the dispute-summary system prompt's "one rule that overrides everything
-else" section.
+`_require_analyzed_dispute` refuses an OPEN dispute up front. The LLM only
+narrates the persisted verdict; it never computes one.
 """
 
 from __future__ import annotations
@@ -63,7 +45,7 @@ from app.agents.penalties.dispute import (
     DisputeSummaryContext,
     build_dispute_summary_tools,
 )
-from app.agents.penalties.dispute.agent import DisputeAgent
+from app.agents.penalties.dispute.agent import DisputeResolutionAgent
 from app.agents.penalties.dispute.prompts.v1 import PROMPT_VERSION, SYSTEM_PROMPT
 from app.agents.providers.azure_openai import AzureOpenAIChatClient
 from app.core.config import get_settings
@@ -89,8 +71,7 @@ _UPSTREAM_FAILURE_MESSAGE = "Penalty dispute summary generation failed upstream"
 
 
 class DisputeSummaryOutputWithReuse(PenaltySummaryOutputBase):
-    """`DisputeSummaryOutput` with fields describing narrative reuse (see
-    `PenaltyProjectionSummaryOutputWithReuse`'s sibling docstring)."""
+    """`DisputeSummaryOutput` with fields describing narrative reuse."""
 
     is_reused: bool = False
     generated_for_date: date | None = None
@@ -99,6 +80,14 @@ class DisputeSummaryOutputWithReuse(PenaltySummaryOutputBase):
 
 
 class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSummaryOutputWithReuse]):
+    """Generates narrative summaries for already-analyzed penalty disputes.
+
+    Implements the `SummaryServiceBase` hooks for dispute context assembly,
+    tool-calling, and content fingerprinting, and translates `dispute_id`-keyed
+    requests onto the base class's generic identity. The LLM narrates only; the
+    verdict and amount were computed deterministically by the dispute engine.
+    """
+
     summary_type = SummaryType.DISPUTE
     summary_domain = "dispute"
     agent_code = "penalty_dispute_summary"
@@ -129,7 +118,7 @@ class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSum
             job_context=job_context,
             llm=llm,
         )
-        self._agent = DisputeAgent(
+        self._agent = DisputeResolutionAgent(
             llm=llm,
             agent_registry=agent_registry,
             agent_code=self.agent_code,
@@ -141,22 +130,32 @@ class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSum
         self._dispute_id_value: UUID | None = None
 
     # ------------------------------------------------------------------
-    # dispute_id-first entry points (see this module's docstring) --
-    # translate a dispute_id into its owning (purchase_order_id,
-    # as_of_date) and delegate straight to SummaryServiceBase's shared,
-    # generic get_or_schedule/get_status. Neither overrides the base
-    # method -- there is no dispute-specific persistence left to run.
+    # dispute_id-first entry points: translate a dispute_id into its owning
+    # (purchase_order_id, as_of_date) and delegate to SummaryServiceBase's
+    # generic get_or_schedule/get_status. Neither overrides a base method;
+    # there is no dispute-specific persistence to run.
     # ------------------------------------------------------------------
 
     def get_or_schedule_for_dispute(
         self, dispute_id: UUID, force_regenerate: bool = False
     ) -> SummaryJob[DisputeSummaryOutputWithReuse]:
+        """Translate a `dispute_id` into the base class's `(purchase_order_id, as_of_date)` identity.
+
+        Refuses an OPEN dispute, which has no verdict to narrate, and records
+        `_dispute_id_value` for the hooks further down the shared call chain.
+        """
         self._dispute_id_value = dispute_id
         dispute = self._require_analyzed_dispute(dispute_id)
         as_of_date = dispute["analyzed_at"].date() if dispute["analyzed_at"] else utc_today()
         return self.get_or_schedule(dispute["purchase_order_id"], as_of_date, force_regenerate)
 
     def get_status_for_dispute(self, dispute_id: UUID) -> SummaryJob[DisputeSummaryOutputWithReuse]:
+        """Translate a `dispute_id` into the base class's `(purchase_order_id, as_of_date)` identity.
+
+        Unlike `get_or_schedule_for_dispute`, an OPEN dispute is tolerated: a
+        status check is a read, not a request to generate. `as_of_date=None` in
+        that case lets the base class's `get_status` resolve it.
+        """
         dispute = self.disputes.get_by_id(dispute_id)
         if dispute is None:
             raise NotFoundError(
@@ -169,19 +168,15 @@ class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSum
     def _enqueue_regeneration_job(
         self, purchase_order_id: UUID, as_of_date: date, force_regenerate: bool
     ) -> None:
-        """Override of `SummaryServiceBase._enqueue_regeneration_job`: the
-        one genuine remaining difference from `MitigationSummaryService`.
-        Stores `self._dispute_id_value` on `process.job_item.metadata_json`
-        (`{"dispute_id": "..."}`) instead of relying on the base class's
-        `(purchase_order_id, as_of_date, summary_type)` dedupe key, so
-        `app.workers.penalty_dispute.run_dispute_summary` can read back
-        which dispute a `DISPUTE_SUMMARY_REGEN` job item is for --
-        `penalty_job_item_context` itself gets no dispute-specific column
-        (see `app.models.penalties.job_context.PenaltyJobItemContext`'s
-        docstring). Deduped on `dispute_id` alone, not the base class's key
-        -- after this module's revert, two disputes can share a PO+date, so
-        the base key would wrongly dedupe a second dispute's regeneration
-        job against the first's."""
+        """Enqueue a regeneration job keyed on `dispute_id` rather than the base class's key.
+
+        The dispute id goes onto `process.job_item.metadata_json` so
+        `app.workers.penalty_dispute.run_dispute_summary` can read back which
+        dispute a `DISPUTE_SUMMARY_REGEN` item is for; `penalty_job_item_context`
+        has no dispute-specific column. Dedupe uses `dispute_id` alone because
+        two disputes can share a PO and date, and the base key would wrongly
+        dedupe the second dispute's job against the first's.
+        """
         dispute_id = self._current_dispute_id()
         settings = get_settings()
         run = self.job_queue.create_run(
@@ -210,6 +205,13 @@ class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSum
         )
 
     def _require_analyzed_dispute(self, dispute_id: UUID) -> dict:
+        """Fetch a dispute by id and enforce the "no narrative before a verdict" invariant.
+
+        A narrative can only describe a verdict `DisputeResolutionService.analyze` has
+        already persisted. An OPEN dispute has no verdict or computed amount, so
+        it raises `BusinessRuleError(code="DISPUTE_NOT_ANALYZED")` rather than
+        let a hook assemble context out of empty fields.
+        """
         dispute = self.disputes.get_by_id(dispute_id)
         if dispute is None:
             raise NotFoundError(
@@ -218,16 +220,12 @@ class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSum
         if dispute["dispute_status"] == "OPEN":
             raise BusinessRuleError(
                 code="DISPUTE_NOT_ANALYZED",
-                message=f"Dispute {dispute_id} has not been analyzed yet -- POST .../analyze first.",
+                message=f"Dispute {dispute_id} has not been analyzed yet; POST .../analyze first.",
             )
         return dispute
 
     def _current_dispute_id(self) -> UUID:
-        """Non-optional accessor for hooks below that only ever run after
-        `get_or_schedule_for_dispute` has set `_dispute_id_value` --
-        narrows the type for mypy. Private to this class; not a
-        `SummaryServiceBase` hook (that base class has zero dispute
-        awareness -- see its module docstring)."""
+        """Non-optional `_dispute_id_value`, narrowing the type for hooks that run after an entry point."""
         assert self._dispute_id_value is not None, (
             "DisputeSummaryService hook called before get_or_schedule_for_dispute set _dispute_id_value"
         )
@@ -238,6 +236,14 @@ class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSum
     # ------------------------------------------------------------------
 
     def _validate(self, purchase_order_id: UUID, as_of_date: date | None) -> tuple[dict, date, list[dict]]:
+        """Confirm the current dispute is analyzed and the purchase order exists.
+
+        The `_require_analyzed_dispute` check repeats the one in
+        `get_or_schedule_for_dispute` because this hook also runs from the
+        `force_regenerate` path and cannot assume the caller validated.
+        The returned `history` includes the current dispute; `_build_tools`
+        filters it back out for the prior-dispute-history tool.
+        """
         dispute = self._require_analyzed_dispute(self._current_dispute_id())
         purchase_order = self.purchase_orders.get_purchase_order(purchase_order_id)
         if purchase_order is None:
@@ -252,11 +258,18 @@ class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSum
         return purchase_order, resolved_date, history
 
     def _history_for_generation(self, purchase_order_id: UUID, as_of_date: date) -> list[dict]:
+        """Every dispute on this purchase order; the job was validated at schedule time."""
         return self.disputes.list_for_purchase_order(purchase_order_id)
 
     def _assemble_mandatory_context(
         self, purchase_order: dict, as_of_date: date, history: list[dict]
     ) -> DisputeSummaryContext:
+        """Build the mandatory (non-tool-fetched) LLM context for one dispute's narrative.
+
+        The `0.0` and `""` defaults on `computed_amount`, `delta_amount`, and
+        `verdict` exist only for the type checker; `_require_analyzed_dispute`
+        already guarantees a verdict by this point.
+        """
         dispute = self._require_analyzed_dispute(self._current_dispute_id())
         retailer_name = next(
             (
@@ -285,6 +298,12 @@ class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSum
         )
 
     def _resolve_sku_description(self, purchase_order_id: UUID) -> str:
+        """Best-effort human-readable label for the order's primary SKU line.
+
+        Falls back through SKU description, SKU code, retailer material code,
+        then the purchase-order id, so incomplete master data degrades the label
+        instead of failing generation.
+        """
         lines = self.purchase_orders.list_lines(purchase_order_id)
         if not lines:
             return str(purchase_order_id)
@@ -301,6 +320,11 @@ class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSum
         return _compute_content_fingerprint(context)
 
     def _build_tools(self, purchase_order: dict, as_of_date: date) -> list[BaseTool]:
+        """Build this call's bounded tool set: rule detail, facts used, prior disputes.
+
+        `prior_dispute_history` excludes the current dispute by id, so the agent
+        cites only other disputes on this PO as history.
+        """
         dispute_id = self._dispute_id_value
         assert dispute_id is not None  # set by every entry point before hooks run
         purchase_order_id = purchase_order["id"]
@@ -326,6 +350,7 @@ class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSum
         tools: list[BaseTool],
         heartbeat: Callable[[], None] | None,
     ) -> PenaltySummaryOutputBase:
+        """Delegate to `DisputeResolutionAgent.generate_dispute_summary` for the bounded tool-calling loop."""
         return self._agent.generate_dispute_summary(
             context, order_id=order_id, as_of_date=as_of_date, tools=tools, heartbeat=heartbeat
         )
@@ -335,6 +360,13 @@ class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSum
     # ------------------------------------------------------------------
 
     def _get_rule_detail(self, dispute_id: UUID) -> dict[str, Any]:
+        """Tool implementation: the effective penalty rule `analyze()` priced the dispute against.
+
+        Returns `{"found": False}` for a missing `rule_id` or an unresolvable
+        rule, degrading gracefully rather than raising into the agent loop.
+        TIERED rules carry their tier bands so the agent can name the band that
+        applied.
+        """
         dispute = self.disputes.get_by_id(dispute_id)
         if dispute is None or dispute["rule_id"] is None:
             return {"found": False}
@@ -350,6 +382,11 @@ class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSum
         return {**rule, "tiers": tiers, "found": True}
 
     def _get_facts_used(self, dispute_id: UUID) -> dict[str, Any]:
+        """Tool implementation: `analyze()`'s persisted `analysis_breakdown`, surfaced verbatim.
+
+        Lets the agent cite the exact inputs behind the verdict rather than
+        re-deriving or guessing at them.
+        """
         dispute = self.disputes.get_by_id(dispute_id)
         if dispute is None or not dispute["analysis_breakdown"]:
             return {"found": False}
@@ -357,16 +394,16 @@ class DisputeSummaryService(SummaryServiceBase[DisputeSummaryContext, DisputeSum
 
 
 def _fmt_number(value: float) -> str:
+    """Fixed 6-decimal string, so floats equal by value hash alike whatever path produced them."""
     return f"{float(value):.6f}"
 
 
 def _compute_content_fingerprint(context: DisputeSummaryContext) -> str:
-    """Hash only the facts that determine the generated narrative -- a
-    pure, DB-free function, mirroring
-    `app.services.penalties.projection.summary_service`'s own
-    `_compute_content_fingerprint`. A dispute's verdict is immutable once
-    RESOLVED/OVERRIDDEN, so in practice this only matters across a
-    re-analyze-then-regenerate cycle while still ANALYZED."""
+    """Hash only the facts that determine the generated narrative.
+
+    A dispute's verdict is immutable once RESOLVED or OVERRIDDEN, so this only
+    matters across a re-analyze-then-regenerate cycle while still ANALYZED.
+    """
     payload = {
         "verdict": context.verdict,
         "claimed_amount": _fmt_number(context.claimed_amount),

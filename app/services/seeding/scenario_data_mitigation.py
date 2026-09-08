@@ -1,8 +1,8 @@
-"""Mock mitigation-input assignments for the four seeded demo orders, plus a
-few synthetic snapshots for edge cases the four don't cover.
+"""Mock mitigation-input assignments for the four seeded demo orders.
 
-Numbers are chosen to be hand-verifiable, not to model a real Mars order --
-same posture as app/services/seeding/scenario_data_projection.py.
+Also carries a few synthetic snapshots for edge cases the four don't cover.
+Numbers are chosen to be hand-verifiable rather than to model a real Mars
+order, the same posture as `scenario_data_projection.py`.
 """
 
 from datetime import date
@@ -17,11 +17,10 @@ from app.services.penalties.projection import (
 )
 
 # ---------------------------------------------------------------------
-# The four seeded demo orders -- see app/services/seeding/scenario_data_projection.py
-# for their OrderSnapshot/qty/unit_price history. AMZ-778501 deliberately
-# has no entry here at all: the "not present" tier. MitigationRepository
-# returns all-defaults (ShortageCause.UNKNOWN, no cost data) for it, never
-# an error -- see app/repositories/fine_mitigation/mitigation.py.
+# The four seeded demo orders; scenario_data_projection.py holds their
+# OrderSnapshot/qty/unit_price history. AMZ-778501 deliberately has no entry
+# here at all: the "not present" tier, where MitigationRepository returns
+# all-defaults (ShortageCause.UNKNOWN, no cost data) rather than an error.
 # ---------------------------------------------------------------------
 SEEDED_MITIGATION_INPUTS: dict[str, MitigationInputs] = {
     # Full/confirmed tier: every field known and confirmed.
@@ -68,10 +67,10 @@ SEEDED_MITIGATION_INPUTS: dict[str, MitigationInputs] = {
 }
 
 # ---------------------------------------------------------------------
-# Synthetic edge case 1 -- delay-only order (no shortage), express
-# carrier data fully confirmed but too expensive to be worth it. ACCEPT
-# must still outrank FASTER_CARRIER on net_saving, but the option stays
-# in the list (it's structurally eligible, just a bad deal).
+# Synthetic edge case 1: delay-only order (no shortage), express carrier data
+# fully confirmed but too expensive to be worth it. ACCEPT must still outrank
+# FASTER_CARRIER on net_saving, but the option stays in the list because it is
+# structurally eligible, just a bad deal.
 # ---------------------------------------------------------------------
 EXPENSIVE_CARRIER_SNAPSHOT = OrderSnapshot(
     order_id="MIT-EDGE-001",
@@ -97,9 +96,9 @@ EXPENSIVE_CARRIER_INPUTS = MitigationInputs(
 )
 
 # ---------------------------------------------------------------------
-# Synthetic edge case 2 -- mixed shortage + delay order. SPLIT_SHIPMENT
-# must zero out only the delay (OTIF_LATE) component; the shortage
-# (SHORT_SHIP) component still applies to the confirmed_qty/order_qty gap.
+# Synthetic edge case 2: mixed shortage + delay order. SPLIT_SHIPMENT must zero
+# out only the delay (OTIF_LATE) component; the shortage (SHORT_SHIP) component
+# still applies to the confirmed_qty/order_qty gap.
 # ---------------------------------------------------------------------
 MIXED_SHORTAGE_DELAY_SNAPSHOT = OrderSnapshot(
     order_id="MIT-EDGE-002",

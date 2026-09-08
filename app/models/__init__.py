@@ -1,11 +1,4 @@
-"""Register and re-export all ORM models so they are available through
-`app.models`.
-
-Four Postgres schemas: `common` (shared master/fulfillment data), `process`
-(shared job/agent/workflow backbone), `cmir` (CMIR-only), `penalties`
-(penalties-only). No tables in `public`. See docs/DATABASE.md and
-`app/db/base.py` for the schema constants.
-"""
+"""Register and re-export all ORM models."""
 
 from app.db.base import Base, TimestampMixin
 from app.models.cmir import (

@@ -1,20 +1,4 @@
-"""Application settings loaded from environment variables and .env.
-
-Split into per-concern nested groups (``app``, ``database``, ``llm``,
-``service_bus``, ``job_queue``, ``email``, ``summary``), composed on one root
-``Settings``. Access is hierarchical (``settings.llm.api_key``,
-``settings.job_queue.max_attempts``, ...), but each group is itself a
-``BaseSettings`` subclass reading flat, single-underscore env var names via
-per-field ``validation_alias`` (``AZURE_OPENAI_API_KEY``, ``JOB_QUEUE_MAX_ATTEMPTS``,
-``DATABASE_URL``, ...) -- there is no nested-delimiter env var scheme here.
-See docs/DEPLOYMENT.md for the full table.
-
-The small dataclasses further down (``EmailConfig``, ``LLMConfig``,
-``ServiceBusConfig``) are not a second config-loading path: they're typed
-parameter objects the cmir services were already written against, built from
-``Settings`` via ``from_settings()`` in ``app/core/container.py`` rather than
-reading the environment themselves.
-"""
+"""Application settings from environment variables, nested by concern (app, database, llm, etc.)."""
 
 from __future__ import annotations
 
@@ -67,11 +51,16 @@ __all__ = [
 
 
 class Settings(BaseSettings):
-    # default_factory (not a bare required field): AppSettings is itself a
-    # BaseSettings, so AppSettings() reads and validates its own env vars
-    # independently -- a missing APP_INTERNAL_API_KEY still fails at
-    # Settings() construction time, exactly as a missing flat
-    # INTERNAL_API_KEY did before the nested-groups split.
+    """Root application configuration, composed of one nested settings group per domain.
+
+    Groups app, database, llm, service_bus, job_queue, email, and summary
+    settings under one object. Each group is its own pydantic-settings
+    model, so a missing required env var fails at Settings() construction
+    time rather than when the field is first read.
+    """
+
+    # Each nested group validates its own env vars independently, ensuring
+    # required fields still fail at Settings() construction time.
     app: AppSettings = Field(default_factory=lambda: AppSettings())  # type: ignore[call-arg]
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     llm: AzureOpenAISettings = Field(default_factory=AzureOpenAISettings)
@@ -87,14 +76,8 @@ class Settings(BaseSettings):
     )
 
     def __init__(self, *, _env_file: Any = _ENV_FILE_UNSET, **values: Any) -> None:
-        # Each group above is its own independent BaseSettings instance
-        # (built via default_factory, or supplied explicitly as a kwarg
-        # here) -- the root's own env_file config never reaches them on its
-        # own. An explicit `_env_file` override (e.g. `_env_file=None` in
-        # tests, to isolate Settings from a real local .env) is therefore
-        # threaded down into every group not already given its own value/
-        # override in `values`, so the override actually takes effect
-        # end-to-end rather than only on the (field-less) root model.
+        # Thread _env_file override to all nested groups so it takes effect
+        # end-to-end, not just on the root model.
         if _env_file is _ENV_FILE_UNSET:
             super().__init__(**values)
             return
@@ -107,11 +90,14 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """Return the process-wide cached Settings instance, building it on first call."""
     return Settings()  # type: ignore[call-arg]
 
 
 @dataclass(frozen=True)
 class EmailConfig:
+    """Flattened IMAP connection settings for GmailImapReader, derived from EmailSettings."""
+
     address: str
     password: str
     imap_server: str
@@ -122,6 +108,7 @@ class EmailConfig:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> EmailConfig:
+        """Build an EmailConfig from the app-wide Settings' email group."""
         return cls(
             address=settings.email.username,
             password=settings.email.password,
@@ -135,6 +122,8 @@ class EmailConfig:
 
 @dataclass(frozen=True)
 class LLMConfig:
+    """Flattened Azure OpenAI settings for AzureOpenAICmirExtractor, derived from AzureOpenAISettings."""
+
     api_key: str
     endpoint: str
     deployment: str
@@ -144,6 +133,7 @@ class LLMConfig:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> LLMConfig:
+        """Build an LLMConfig from the app-wide Settings' llm group."""
         return cls(
             api_key=settings.llm.api_key,
             endpoint=settings.llm.endpoint,
@@ -156,6 +146,8 @@ class LLMConfig:
 
 @dataclass(frozen=True)
 class ServiceBusConfig:
+    """Flattened Azure Service Bus settings for ServiceBusMailQueue, derived from ServiceBusSettings."""
+
     fully_qualified_namespace: str
     queue_name: str
     session_id: str = "mail-processing"
@@ -168,6 +160,7 @@ class ServiceBusConfig:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> ServiceBusConfig:
+        """Build a ServiceBusConfig from the app-wide Settings' service_bus group."""
         return cls(
             fully_qualified_namespace=settings.service_bus.namespace,
             queue_name=settings.service_bus.queue_name,

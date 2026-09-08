@@ -1,10 +1,4 @@
-"""API endpoints for `common.purchase_order`/`purchase_order_line` header/line
-CRUD.
-
-Header/line kept split per the ERP schema -- a purchase order is created with
-its lines in one request, and its lines are exposed separately as a nested
-listing (`app/api/v1/po_validation.py`'s `GET /purchase-orders/{id}/lines`).
-"""
+"""API endpoints for purchase order header and line CRUD."""
 
 from __future__ import annotations
 
@@ -23,6 +17,7 @@ router = APIRouter(tags=["purchase-orders"])
 
 
 def _to_response(purchase_orders: PurchaseOrderRepository, po: dict) -> PurchaseOrderResponse:
+    """Convert a purchase order row to a response model with its lines included."""
     lines = [PurchaseOrderLineResponse.model_validate(line) for line in purchase_orders.list_lines(po["id"])]
     return PurchaseOrderResponse.model_validate({**po, "lines": lines})
 
@@ -36,6 +31,11 @@ def create_purchase_order(
     body: PurchaseOrderRequest,
     purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
 ) -> Envelope[PurchaseOrderResponse]:
+    """Create a purchase order header with line items.
+
+    Persists the header first, then adds each of `body.lines` against it,
+    so the response always reflects the fully created order with lines.
+    """
     fields = body.model_dump(exclude={"lines"})
     purchase_order_number = fields.pop("purchase_order_number")
     po = purchase_orders.create_purchase_order(purchase_order_number, **fields)
@@ -49,5 +49,6 @@ def list_purchase_orders(
     order_status: str | None = Query(default=None),
     purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
 ) -> Envelope[list[PurchaseOrderResponse]]:
+    """List all purchase orders, optionally filtered by order status."""
     rows = [_to_response(purchase_orders, po) for po in purchase_orders.list_purchase_orders(order_status)]
     return success_envelope(rows)

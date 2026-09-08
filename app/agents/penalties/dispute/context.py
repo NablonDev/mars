@@ -1,11 +1,8 @@
 """Typed contract for the data handed to the dispute-summary LLM call.
 
-Mirrors `app.agents.penalties.projection.context`'s shape: the mandatory
-context carries only what every dispute summary needs to state the verdict
-correctly (the verdict itself, the amounts, the reason code) -- rule detail,
-the real facts the engine used, and this PO's prior-dispute history are all
-supplementary, fetched only if the model decides they'd strengthen the
-narrative, via `app.agents.penalties.dispute.tools`.
+Contains the required dispute and order information used to generate a
+dispute summary. Additional supporting details can be retrieved through the
+dispute tools when needed.
 """
 
 from __future__ import annotations
@@ -16,12 +13,16 @@ from pydantic import BaseModel
 
 
 class DisputeOrderContext(BaseModel):
+    """Order-identifying fields the dispute is filed against."""
+
     order_id: str
     retailer_name: str
     sku_description: str
 
 
 class DisputeSummaryContext(BaseModel):
+    """Everything the model needs to narrate an already-resolved dispute verdict."""
+
     dispute_number: str
     reason_code: str
     claimed_amount: float

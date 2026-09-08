@@ -1,13 +1,4 @@
-"""API endpoints for the shared `process.workflow_thread` resource -- used by
-both the `cmir` and `po_validation` domains, neither of which owns it solely.
-
-`missing-fields`/`draft` stay CMIR-only in substance (`PoValidationService`
-has no equivalent resume path -- its two interrupts are `qty_mismatch_decision`
-and `manual_cmir_entry`, both routed through `decisions` below); calling
-either against a po_validation-domain thread naturally 409s via
-`THREAD_NOT_WAITING` rather than needing a domain check here, since that
-thread's `status` can never be `waiting_missing_fields`/`waiting_approval`.
-"""
+"""API endpoints for workflow thread lifecycle management."""
 
 from __future__ import annotations
 
@@ -49,18 +40,7 @@ def list_workflow_threads(
     cursor: str | None = None,
     run_service: CmirRunService = Depends(get_service),
 ) -> Envelope[WorkflowThreadListResponse]:
-    """Replaces `GET /runs?view=threads` -- filtered by `domain` instead of
-    a domain-specific route.
-
-    `WorkflowThreadRepository.list_threads` has no `domain` column to filter
-    on at the query level (a thread's domain is derived, not stored --
-    `email_event_id` set means `cmir`, `purchase_order_line_id` set means
-    `po_validation`, see `WorkflowThreadSubject`'s two-nullable-FK pair), so
-    this filters the already-paginated page in Python. Flagged, not silently
-    smoothed over: a page can come back with fewer than `limit` items when
-    the two domains' threads interleave -- `repositories/` is read-only this
-    phase, so no `domain`-aware repository query was added.
-    """
+    """List workflow threads, optionally filtered by domain, status, or stage."""
     result = run_service.list_runs(view="threads", status=status, stage=stage, limit=limit, cursor=cursor)
     items = result["items"]
     if domain == "cmir":
@@ -85,20 +65,12 @@ def get_workflow_thread(
     po_run_service: PoValidationService = Depends(get_po_service),
     include: set[str] = Depends(_INCLUDE_SNAPSHOT),
 ) -> Envelope[WorkflowThreadDetailResponse]:
-    """Stage is always returned; snapshot is opt-in via `?include=snapshot`
-    (same pattern as the `penalties` routes' `?include=summary`) -- pure
-    read, never schedules generation.
+    """Get a workflow thread's stage and optionally its snapshot.
 
-    `stage` itself is genuinely domain-agnostic (both services' `get_stage`
-    delegate to the same shared repository method), so a single call resolves
-    it and also serves as the resource's existence check. The snapshot,
-    when requested, is domain-specific: `PoValidationService.get_snapshot`
-    is tried first because it correctly rejects a CMIR-domain thread
-    (`purchase_order_line_id` is `None` there) with `THREAD_NOT_FOUND`,
-    whereas `CmirRunService.get_snapshot` is domain-agnostic-permissive at
-    the repository level and would not reject a po_validation-domain thread
-    -- see `app/api/v1/cmir.py`'s pre-restructure equivalent route for the
-    same ordering rationale.
+    With `include=snapshot`, tries the PO-validation snapshot first and
+    falls back to the CMIR snapshot when the thread isn't a PO-validation
+    one, since `workflow_thread` is a shared resource not owned by either
+    domain.
     """
     stage = run_service.get_stage(thread_id)
 
@@ -125,6 +97,7 @@ def submit_workflow_thread_missing_fields(
     body: WorkflowThreadFieldsRequest,
     run_service: CmirRunService = Depends(get_service),
 ) -> Envelope[WorkflowThreadResponse]:
+    """Submit missing field values to advance a workflow thread requiring completion."""
     result = run_service.submit_missing_fields(
         thread_id,
         actor=body.actor,
@@ -143,7 +116,11 @@ def update_workflow_thread_draft(
     body: WorkflowThreadFieldsRequest,
     run_service: CmirRunService = Depends(get_service),
 ) -> Envelope[WorkflowThreadDraftResponse]:
-    """A `PATCH` on the in-flight review draft sub-resource."""
+    """Save field values to the in-flight review draft without submitting it.
+
+    A `PATCH` on the draft sub-resource distinct from
+    `submit_workflow_thread_missing_fields`, which advances the thread.
+    """
     result = run_service.update_draft(
         thread_id,
         actor=body.actor,
@@ -163,10 +140,10 @@ def submit_workflow_thread_decision(
     run_service: CmirRunService = Depends(get_service),
     po_run_service: PoValidationService = Depends(get_po_service),
 ) -> Envelope[WorkflowThreadResponse]:
-    """One generic decision-recording endpoint, `decision_type`-discriminated,
-    covering CMIR approval decisions and both `po_validation` decision
-    types -- a direct consequence of `workflow_thread` being a shared
-    `process`-schema resource rather than owned by either domain."""
+    """Record a decision on a workflow thread, discriminated by `decision_type`.
+
+    Covers CMIR approval decisions and both `po_validation` decision types.
+    """
     if isinstance(body, CmirApprovalDecisionRequest):
         result = run_service.submit_decision(
             thread_id,

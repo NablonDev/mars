@@ -1,16 +1,4 @@
-"""System/lookup failures -- distinct from `human_action` (human
-decisions). Generalizes the old CMIR-only `PoLineErrorORM`; shared by both
-domains via FKs to `process.job_item`/`process.agent_run`.
-
-`purchase_order_line_id` (added alongside this docstring update, closing a
-previously-flagged gap -- see `PoValidationService.get_errors`'s history)
-lets a PO-validation line's error be found directly, without first needing
-a `workflow_thread` to exist for it: `handle_error` (`app/agents/
-po_validation/nodes.py`) is reached from every pre-interrupt node
-(`persist_po_line`/`validate_against_cmir`/`check_material_master`/
-`create_cmir_record`), and a `workflow_thread` is only ever created lazily,
-on a line's first human interrupt -- a line that fails before ever
-reaching one previously had no discoverable error trail at all."""
+"""System and lookup failures, distinct from human decisions."""
 
 from datetime import datetime
 from uuid import UUID
@@ -29,6 +17,12 @@ from app.db.base import (
 
 
 class ProcessingError(Base, TimestampMixin):
+    """System or lookup failure during job processing.
+
+    Tracks errors distinct from human decisions, with resolution audit trail.
+    Lifecycle: open → resolved.
+    """
+
     __tablename__ = "processing_error"
     __table_args__ = ({"schema": PROCESS_SCHEMA},)
 

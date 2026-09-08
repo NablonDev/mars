@@ -1,16 +1,4 @@
-"""API endpoints for the PO delivery-date change request/response lifecycle
-(`po_delivery_change_request`, common/unqualified schema).
-
-Create/list/get-by-id are flat (`/delivery-change-requests`, not nested
-under `/purchase-orders/{purchase_order_id}/...`) -- same "no 2-3 different
-URL shapes for one resource" reasoning as
-`app.api.v1.penalties.projections`/`mitigations`; see that module's
-docstring for the full rationale. `POST .../{delivery_change_request_id}/response`
-stays nested under the request's own `id` -- it's already a sub-action on
-one resource's own id (mirrors `app/api/v1/workflow_threads.py`'s own
-`/{thread_id}/decisions` convention), not a second URL shape for the same
-collection, so it isn't flattened further.
-"""
+"""API endpoints for PO delivery-date change requests."""
 
 from __future__ import annotations
 
@@ -40,6 +28,7 @@ def create_delivery_change_request(
     body: DeliveryChangeRequestCreate,
     service: PoDeliveryChangeRequestService = Depends(get_delivery_change_request_service),
 ) -> Envelope[DeliveryChangeRequestResponse]:
+    """Submit a request to change a purchase order's delivery date."""
     created = service.create_request(
         body.purchase_order_id,
         body.reason_code,
@@ -60,25 +49,22 @@ def list_delivery_change_requests(
     purchase_orders: PurchaseOrderRepository = Depends(get_purchase_order_repository),
     service: PoDeliveryChangeRequestService = Depends(get_delivery_change_request_service),
 ) -> Envelope[list[DeliveryChangeRequestResponse]]:
-    """`purchase_order_id` given: that PO's full request history (404 if the
-    PO itself doesn't exist) -- unchanged from the old nested route.
-    Omitted: every request across every PO."""
+    """List delivery-change requests, optionally narrowed to one purchase order.
+
+    Naming a purchase order that does not exist is a 404.
+    """
     if purchase_order_id is not None:
         purchase_orders.require_purchase_order(purchase_order_id)
     rows = [DeliveryChangeRequestResponse.model_validate(r) for r in service.list_history(purchase_order_id)]
     return success_envelope(rows)
 
 
-# NOTE: `GET /delivery-change-requests/{delivery_change_request_id}` (below)
-# MUST be registered after the `POST/GET /delivery-change-requests` routes
-# above (they're a different path shape, so no ambiguity there) -- but does
-# need to be registered before nothing else here, since the only other route
-# under this prefix is the longer `.../{delivery_change_request_id}/response`
-# sub-action, which always has one more path segment and so can never be
-# shadowed by `{delivery_change_request_id}` matching greedily. Kept in this
-# order (get-by-id before the response sub-action) for readability, mirroring
-# the literal-before-dynamic ordering `app.api.v1.penalties.projections`/
-# `mitigations` need for their own `/summary` sibling route.
+# NOTE: no route under this prefix can be shadowed by
+# `{delivery_change_request_id}` matching greedily; the only other one,
+# `.../{delivery_change_request_id}/response`, always has one more path
+# segment. Get-by-id is kept before that sub-action for readability only,
+# mirroring the ordering `app.api.v1.penalties.projections`/`mitigations`
+# genuinely need for their `/summary` sibling.
 @router.get(
     "/delivery-change-requests/{delivery_change_request_id}",
     response_model=Envelope[DeliveryChangeRequestResponse],
@@ -101,6 +87,7 @@ def record_delivery_change_response(
     body: DeliveryChangeResponseRequest,
     service: PoDeliveryChangeRequestService = Depends(get_delivery_change_request_service),
 ) -> Envelope[DeliveryChangeRequestResponse]:
+    """Record a response (approval or counter-offer) to a delivery change request."""
     updated = service.record_response(
         delivery_change_request_id,
         body.decision,

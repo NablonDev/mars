@@ -893,7 +893,7 @@ negotiating a still-open PO's delivery date before a charge exists, this
 handles a retailer's `actual_penalty` charge that has already been
 recorded (post-delivery, a real deduction/invoice) and re-adjudicates it
 against Mars's own rule engine rather than accepting it at face value.
-`DisputeService` (`app/services/penalties/dispute/service.py`) owns the
+`DisputeResolutionService` (`app/services/penalties/dispute/service.py`) owns the
 lifecycle: `open_dispute()` records a dispute against one `actual_penalty`
 row; `analyze()` is a synchronous, deterministic recompute
 (`app/services/penalties/dispute/engine.py`, reusing the exact same
@@ -1100,7 +1100,7 @@ The dispute isn't `ANALYZED` yet. Run `POST .../analyze` first.
 `override_verdict` was set without `override_reason` (or vice versa).
 `DisputeResolveRequest`'s own Pydantic validator rejects this before the
 request reaches the service, surfacing as `422 REQUEST_VALIDATION_ERROR`;
-`DisputeService.resolve` enforces the identical rule server-side (`code=
+`DisputeResolutionService.resolve` enforces the identical rule server-side (`code=
 "OVERRIDE_REASON_REQUIRED"`) as defense in depth, in case a future caller
 bypasses schema validation.
 

@@ -1,8 +1,4 @@
-"""App-level identity, environment, logging, and the shared-secret auth gate.
-
-Read by app.main (title/version/docs_url gating, log configuration) and
-app.api.dependencies.require_internal_api_key (the X-Internal-Api-Key gate).
-"""
+"""App identity, environment, logging, and authentication configuration."""
 
 from __future__ import annotations
 
@@ -13,13 +9,15 @@ _INTERNAL_API_KEY_MIN_LENGTH = 64
 
 
 class AppSettings(BaseSettings):
+    """Application identity, environment, logging level, and internal-API authentication."""
+
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore", populate_by_name=True
     )
 
     project_name: str = Field(
         default=(
-            "Mars Petcare Backend -- CMIR Email Resolution, PO Validation, "
+            "Mars Petcare Backend: CMIR Email Resolution, PO Validation, "
             "and Projected Penalties, Mitigation & Dispute Resolution"
         ),
         validation_alias="APP_PROJECT_NAME",
@@ -40,14 +38,12 @@ class AppSettings(BaseSettings):
     @field_validator("internal_api_key")
     @classmethod
     def _internal_api_key_not_blank(cls, value: str) -> str:
+        """Reject a blank or too-short APP_INTERNAL_API_KEY so a misconfigured app fails at startup."""
         if not value.strip():
             raise ValueError("APP_INTERNAL_API_KEY must not be blank")
 
         if len(value) < _INTERNAL_API_KEY_MIN_LENGTH:
-            # Length, not entropy: 64 is the width of secrets.token_hex(32), the
-            # generator .env.example documents. A token_urlsafe(32) key carries the
-            # same 256 bits in 43 characters and is rejected here, so say what to
-            # generate rather than leaving the reader to guess at the number.
+            # Enforce minimum length to match secrets.token_hex(32).
             raise ValueError(
                 f"APP_INTERNAL_API_KEY must be at least {_INTERNAL_API_KEY_MIN_LENGTH} characters "
                 '(generate with: python -c "import secrets; print(secrets.token_hex(32))")'

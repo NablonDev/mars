@@ -1,20 +1,4 @@
-"""Aggregates all v1 API routers under the /api/v1 prefix.
-
-Every router below is included on ``protected_router``, which carries the
-``require_internal_api_key`` dependency at construction time -- FastAPI
-applies an ``APIRouter(dependencies=...)`` to every route nested under it
-however deeply, so a new domain router only has to be added here to be
-covered automatically. ``/health`` is the one deliberate exception: it is
-included directly on the unprotected top-level ``router`` instead, so load
-balancers/uptime monitors can reach it with no key.
-
-``admin`` (seed/replay) stays a top-level module -- it spans both domains,
-not either one exclusively. ``workflow_threads``/``processing_errors``/
-``job_runs`` also stay top-level: ``workflow_thread``/``processing_error``/
-``job_run`` are shared ``process``-schema resources used by both ``cmir`` and
-``po_validation`` (and, for ``job_runs``, ``penalties``), not owned by any one
-domain router.
-"""
+"""Aggregates all v1 API routers under the /api/v1 prefix."""
 
 from fastapi import APIRouter, Depends
 

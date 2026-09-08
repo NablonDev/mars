@@ -1,20 +1,9 @@
-"""Dispute-summary job execution -- mirrors
-`app.workers.penalty_projection.run_summary`'s shape. The persisted
-`penalty_summary` row itself is keyed exactly like PROJECTION/MITIGATION,
-`(purchase_order_id, summary_type, as_of_date)` -- see `app.services.
-penalties.dispute.summary_service`'s module docstring. The one thing that
-is still `dispute_id`-keyed is how this job item itself is addressed: the
-dispute id is read from `process.job_item.metadata_json`
-(`{"dispute_id": "..."}`, set at enqueue time by `DisputeSummaryService.
-_enqueue_regeneration_job`) rather than from `penalty_job_item_context` --
-that table gets no dispute-specific column (see `app.models.penalties.
-job_context.PenaltyJobItemContext`'s docstring). `PenaltyJobItemContextRepository`
-is still consulted for `force_regenerate_summary`, populated for every
-task type including this one.
+"""Dispute-summary job execution, shaped like `app.workers.penalty_projection.run_summary`.
 
-No batch job type / recovery sweep for the deterministic `analyze()` step
-itself -- it stays synchronous/on-demand via the API (locked design
-decision); only the LLM narrative is ever queued.
+The job item is addressed by a `dispute_id` read from `process.job_item.metadata_json`,
+because `penalty_job_item_context` carries no dispute-specific column; that table is
+still consulted for `force_regenerate_summary`. Only the LLM narrative is ever queued:
+the deterministic `analyze()` step stays synchronous through the API.
 """
 
 from __future__ import annotations
@@ -38,10 +27,9 @@ from app.services.penalties.dispute.summary_service import DisputeSummaryService
 
 
 def _missing_metadata_error(job_item_id) -> ValueError:
-    """Non-retryable -- see `app.workers.penalty_projection`'s sibling of
-    the same name."""
+    """Build the non-retryable error for a job item with no dispute_id recorded."""
     return ValueError(
-        f"No dispute_id found on process.job_item.metadata for job_item_id={job_item_id!r} -- "
+        f"No dispute_id found on process.job_item.metadata for job_item_id={job_item_id!r}; "
         "cannot execute this DISPUTE_SUMMARY_REGEN job."
     )
 
@@ -53,6 +41,12 @@ def run_dispute_summary(
     *,
     heartbeat: Callable[[], None] | None,
 ) -> None:
+    """Regenerate the LLM narrative over an already-analyzed dispute.
+
+    `run_generation` only flushes its FAILED row, so a failure commits explicitly
+    before re-raising; otherwise `Database.session()` would roll that row back before
+    the worker loop could classify the failure.
+    """
     with database.session() as session:
         job_item = JobQueueRepository(session).get_item(job.job_item_id)
         raw_dispute_id = job_item["metadata_json"].get("dispute_id") if job_item is not None else None
@@ -77,8 +71,7 @@ def run_dispute_summary(
         summary_job = service.get_or_schedule_for_dispute(dispute_id, force_regenerate=force_regenerate)
         if summary_job.status == SummaryStatus.PENDING:
             # Same explicit-commit-before-reraise reasoning as
-            # `app.workers.penalty_projection.run_summary` -- see that
-            # function's inline comment.
+            # `app.workers.penalty_projection.run_summary`.
             try:
                 service.run_generation(
                     summary_job.purchase_order_id, summary_job.as_of_date, heartbeat=heartbeat

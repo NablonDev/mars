@@ -1,16 +1,15 @@
-"""Thin penalty-mitigation-summary service: delegates the shared
-get_or_schedule/reuse/lifecycle machinery to `SummaryServiceBase`, supplying
-only what's genuinely different -- which repositories back the mitigation
-options, the mitigation-summary agent/prompt, and how the mandatory context
-and content fingerprint are assembled.
+"""Penalty-mitigation-summary service.
 
-Was `app/services/fine_mitigation/summary.py`'s `FineMitigationSummaryService`.
-Reads/writes the merged `penalties.penalty_summary` table via
-`summary_type=SummaryType.MITIGATION` (see `_summary_base.py`). The one
-deliberate difference from the projection summary service: the fingerprint
-hashes the mitigation options themselves (what actually determines whether
-the narrative would change), not projection-specific fields like
-`days_to_delivery` -- see `_compute_content_fingerprint`.
+Delegates the shared get_or_schedule, reuse, and lifecycle machinery to
+`SummaryServiceBase`, supplying only the mitigation-specific parts: which
+repositories back the mitigation options, which agent and prompt to use, and
+how the mandatory context and content fingerprint are assembled.
+
+Reads and writes the merged `penalties.penalty_summary` table under
+`summary_type=SummaryType.MITIGATION` (see `_summary_base.py`). Unlike the
+projection service, the fingerprint hashes the mitigation options themselves,
+which is what actually determines whether the narrative would change, rather
+than projection-specific fields like `days_to_delivery`.
 """
 
 from __future__ import annotations
@@ -47,7 +46,7 @@ from app.repositories.penalties.projection import ActualPenaltyRepository
 from app.repositories.penalties.summary import PenaltySummaryRepository
 from app.repositories.process.agent_registry import AgentRegistryRepository
 from app.repositories.process.job_queue import JobQueueRepository
-from app.services.penalties._summary_base import (  # noqa: F401 -- SummaryJob re-exported via __init__
+from app.services.penalties._summary_base import (  # noqa: F401  (SummaryJob re-exported via __init__)
     SummaryJob,
     SummaryServiceBase,
 )
@@ -71,8 +70,7 @@ class PenaltyMitigationSummaryOutputWithReuse(PenaltyMitigationSummaryOutput):
 class MitigationSummaryService(
     SummaryServiceBase[PenaltyMitigationSummaryContext, PenaltyMitigationSummaryOutputWithReuse]
 ):
-    """Thin subclass supplying only what's genuinely different from the
-    projection summary service -- see that module's class docstring."""
+    """Mitigation-specific half of the shared summary-service machinery."""
 
     summary_type = SummaryType.MITIGATION
     summary_domain = "mitigation"
@@ -122,6 +120,13 @@ class MitigationSummaryService(
     # ------------------------------------------------------------------
 
     def _validate(self, purchase_order_id: UUID, as_of_date: date | None) -> tuple[dict, date, list[dict]]:
+        """Confirm the purchase order and its mitigation-option history exist and are in range.
+
+        `as_of_date` must fall between the earliest mitigation-options date on
+        record and today; a date outside that window has nothing real to
+        narrate. The returned `history` is the latest option set not after
+        `as_of_date`, one row per candidate action including ACCEPT.
+        """
         logger.info(
             "Penalty mitigation summary requested for purchase_order_id=%s as_of_date=%s",
             purchase_order_id,
@@ -164,11 +169,20 @@ class MitigationSummaryService(
         return purchase_order, as_of_date, options_rows
 
     def _history_for_generation(self, purchase_order_id: UUID, as_of_date: date) -> list[dict]:
+        """Mitigation-option rows in effect as of `as_of_date`; the job was validated at schedule time."""
         return self.mitigation_options.get_latest_not_after(purchase_order_id, as_of_date)
 
     def _assemble_mandatory_context(
         self, purchase_order: dict, as_of_date: date, history: list[dict]
     ) -> PenaltyMitigationSummaryContext:
+        """Build the mandatory (non-tool-fetched) LLM context for one mitigation narrative.
+
+        The ACCEPT row's `projected_penalty_after` becomes the baseline penalty
+        every other option is compared against. `actual_outcomes` stays `None`
+        until the order is DELIVERED rather than becoming an empty list, because
+        the agent's prompt treats "not yet known" and "known to be empty"
+        differently.
+        """
         purchase_order_id = purchase_order["id"]
         retailer_id = purchase_order["retailer_id"]
 
@@ -243,6 +257,12 @@ class MitigationSummaryService(
         )
 
     def _resolve_sku_description(self, primary_line: dict | None, purchase_order_id: UUID) -> str:
+        """Best-effort human-readable label for the order's primary line.
+
+        Falls back through SKU description, SKU code, retailer material code,
+        material id, then the purchase-order id, so the narrative always has
+        something to reference even when master data is incomplete.
+        """
         if primary_line is None:
             return str(purchase_order_id)
         if primary_line["sku_id"] is not None:
@@ -259,6 +279,12 @@ class MitigationSummaryService(
         return _compute_content_fingerprint(context)
 
     def _build_tools(self, purchase_order: dict, as_of_date: date) -> list[BaseTool]:
+        """Build this call's bounded tool set: carrier reliability and actual penalties.
+
+        `order_status` is passed through directly rather than wrapped in a tool
+        so the prompt can gate whether the actual-penalties tool is worth
+        calling at all; it returns rows only once the order is DELIVERED.
+        """
         purchase_order_id = purchase_order["id"]
         return build_penalty_mitigation_summary_tools(
             carrier_reliability=self._get_carrier_reliability,
@@ -278,6 +304,7 @@ class MitigationSummaryService(
         tools: list[BaseTool],
         heartbeat: Callable[[], None] | None,
     ) -> PenaltySummaryOutputBase:
+        """Delegate to `PenaltyMitigationAgent.generate_mitigation_summary` for the tool-calling loop."""
         return self._agent.generate_mitigation_summary(
             context,
             order_id=order_id,
@@ -291,6 +318,12 @@ class MitigationSummaryService(
     # ------------------------------------------------------------------
 
     def _get_carrier_reliability(self, carrier_id: str) -> dict[str, Any]:
+        """Tool implementation: look up a carrier's on-time-reliability record by id.
+
+        `carrier_id` arrives as a raw string from tool-call arguments. Both a
+        malformed and an unknown id degrade to `{"found": False}`, so the agent
+        loop never crashes on a bad lookup.
+        """
         try:
             carrier = self.master_data.get_carrier(UUID(str(carrier_id)))
         except ValueError:
@@ -306,17 +339,12 @@ def _fmt_number(value: float) -> str:
 
 
 def _compute_content_fingerprint(context: PenaltyMitigationSummaryContext) -> str:
-    """Hash the facts that determine the generated narrative -- a pure,
-    DB-free function. Kept as a free function (not a method) so it can be
-    unit-tested without constructing a full `MitigationSummaryService`.
+    """Hash the facts that determine the generated narrative.
 
-    Unlike the projection summary's fingerprint (which hashes the current
-    day's violations/statuses), this hashes the ranked mitigation options
-    themselves -- the actual ground truth the narrative is built from --
-    plus the baseline penalty and order status. Excludes
-    current_projection_date: a narrative whose options are byte-for-byte
-    identical to yesterday's should be reusable even though the date
-    changed.
+    Hashes the ranked mitigation options themselves, plus the baseline penalty
+    and order status, where the projection equivalent hashes the current day's
+    violations and statuses. Excludes `current_projection_date`, so a narrative
+    whose options are identical to yesterday's stays reusable.
     """
     options = sorted(
         (

@@ -1,4 +1,4 @@
-"""Tests for `DisputeService`: state transitions, all three `analyze()`
+"""Tests for `DisputeResolutionService`: state transitions, all three `analyze()`
 error paths, and one full-lifecycle test (open -> analyze -> resolve with
 override -> assert final state and audit fields) against the SQLite test
 DB -- same "unit test doubling as the full-flow/integration check" posture
@@ -17,7 +17,7 @@ from datetime import date, datetime
 import pytest
 
 from app.core.exceptions import BusinessRuleError, ConflictError, NotFoundError, ValidationError
-from app.services.penalties.dispute.service import DisputeService
+from app.services.penalties.dispute.service import DisputeResolutionService
 from app.services.penalties.projection.service import ProjectionService
 
 _ORDER_QTY = 100
@@ -25,7 +25,7 @@ _UNIT_PRICE = 10.0
 _REQUESTED_DELIVERY_DATE = date(2026, 6, 10)
 
 
-def _build_service(repos) -> DisputeService:
+def _build_service(repos) -> DisputeResolutionService:
     projection_service = ProjectionService(
         purchase_orders=repos.purchase_orders,
         fulfillment=repos.fulfillment,
@@ -33,7 +33,7 @@ def _build_service(repos) -> DisputeService:
         master_data=repos.master_data,
         projections=repos.penalty_projections,
     )
-    return DisputeService(
+    return DisputeResolutionService(
         purchase_orders=repos.purchase_orders,
         disputes=repos.disputes,
         actual_penalties=repos.actual_penalties,

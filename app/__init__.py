@@ -1,1 +1,1 @@
-"""Mars Petcare Backend -- CMIR Email Resolution, PO Validation, and Projected Penalties, Mitigation & Dispute Resolution"""
+"""Mars Petcare Backend: CMIR email resolution, PO validation, and penalty projection, mitigation, and dispute."""

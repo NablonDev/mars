@@ -1,8 +1,8 @@
 """Internal Service Bus consumer callback for CMIR email processing.
 
-`POST /internal/process-email` is not a PRD-facing route -- it's the queue
-consumer's own internal call, kept separate from the public `cmir/email-events`
-resource for exactly that reason.
+`POST /internal/process-email` is the queue consumer's own call, not a
+PRD-facing route, and so is kept separate from the public
+`cmir/email-events` resource.
 """
 
 from __future__ import annotations
@@ -24,11 +24,11 @@ def process_queued_email(
     body: ProcessQueuedEmailRequest,
     run_service: CmirRunService = Depends(get_service),
 ) -> Envelope[dict[str, Any]]:
-    """Internal Service Bus consumer call, not a PRD-facing route -- the
-    result shape is polymorphic (a fresh graph run's thread-stage dict, the
-    touchless-path literal, or an already-processed/failed summary; see
-    `CmirRunService.process_queued_email`), so this stays untyped rather than
-    forcing a single response model onto genuinely different shapes."""
+    """Process one queued CMIR email on behalf of the Service Bus consumer.
+
+    The result shape is polymorphic, so it stays an untyped dict rather than
+    forcing one response model onto genuinely different shapes.
+    """
     result = run_service.process_queued_email(
         batch_id=body.batch_id,
         email=body.email,

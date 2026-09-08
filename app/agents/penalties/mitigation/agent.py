@@ -1,14 +1,4 @@
-"""`PenaltyMitigationAgent`: owns the bounded tool-calling loop for
-penalty-mitigation-summary generation.
-
-Extracted from `app.services.penalties._summary_base.SummaryServiceBase`'s
-former `_run_tool_loop` (itself inline in `FineMitigationSummaryService`
-before that). `MitigationSummaryService` now only assembles context/tools
-and delegates generation to this class via `generate_mitigation_summary`.
-
-See `app.agents.penalties.projection.agent`'s module docstring for the
-runtime system-prompt-loading rationale -- identical here.
-"""
+"""Bounded tool-calling loop for penalty mitigation summary generation."""
 
 from __future__ import annotations
 
@@ -30,10 +20,12 @@ from app.repositories.process.agent_registry import AgentRegistryRepository
 
 logger = logging.getLogger(__name__)
 
+# Keep tool use bounded so a model cannot trigger an unbounded sequence of
+# LLM and tool calls. The final LLM call occurs after this loop.
 MAX_TOOL_ROUNDS = 4
 
-#: `ExternalServiceError(code=...)` for an exhausted/failed tool-calling loop
-#: -- keyed by `summary_domain` ("projection" | "mitigation").
+# Error codes are selected by summary domain because the same generation
+# machinery is shared by projection and mitigation summaries.
 _UPSTREAM_FAILURE_CODES: dict[str, str] = {
     "projection": "PENALTY_PROJECTION_SUMMARY_UPSTREAM_FAILED",
     "mitigation": "PENALTY_MITIGATION_SUMMARY_UPSTREAM_FAILED",
@@ -41,12 +33,14 @@ _UPSTREAM_FAILURE_CODES: dict[str, str] = {
 
 
 def _json_default(value: Any) -> Any:
+    """Serialize a date as ISO 8601; fall back to str() for anything else json.dumps can't handle."""
     if isinstance(value, date):
         return value.isoformat()
     return str(value)
 
 
 def _wrap_data(payload: dict | list) -> str:
+    """Serialize payload and wrap it in <DATA> tags marking it as untrusted, non-instructional content."""
     body = json.dumps(payload, default=_json_default, sort_keys=True)
     return f"<DATA>\n{body}\n</DATA>"
 
@@ -78,6 +72,16 @@ class PenaltyMitigationAgent:
         tools: list[BaseTool],
         heartbeat: Callable[[], None] | None = None,
     ) -> PenaltyMitigationSummaryOutput:
+        """Run the bounded tool-calling loop and return the mitigation-narration summary.
+
+        Seeds the conversation with the active mitigation-agent's system prompt and
+        the mitigation context wrapped as untrusted <DATA>, then lets the model call
+        the supplied tools for up to MAX_TOOL_ROUNDS - 1 rounds before forcing a
+        final, tool-free response. Invokes heartbeat (if given) before each LLM call
+        so a long-running worker isn't reaped mid-generation. Raises
+        ExternalServiceError if the provider call fails or the model returns no
+        usable text.
+        """
         active_agent = self._active_agent_row()
         messages: list[BaseMessage] = [
             SystemMessage(content=active_agent["system_prompt"]),
@@ -171,6 +175,7 @@ class PenaltyMitigationAgent:
         )
 
     def _active_agent_row(self) -> dict:
+        """Fetch the active process.agent row for this agent code, or raise ExternalServiceError."""
         active = self._agent_registry.get_active(self._agent_code)
         if active is None:
             raise ExternalServiceError(

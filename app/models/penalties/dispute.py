@@ -1,36 +1,4 @@
-"""Post-delivery penalty dispute (chargeback resolution), `penalties.penalty_dispute`.
-
-Adjudicates a `penalties.actual_penalty` charge already applied against a
-purchase order: was the retailer's own charged amount correct, given what
-Mars's own penalty rule computes from the *real, final* post-delivery facts
-(actual confirmed quantity, actual ship/delivery dates) -- not the
-probability-weighted estimate `penalty_projection` computed before delivery.
-
-Modeled structurally after `common.po_delivery_change_request`
-(`app.models.common.delivery_change_request.PoDeliveryChangeRequest`) -- the
-codebase's existing "lifecycle record with a CHECK-constrained status plus a
-resolution audit trail" shape -- but lives in the `penalties` schema (plain
-FKs to `actual_penalty`/`penalty_rule`, both penalties-only concepts), not
-`common`.
-
-State machine (`dispute_status`): OPEN -> ANALYZED (the deterministic engine
-in `app.services.penalties.dispute.engine` ran and persisted a verdict) ->
-RESOLVED (a human accepts the verdict) or OVERRIDDEN (a human sets a
-different verdict; `override_reason` required -- enforced at the schema/
-service layer, not a DB CHECK, same posture as every other cross-field rule
-in this codebase, e.g. `DeliveryChangeResponseRequest`'s
-`countered_delivery_date`). RESOLVED/OVERRIDDEN are both terminal.
-
-No hard unique constraint on `actual_penalty_id` alone: a retailer can amend
-a charge, producing a second dispute cycle once the first is terminal --
-"at most one OPEN/ANALYZED dispute per charge" is enforced in
-`app.services.penalties.dispute.service.DisputeService.open_dispute`
-instead (see that method's docstring), the same posture
-`PoDeliveryChangeRequestService.create_request` already uses for "at most
-one active request per PO" (checked via
-`PoDeliveryChangeRequestRepository.find_active_for_purchase_order`, not a DB
-constraint).
-"""
+"""Post-delivery penalty dispute (chargeback resolution), `penalties.penalty_dispute`."""
 
 from __future__ import annotations
 
@@ -44,13 +12,17 @@ from app.db.base import JSONB_OR_JSON, PENALTIES_SCHEMA, UUID_PK, Base, Timestam
 
 
 def generate_dispute_number() -> str:
-    """Human-legible business id, same "generated, never client-supplied"
-    posture as `PoDeliveryChangeRequest.request_id`
-    (`app.models.common.delivery_change_request.generate_request_id`)."""
+    """Generate a human-legible dispute number, never accepted from a client."""
     return f"DSP-{uuid4().hex[:12].upper()}"
 
 
 class PenaltyDispute(Base, TimestampMixin):
+    """Post-delivery penalty dispute (chargeback resolution).
+
+    Tracks retailer claims against actual penalties with analysis, verdict, and
+    override tracking. Lifecycle: OPEN → ANALYZED → RESOLVED (or OVERRIDDEN).
+    """
+
     __tablename__ = "penalty_dispute"
     __table_args__ = (
         CheckConstraint(
@@ -88,24 +60,21 @@ class PenaltyDispute(Base, TimestampMixin):
     claimed_amount: Mapped[float] = mapped_column(Numeric(12, 2))
     # computed_amount/delta_amount/verdict are all NULL until analyze() runs.
     computed_amount: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
-    # claimed_amount - computed_amount: positive means the retailer
-    # overcharged relative to Mars's own rule (a normal dispute win);
-    # negative means the retailer undercharged -- recorded for audit only,
-    # never volunteered as a reason to pay more (see the engine's
-    # module docstring).
+    # claimed_amount - computed_amount. Positive means the retailer
+    # overcharged against Mars's own rule (a normal dispute win). Negative
+    # means it undercharged, recorded for audit only and never volunteered as
+    # a reason to pay more.
     delta_amount: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     verdict: Mapped[str | None] = mapped_column(String(30), nullable=True)
     dispute_status: Mapped[str] = mapped_column(String(30), default="OPEN")
-    # Audit trail: which rule matched, the real facts fed into the engine,
-    # which calc branch fired, whether a cap was applied. Never read back by
-    # the engine itself -- write-once at analyze(), read by the dispute
-    # summary agent and by a human reviewing resolve()/override().
+    # Audit trail: which rule matched, the facts fed into the engine, which
+    # calc branch fired, whether a cap was applied. Written once at analyze()
+    # and never read back by the engine, only by the dispute summary agent and
+    # by a human reviewing resolve() or override().
     analysis_breakdown: Mapped[dict | None] = mapped_column(JSONB_OR_JSON, nullable=True)
     analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Free text -- no auth/user table in this codebase (see
-    # PoDeliveryChangeRequest's precedent of a similarly free-text audit
-    # field where no user identity model exists).
+    # Free text, since this codebase has no user identity model to key on.
     resolved_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
     override_verdict: Mapped[str | None] = mapped_column(String(30), nullable=True)
     override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

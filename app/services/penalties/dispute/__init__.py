@@ -14,7 +14,7 @@ from app.services.penalties.dispute.engine import (
     price_violation,
     recompute_dispute,
 )
-from app.services.penalties.dispute.service import DisputeService
+from app.services.penalties.dispute.service import DisputeResolutionService
 from app.services.penalties.dispute.summary_service import (
     DisputeSummaryOutputWithReuse,
     DisputeSummaryService,
@@ -31,7 +31,7 @@ __all__ = [
     "ROUNDING_TOLERANCE",
     "DisputeCalculation",
     "DisputeFacts",
-    "DisputeService",
+    "DisputeResolutionService",
     "DisputeSummaryOutputWithReuse",
     "DisputeSummaryService",
     "DisputeVerdict",

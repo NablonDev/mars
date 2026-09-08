@@ -1,12 +1,4 @@
-"""Repository for `penalties.penalty_projection` (the daily snapshot
-history a projection trend is plotted from) and `penalties.actual_penalty`
-(the post-delivery outcome recorded against a PO). Was
-`app/repositories/fine_projection/projection.py` plus the
-`add_actual_fine`/`list_actual_fines` methods that used to live on
-`app/repositories/order.py`'s `OrderRepository` -- both are penalty-domain
-outcome facts keyed by `purchase_order_id`, grouped here rather than in
-`common/purchase_order.py`.
-"""
+"""Repository for penalty_projection and actual_penalty."""
 
 from __future__ import annotations
 
@@ -21,6 +13,7 @@ from app.services.penalties.projection import ProjectionResult
 
 
 def _projection_to_dict(row: PenaltyProjection) -> dict:
+    """Serialize a PenaltyProjection row into a dict."""
     return {
         "id": row.id,
         "purchase_order_id": row.purchase_order_id,
@@ -36,6 +29,7 @@ def _projection_to_dict(row: PenaltyProjection) -> dict:
 
 
 def _actual_penalty_to_dict(row: ActualPenalty) -> dict:
+    """Serialize an ActualPenalty row into a dict."""
     return {
         "id": row.id,
         "actual_penalty_number": row.actual_penalty_number,
@@ -48,34 +42,19 @@ def _actual_penalty_to_dict(row: ActualPenalty) -> dict:
 
 
 class PenaltyProjectionRepository:
+    """Access layer for penalty_projection facts.
+
+    Handles reads/writes of projected penalties with filtering, aggregation,
+    and stacking-aware lookups. All writes are idempotent (replaces on duplicate key).
+    """
+
     def __init__(self, session: Session) -> None:
         self._session = session
 
     def save_result(self, purchase_order_id: UUID, result: ProjectionResult) -> dict[str, UUID]:
-        """Persist every violation as its own `penalty_projection` row and
-        return each one's surrogate id, keyed by the (stringified) `rule_id`
-        that produced it -- `ProjectionService.run_for_purchase_order` uses
-        this to stitch the persisted id back onto each `ViolationProjection`
-        for the API response (`POST /penalties/projections` has no other
-        way to hand a client that row's own id -- see `ViolationProjection.id`'s
-        docstring)."""
-        # `row.id` is a Python-side column default (`generate_uuid7`) --
-        # SQLAlchemy only evaluates it during flush, so a newly-added row's
-        # `id` reads back as `None` until after `self._session.flush()`
-        # below runs. Collect (rule_id, row) pairs during the loop and read
-        # `row.id` only afterward.
+        """Persist violations as penalty_projection rows, keyed by rule_id."""
         rows_by_rule_id: list[tuple[str, PenaltyProjection]] = []
         for v in result.violations:
-            # Deliberate Phase 3 fix (flagged in the phase report): `v.rule_id`
-            # is the pure-engine `PenaltyRule.rule_id`, typed `str` (its contract
-            # doesn't change -- see app.services.penalties.projection.types's
-            # module docstring), but it now holds a stringified UUID (the
-            # surrogate `penalty_rule.id` this column FKs to, not the business
-            # `rule_code`). SQLAlchemy's `Uuid` column type does not coerce a
-            # plain `str` bind value the way it does a `uuid.UUID` instance
-            # (fails with `AttributeError: 'str' object has no attribute
-            # 'hex'` at the DB layer) -- normalize once, here, at the one
-            # place this repository accepts the value from the engine.
             rule_id = v.rule_id if isinstance(v.rule_id, UUID) else UUID(v.rule_id)
             existing = self._session.scalars(
                 select(PenaltyProjection).where(
@@ -111,14 +90,7 @@ class PenaltyProjectionRepository:
         return {rule_id_str: row.id for rule_id_str, row in rows_by_rule_id}
 
     def get_by_id(self, projection_id: UUID) -> dict | None:
-        """Fetch one `penalty_projection` row by its own surrogate id.
-
-        Phase 7a addition (flagged -- repositories were nominally out of
-        scope for that phase): `GET /penalties/projections/{projection_id}`
-        has no other way to resolve a single projection row; every other
-        method here is keyed by `purchase_order_id`, not by this table's
-        own `id`. Purely additive, zero behavior change to any existing
-        method."""
+        """Fetch one `penalty_projection` row by its surrogate id, or None."""
         row = self._session.get(PenaltyProjection, projection_id)
         return _projection_to_dict(row) if row is not None else None
 
@@ -130,29 +102,13 @@ class PenaltyProjectionRepository:
         projection_date_from: date | None = None,
         projection_date_to: date | None = None,
     ) -> list[dict]:
-        """General `penalty_projection` row filter backing
-        `GET /penalties/projections?purchase_order_id=&status=&
-        projection_date=&projection_date_from=&projection_date_to=` -- the
-        merged replacement for what used to be two separate routes:
-        `GET .../penalty-projections` history (filtered only by
-        `purchase_order_id`, via this method's own former `list_history`,
-        now a thin wrapper below) and `GET /penalty-projections?status=`
-        cross-PO (restricted to each PO's own latest `projection_date`; see
-        `ProjectionService.list_open_across_purchase_orders`, now folded in
-        here instead of composed from per-PO `get_latest` calls).
+        """Filter `penalty_projection` rows for one purchase order, or across all.
 
-        `purchase_order_id` given: every matching row for that PO, in the
-        same order `list_history` always returned them -- `status`/date
-        filters are additive on top, with no latest-only restriction (a
-        single PO's full history is still the full history).
-
-        `purchase_order_id` omitted (the old cross-PO `?status=` list):
-        restrict to each purchase order's own latest matching
-        `projection_date` first, THEN apply `status` -- not the other way
-        around, so a `status` value that only ever matches an older,
-        non-latest row for some PO still excludes that PO here, exactly as
-        `list_open_across_purchase_orders`'s per-PO `get_latest` composition
-        did before.
+        With `purchase_order_id` given, this returns that PO's full matching history
+        and the `status` and date filters are additive. Without it, rows are first
+        restricted to each PO's own latest matching `projection_date` and only then
+        filtered by `status`, so a PO whose only `status` match sits on an older date
+        drops out entirely.
         """
         query = select(PenaltyProjection)
         if purchase_order_id is not None:
@@ -184,28 +140,15 @@ class PenaltyProjectionRepository:
         return rows
 
     def list_history(self, purchase_order_id: UUID) -> list[dict]:
-        """Full, unfiltered projection history for one PO -- every other
-        repository/service caller in this codebase still uses this narrow
-        shape (`MitigationService`, `ProjectionSummaryService`, `get_latest`
-        below, several tests); kept as its own method rather than inlining
-        `list_projections(purchase_order_id=...)` at every call site."""
+        """Return the full, unfiltered projection history for one PO."""
         return self.list_projections(purchase_order_id=purchase_order_id)
 
     def _get_stacking_mode(self, purchase_order_id: UUID) -> str:
-        """Resolve the retailer's `stacking_mode` for a purchase order,
-        the same lookup `ProjectionService.run_for_purchase_order`/
-        `MitigationService._build_projection_result` perform via
-        `PurchaseOrderRepository.get_purchase_order` +
-        `MasterDataRepository.get_stacking_mode` -- done here as a single
-        join instead of composing those two repositories, since no
-        repository in this codebase depends on another (session-only
-        constructors throughout; see `app/repositories/common/master_data.py`
-        and `app/repositories/common/purchase_order.py`).
+        """Resolve a purchase order's retailer `stacking_mode`, falling back to SUM.
 
-        Falls back to `"SUM"` if the purchase order or retailer can't be
-        resolved (should not happen given the FK from `penalty_projection`
-        to `purchase_order`), matching `MasterDataRepository.get_stacking_
-        mode`'s own fallback for a retailer row that can't be found.
+        Joined here rather than composed from `PurchaseOrderRepository` and
+        `MasterDataRepository` because no repository in this codebase depends on
+        another.
         """
         stacking_mode = self._session.scalars(
             select(Retailer.stacking_mode)
@@ -215,6 +158,7 @@ class PenaltyProjectionRepository:
         return stacking_mode or "SUM"
 
     def get_latest(self, purchase_order_id: UUID) -> dict | None:
+        """Fetch latest projection for a PO with stacking totals applied, or None if none exist."""
         history = self.list_history(purchase_order_id)
         if not history:
             return None
@@ -236,18 +180,18 @@ class PenaltyProjectionRepository:
         }
 
     def truncate_all(self) -> None:
-        """Deletes every penalty_projection row, for a force-reseed. FKs to
-        both purchase_order and penalty_rule, so must run before
-        `PurchaseOrderRepository.truncate_all()`/`PenaltyRuleRepository.
-        truncate_all()` clear either. Deferred by Phase 2 to this phase --
-        seeding (Phase 3) cannot force-reseed without it; see the sibling
-        `ActualPenaltyRepository.truncate_all()` below for the same gap on
-        `actual_penalty`."""
+        """Delete every projection; must run before the purchase-order and rule truncates."""
         self._session.execute(delete(PenaltyProjection))
         self._session.flush()
 
 
 class ActualPenaltyRepository:
+    """Access layer for actual_penalty facts.
+
+    Persists invoiced/deducted penalties with dispute status tracking.
+    All writes are idempotent (replaces on duplicate key).
+    """
+
     def __init__(self, session: Session) -> None:
         self._session = session
 
@@ -260,6 +204,11 @@ class ActualPenaltyRepository:
         invoice_or_deduction_date: date,
         dispute_status: str = "NONE",
     ) -> dict:
+        """Create an actual_penalty row and return it as a dict.
+
+        `dispute_status` leaves its `"NONE"` default only once a `PenaltyDispute` is
+        opened against the charge.
+        """
         row = ActualPenalty(
             actual_penalty_number=actual_penalty_number,
             purchase_order_id=purchase_order_id,
@@ -273,22 +222,12 @@ class ActualPenaltyRepository:
         return _actual_penalty_to_dict(row)
 
     def get(self, actual_penalty_id: UUID) -> dict | None:
-        """Fetch one `actual_penalty` row by its own surrogate id.
-
-        Mirrors `PenaltyProjectionRepository.get_by_id` -- backs
-        `GET /penalties/actual-penalties/{actual_penalty_id}`; every other
-        method here is keyed by `purchase_order_id`, not by this table's own
-        `id`."""
+        """Fetch one `actual_penalty` row by its surrogate id, or None."""
         row = self._session.get(ActualPenalty, actual_penalty_id)
         return _actual_penalty_to_dict(row) if row is not None else None
 
     def list_actual_penalties(self, purchase_order_id: UUID | None = None) -> list[dict]:
-        """General `actual_penalty` row filter backing
-        `GET /penalties/actual-penalties?purchase_order_id=` -- mirrors
-        `PenaltyProjectionRepository.list_projections`'s own optional
-        `purchase_order_id` filter: given, every row for that PO (same shape
-        `list_for_purchase_order` below already returned); omitted, every
-        row across every PO."""
+        """List actual penalties for one PO, or across all POs when the filter is omitted."""
         query = select(ActualPenalty)
         if purchase_order_id is not None:
             query = query.where(ActualPenalty.purchase_order_id == purchase_order_id)
@@ -296,18 +235,10 @@ class ActualPenaltyRepository:
         return [_actual_penalty_to_dict(r) for r in rows]
 
     def list_for_purchase_order(self, purchase_order_id: UUID) -> list[dict]:
-        """Full, unfiltered actual-penalty list for one PO -- kept as its
-        own narrow method for existing callers (`ProjectionSummaryService`)
-        that only ever need this shape, same reason
-        `PenaltyProjectionRepository.list_history` still wraps
-        `list_projections` above."""
+        """Return every actual penalty recorded against one PO."""
         return self.list_actual_penalties(purchase_order_id=purchase_order_id)
 
     def truncate_all(self) -> None:
-        """Deletes every actual_penalty row, for a force-reseed. FKs to
-        purchase_order, so must run before
-        `PurchaseOrderRepository.truncate_all()` clears it. Deferred by
-        Phase 2 to this phase -- see the sibling
-        `PenaltyProjectionRepository.truncate_all()`'s docstring."""
+        """Delete every actual penalty; must run before the purchase-order truncate."""
         self._session.execute(delete(ActualPenalty))
         self._session.flush()

@@ -1,8 +1,4 @@
-"""Demand exceptions flagged against a PO line -- a fulfillment fact like
-`order_confirmation`/`shipment`. Not in docs/redesigned-schema.md's own
-table listing (only mentioned in its "gap-fill" answers); this module
-implements that answer: `public` schema (unqualified), FK'd to
-`purchase_order_line_id`."""
+"""Demand exceptions flagged against a PO line: a fulfillment fact, like shipment."""
 
 from datetime import date
 from uuid import UUID
@@ -14,6 +10,12 @@ from app.db.base import UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class DemandException(Base, TimestampMixin):
+    """Demand exception flagged against a PO line.
+
+    Fulfillment fact tracking anomalies or issues with a line item.
+    Append-only; one row per exception event.
+    """
+
     __tablename__ = "demand_exception"
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)

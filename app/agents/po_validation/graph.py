@@ -1,3 +1,10 @@
+"""PO validation workflow graph builder.
+
+Orchestrates the CMIR lookup, material-master check, and human-decision pipeline
+for a single purchase-order line. Manages state across workflow nodes and
+coordinates with external services for tracing and checkpoint recovery.
+"""
+
 from __future__ import annotations
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -14,27 +21,11 @@ def build_po_validation_graph(
     checkpointer: BaseCheckpointSaver,
     trace_repo: AgentTraceRepository,
 ):
-    """Wires the node functions into the PO Validation graph (PRD §6.1).
-
-    persist_po_line -> validate_against_cmir
-        -> [found]     -> check_material_master
-        -> [not found] -> human_manual_cmir_entry -> create_cmir_record -> check_material_master
-
-    check_material_master
-        -> [sufficient] -> mark_ready_for_so_creation -> END
-        -> [short]       -> human_qty_mismatch_decision
-                              -> use_substitute  -> check_material_master (loop)
-                              -> proceed_anyway  -> mark_ready_for_so_creation_partial -> END
-                              -> mark_stale      -> mark_discontinued -> END
-
-    persist_po_line / validate_against_cmir / check_material_master / create_cmir_record,
-    on internal failure -> handle_error -> END (writes one po_line_errors row, marks FAILED).
-
-    Reuses the same traced() wrapper as the CMIR graph, unmodified.
-    """
+    """Build the PO validation workflow graph with checkpointing and tracing."""
     graph = StateGraph(POGraphState)
 
     def node(name: str, fn):
+        """Wrap a node method with tracing so its invocation reaches process.agent_trace."""
         return traced(name, fn, trace_repo)
 
     graph.add_node("persist_po_line", node("persist_po_line", nodes.persist_po_line))

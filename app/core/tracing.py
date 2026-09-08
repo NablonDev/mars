@@ -1,3 +1,5 @@
+"""LangGraph node wrapper that records each node execution to agent_traces."""
+
 from __future__ import annotations
 
 import time
@@ -38,6 +40,7 @@ def traced(node_name: str, fn: NodeFn, trace_repo: AgentTraceRepository) -> Node
     """
 
     def wrapped(state: dict[str, Any]) -> dict[str, Any]:
+        """Run the wrapped node, logging its outcome (completed, paused, or failed) to agent_traces."""
         run_id = state.get("run_id")
         started_at = utc_now()
         t0 = time.perf_counter()

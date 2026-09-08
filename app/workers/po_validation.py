@@ -1,27 +1,13 @@
 """Recovery path for `PO_VALIDATION` job items left PENDING/RUNNING.
 
-Under normal operation `PoValidationService.ingest_po_lines` enqueues one
-`process.job_item` per line and claims/settles it inline, in the same
-request, right after its graph invocation returns (see that module's
-docstring, point 5) -- so a job item is never left PENDING/RUNNING once its
-request completes. The one case that can still leave one stranded is the
-request process dying between enqueue and settle (a hard crash, an
-out-of-band `kill -9`, ...).
+`PoValidationService.ingest_po_lines` normally claims and settles each item inline in
+the same request, so only a process death between enqueue and settle can strand one.
 
-This mirrors `app.workers.penalty_projection`'s stranded-summary sweep for
-a LangGraph-backed domain instead of a pure-repository one: PO-validation's
-actual graph execution stays inside the API process (via `Container`'s
-compiled graph, same as `PoValidationService.replay_line`), not
-`app.workers.dispatch`'s generic claim/execute loop, which has no LangGraph
-dependency today (mirroring CMIR's own EMAIL_INGEST items, which are
-likewise never claimed by that generic loop -- see
-`app.workers.cmir_service_bus_consumer`).
-
-Scoped to one `job_run_id` (an ingest batch) at a time via `claim_batch`'s
-`job_item_ids` filter, rather than a blind claim -- `claim_batch` has no
-`item_type` filter of its own, and blindly claiming would risk taking an
-unrelated domain's PENDING item (`ORDER_RUN`/`PROJECTION_SUMMARY_REGEN`/...)
-away from the generic worker loop that actually owns those.
+Graph execution stays inside the API process, not `app.workers.dispatch`'s generic
+claim/execute loop, which carries no LangGraph dependency. Recovery is therefore scoped
+to one `job_run_id` at a time through `claim_batch`'s `job_item_ids` filter: that method
+has no `item_type` filter, so a blind claim could steal another domain's PENDING item
+from the generic worker loop that owns it.
 """
 
 from __future__ import annotations
@@ -46,8 +32,10 @@ def replay_stranded_job_run_items(
     worker_id: str,
     visibility_timeout_seconds: int,
 ) -> int:
-    """Reclaim and re-run every `PO_VALIDATION` job item left PENDING/RUNNING
-    under one ingest batch (`job_run_id`). Returns the number recovered."""
+    """Reclaim and re-run every stranded `PO_VALIDATION` item under one ingest batch.
+
+    Returns the number of items recovered.
+    """
     job_queue.reclaim_stale(visibility_timeout_seconds)
 
     pending_ids = [

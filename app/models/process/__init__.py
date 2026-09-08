@@ -1,7 +1,4 @@
-"""ORM models for the `process` schema: the shared job/agent/workflow
-backbone consolidating what were two parallel stacks (`fines` job_run/
-job_item, `cmir` agent_runs/agent_traces/workflow_threads/hitl_actions) --
-used by both the `penalties` and `cmir`/`po_validation` domains."""
+"""ORM models for the `process` schema: the job, agent, and workflow backbone shared by every domain."""
 
 from app.models.process.agent import Agent
 from app.models.process.agent_run import AgentRun, AgentTrace

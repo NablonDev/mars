@@ -1,28 +1,16 @@
 """Deterministic engine for calculating shortage, delay, and projected penalties.
 
-Moved from `app/services/fine_projection/` (Phase 3 -- services move/
-folder-split; see that package's former `__init__.py` for the pre-move
-docstring, preserved in spirit below).
+Holds the pure calculation surface (`types.py`, `engine.py`, `shortage.py`,
+`delay.py`, none of which may import SQLAlchemy or FastAPI) alongside the
+I/O-performing orchestration built on it (`service.py`, `summary_service.py`).
 
-This package holds both the pure calculation engine and the I/O-performing
-orchestration built on top of it:
-- Pure (no SQLAlchemy/FastAPI imports): `types.py`, `engine.py`,
-  `shortage.py`, `delay.py`.
-- I/O-performing (DB/repository access): `service.py`, `summary_service.py`.
-- Fixture data used only by seeding/tests, not the engine itself, lives
-  in `app/services/seeding/scenario_data_projection.py`.
-
-This module's re-exports below cover both the pure engine surface and the
-I/O-performing summary service (`summary_service.py`'s own `__all__` was
-merged in here -- architecture review). The `.summary_service` import is
-deliberately last: `summary_service.py` itself does
-`from app.services.penalties.projection import DELAY_VIOLATION_TYPES,
-SHORTAGE_VIOLATION_TYPES` at module level, which resolves fine against this
-partially-initialized package module only because those two names are
-already bound above by the time that import runs.
+The `.summary_service` import must stay last. That module imports
+`DELAY_VIOLATION_TYPES` and `SHORTAGE_VIOLATION_TYPES` from this package at
+module level, and those names resolve against this partially-initialized
+package only because the imports above have already bound them.
 """
 
-from app.services.penalties.projection.delay import (  # noqa: I001 -- order is deliberate, not isort's; see module docstring
+from app.services.penalties.projection.delay import (  # noqa: I001  (deliberate order; see module docstring)
     compute_delay_probability,
     price_delay_penalty,
     resolve_expected_ship_date,

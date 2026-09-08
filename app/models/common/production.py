@@ -1,4 +1,4 @@
-"""Production order and its schedule -- historized status facts."""
+"""Production order and its schedule: historized status facts."""
 
 from datetime import date, datetime
 from uuid import UUID
@@ -10,6 +10,11 @@ from app.db.base import UUID_PK, Base, TimestampMixin, generate_uuid7
 
 
 class ProductionOrder(Base, TimestampMixin):
+    """Production order with planned and actual quantities and dates.
+
+    Tracks material and plant assignment with status (PLANNED, IN_PROGRESS, COMPLETE).
+    """
+
     __tablename__ = "production_order"
 
     id: Mapped[UUID] = mapped_column(UUID_PK, primary_key=True, default=generate_uuid7)
@@ -26,11 +31,11 @@ class ProductionOrder(Base, TimestampMixin):
 
 
 class ProductionSchedule(Base, TimestampMixin):
-    """Historized production status; keyed by (material_id, plant_id), not
-    a single order -- a production line serves whichever orders draw on it.
-    See tests/unit/services/test_known_limitations.py for the one place in
-    the mock data where two orders sharing a line is a real, accepted
-    wrinkle rather than a bug."""
+    """Historized production line status snapshot.
+
+    Keyed by (material_id, plant_id), not a single order; a line serves
+    whichever orders draw on it. Append-only; one row per status change.
+    """
 
     __tablename__ = "production_schedule"
 

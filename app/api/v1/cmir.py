@@ -1,10 +1,4 @@
-"""API endpoints for `cmir.email_event` ingestion.
-
-Thread-lifecycle routes (stage/snapshot, missing-fields, draft updates,
-decisions) live on `app/api/v1/workflow_threads.py` -- `workflow_thread` is a
-shared `process`-schema resource used by both `cmir` and `po_validation`, not
-owned by either domain's own router.
-"""
+"""API endpoints for CMIR email event ingestion."""
 
 from __future__ import annotations
 
@@ -28,6 +22,12 @@ def start_email_ingest(
     body: IngestEmailEventsRequest,
     run_service: CmirRunService = Depends(get_service),
 ) -> Envelope[IngestEmailEventsResponse]:
+    """Start email ingestion from Gmail.
+
+    Rejects any `source` other than `"gmail"` as invalid, since no other
+    source is currently configured, then kicks off ingestion and returns
+    202 accepted.
+    """
     if body.source != "gmail":
         raise ValidationError(
             code="VALIDATION_ERROR",

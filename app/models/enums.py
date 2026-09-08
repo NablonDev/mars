@@ -1,10 +1,4 @@
-"""Shared job and summary enums used across persistence, API, and worker layers.
-
-JobItemStatus and SummaryStatus intentionally remain separate types even
-where their values overlap. They represent different persistence domains:
-job_item execution state, and the summary-record state shared by both
-penalty projection and penalty mitigation summaries, respectively.
-"""
+"""Shared job and summary enums used across persistence, API, and worker layers."""
 
 from __future__ import annotations
 
@@ -21,42 +15,37 @@ class JobItemStatus(StrEnum):
 
 
 class JobTaskType(StrEnum):
-    """`process.job_item.item_type` values -- shared by both the
-    `cmir`/`po_validation` and `penalties` domains now that job_run/
-    job_item live in `process`."""
+    """`process.job_item.item_type` values, shared by every domain."""
 
     ORDER_RUN = "ORDER_RUN"
     PROJECTION_SUMMARY_REGEN = "PROJECTION_SUMMARY_REGEN"
     MITIGATION_SUMMARY_REGEN = "MITIGATION_SUMMARY_REGEN"
-    # Computes and persists fresh mitigation options for a purchase order
-    # against its already-persisted latest projection -- distinct from
-    # MITIGATION_SUMMARY_REGEN (which only regenerates the LLM summary over
-    # options that already exist). See app/workers/penalty_mitigation.py.
+    # Computes and persists fresh mitigation options against the purchase
+    # order's latest projection. MITIGATION_SUMMARY_REGEN, by contrast, only
+    # regenerates the LLM summary over options that already exist.
     MITIGATION_RUN = "MITIGATION_RUN"
-    # Regenerates only the LLM narrative for an already-`ANALYZED`/terminal
-    # `penalty_dispute` row -- mirrors PROJECTION_SUMMARY_REGEN/
-    # MITIGATION_SUMMARY_REGEN; the verdict itself is never recomputed by
-    # this task type (see app/services/penalties/dispute/service.py).
+    # Regenerates only the LLM narrative for an already-ANALYZED or terminal
+    # penalty_dispute row; the verdict itself is never recomputed here.
     DISPUTE_SUMMARY_REGEN = "DISPUTE_SUMMARY_REGEN"
     EMAIL_INGEST = "EMAIL_INGEST"
     PO_VALIDATION = "PO_VALIDATION"
-    # Dispatched from `job_type=PENALTY_FULL_RUN_BATCH` -- one item per
-    # matching purchase order, executing only its requested subset of
-    # projection/projection_summary/mitigation/mitigation_summary steps
-    # (stored in process.job_item.metadata) in that fixed dependency order.
-    # See app/workers/penalty_full_run.py.
+    # Dispatched from job_type=PENALTY_FULL_RUN_BATCH, one item per matching
+    # purchase order. Each runs its requested subset of the projection,
+    # projection_summary, mitigation and mitigation_summary steps (stored in
+    # process.job_item.metadata) in that fixed dependency order.
     PENALTY_FULL_RUN = "PENALTY_FULL_RUN"
 
 
 class JobRunType(StrEnum):
+    """`process.job_run.trigger_type` values: how a batch run was started."""
+
     SCHEDULED_DAILY = "SCHEDULED_DAILY"
     MANUAL_BATCH = "MANUAL_BATCH"
     ON_DEMAND = "ON_DEMAND"
 
 
 class SummaryStatus(StrEnum):
-    """Persistence state shared by both the penalty projection summary and
-    penalty mitigation summary records."""
+    """Persistence state shared by every penalty summary record."""
 
     PENDING = "PENDING"
     READY = "READY"
@@ -64,15 +53,7 @@ class SummaryStatus(StrEnum):
 
 
 class SummaryType(StrEnum):
-    """`penalties.penalty_summary.summary_type` discriminator, replacing
-    what were two separate tables (`projection_summary`/
-    `mitigation_summary`). DISPUTE (added alongside `penalty_dispute`) is a
-    plain third value, keyed by the exact same `(purchase_order_id,
-    summary_type, as_of_date)` triple as PROJECTION/MITIGATION -- see
-    `app.models.penalties.summary.PenaltySummary`'s module docstring for
-    the known limitation this creates (a PO can have more than one
-    concurrent dispute) and why a DISPUTE-only entity-pointer column was
-    rejected."""
+    """Discriminator for penalty_summary.summary_type: PROJECTION, MITIGATION, or DISPUTE."""
 
     PROJECTION = "PROJECTION"
     MITIGATION = "MITIGATION"
@@ -82,10 +63,9 @@ class SummaryType(StrEnum):
 class DisputeStatus(StrEnum):
     """`penalties.penalty_dispute.dispute_status` lifecycle.
 
-    OPEN -> ANALYZED (the deterministic engine ran and persisted a verdict)
-    -> RESOLVED (a human accepted the engine's verdict) or OVERRIDDEN (a
-    human set a different verdict; requires `override_reason`). RESOLVED
-    and OVERRIDDEN are both terminal."""
+    OPEN -> ANALYZED (engine verdict persisted) -> terminal RESOLVED (human
+    accepted) or OVERRIDDEN (human chose another, with `override_reason`).
+    """
 
     OPEN = "OPEN"
     ANALYZED = "ANALYZED"
@@ -94,9 +74,7 @@ class DisputeStatus(StrEnum):
 
 
 class DisputeVerdict(StrEnum):
-    """`penalties.penalty_dispute.verdict`/`.override_verdict` -- always
-    computed deterministically by `app.services.penalties.dispute.engine`,
-    never by the LLM narrative (see `DisputeSummaryService`'s docstring)."""
+    """Dispute outcomes, always computed by the deterministic engine, never the LLM."""
 
     NO_PAY = "NO_PAY"
     PAY_PARTIAL = "PAY_PARTIAL"
@@ -104,10 +82,11 @@ class DisputeVerdict(StrEnum):
 
 
 class DisputeReasonCode(StrEnum):
-    """`penalties.penalty_dispute.reason_code` -- closed list, extendable
-    later. The retailer/ops-supplied grounds for disputing a charge; never
-    read by the deterministic engine, only recorded for audit and handed to
-    the dispute-summary LLM as context."""
+    """Retailer or ops grounds for disputing a charge.
+
+    Recorded for audit and passed to the dispute-summary LLM as context; the
+    deterministic engine never reads it.
+    """
 
     AMOUNT_INCORRECT = "AMOUNT_INCORRECT"
     NOT_LATE = "NOT_LATE"
@@ -117,11 +96,7 @@ class DisputeReasonCode(StrEnum):
 
 
 class AgentDomain(StrEnum):
-    """`process.agent.domain` values -- shared by both the `cmir`/
-    `po_validation` and `penalties` domains now that the agent registry
-    lives in `process`. Lowercase, matching every existing call site
-    (`domain="cmir"` / `domain="penalties"`), unlike this module's other,
-    uppercase enums."""
+    """`process.agent.domain` values, lowercase unlike this module's other enums."""
 
     CMIR = "cmir"
     PENALTIES = "penalties"

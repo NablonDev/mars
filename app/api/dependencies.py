@@ -1,23 +1,4 @@
-"""FastAPI dependency factories for database, repository, service, and queue
-components.
-
-Two composition styles coexist (approved plan, Phase 7a):
-
-- `common`/`penalties`: a session-based `Depends()` chain
-  (`get_database -> get_session -> get_<x>_repository -> get_<x>_service`),
-  rebuilt here against the Phase 2/3 repositories and services -- this
-  module was stale from before that restructure (importing repository/
-  service classes that no longer exist) until this pass.
-- `cmir`/`po_validation`: the container-based composition in
-  `app/core/container.py` (a separate, already-fixed composition root --
-  left alone this phase). `build_service`/`build_po_validation_service`
-  below still have to adapt `Container`'s fields to
-  `CmirRunService`/`PoValidationService`'s constructors, and `Container`
-  does not itself build the `process.job_queue`/`cmir.cmir_job_*_context`
-  repositories `CmirRunService` needs -- flagged below, not silently
-  patched into `Container` (out of scope, container.py is read-only this
-  phase).
-"""
+"""FastAPI dependency factories for database, repository, service, and queue components."""
 
 from __future__ import annotations
 
@@ -52,7 +33,7 @@ from app.repositories.process.agent_registry import AgentRegistryRepository
 from app.repositories.process.job_queue import JobQueueRepository
 from app.services.cmir.run_service import CmirRunService
 from app.services.penalties.delivery_change import PoDeliveryChangeRequestService
-from app.services.penalties.dispute.service import DisputeService
+from app.services.penalties.dispute.service import DisputeResolutionService
 from app.services.penalties.dispute.summary_service import DisputeSummaryService
 from app.services.penalties.mitigation.service import MitigationService
 from app.services.penalties.mitigation.summary_service import MitigationSummaryService
@@ -68,7 +49,12 @@ def require_internal_api_key(
     x_internal_api_key: str | None = Header(default=None, alias="X-Internal-Api-Key"),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    """Gate every non-health route behind a shared-secret header."""
+    """Gate every non-health route behind a shared-secret header.
+
+    Compares `X-Internal-Api-Key` against the configured secret using a
+    constant-time comparison and raises 401 if the header is missing,
+    non-Latin-1, or doesn't match.
+    """
     valid = False
     if x_internal_api_key is not None:
         try:
@@ -83,14 +69,14 @@ def require_internal_api_key(
 
 
 def parse_include(allowed: frozenset[str]):
-    """Build a `?include=` query-param dependency validated against a
-    route-specific allow-list (approved plan §5) -- pure read, never
-    schedules generation as a side effect; every call site here composes
-    with an already-cached `get_status()`/repository read, never
-    `get_or_schedule()`.
-    """
+    """Return a dependency that validates `?include=` query params against an allow-list."""
 
     def _dependency(include: str | None = Query(default=None)) -> set[str]:
+        """Parse and validate the `?include=` query parameter against the allowed list.
+
+        Splits comma-separated tokens and validates each against the allowed set,
+        raising ValidationError if any unknown tokens are found.
+        """
         if not include:
             return set()
 
@@ -113,6 +99,7 @@ def get_database(request: Request) -> Database:
 
 
 def get_session(database: Database = Depends(get_database)) -> Iterator[Session]:
+    """Provide a scoped database session with automatic commit/rollback."""
     session = database.new_session()
     try:
         yield session
@@ -125,94 +112,108 @@ def get_session(database: Database = Depends(get_database)) -> Iterator[Session]
 
 
 # ---------------------------------------------------------------------------
-# common -- repositories
+# common: repositories
 # ---------------------------------------------------------------------------
 
 
 def get_master_data_repository(session: Session = Depends(get_session)) -> MasterDataRepository:
+    """Provide a master data repository for reading carrier, plant, and SKU data."""
     return MasterDataRepository(session)
 
 
 def get_purchase_order_repository(session: Session = Depends(get_session)) -> PurchaseOrderRepository:
+    """Provide a purchase order repository for reading and writing PO headers and lines."""
     return PurchaseOrderRepository(session)
 
 
 def get_fulfillment_repository(session: Session = Depends(get_session)) -> FulfillmentRepository:
+    """Provide a fulfillment repository for reading and writing shipments and demand exceptions."""
     return FulfillmentRepository(session)
 
 
 # ---------------------------------------------------------------------------
-# process -- repositories (shared backbone)
+# process: repositories (shared backbone)
 # ---------------------------------------------------------------------------
 
 
 def get_job_queue_repository(session: Session = Depends(get_session)) -> JobQueueRepository:
+    """Provide a job queue repository for managing background job execution state."""
     return JobQueueRepository(session)
 
 
 def get_agent_registry_repository(session: Session = Depends(get_session)) -> AgentRegistryRepository:
+    """Provide an agent registry repository for tracking agent state and runs."""
     return AgentRegistryRepository(session)
 
 
 # ---------------------------------------------------------------------------
-# penalties -- repositories
+# penalties: repositories
 # ---------------------------------------------------------------------------
 
 
 def get_penalty_rule_repository(session: Session = Depends(get_session)) -> PenaltyRuleRepository:
+    """Provide a penalty rule repository for accessing rule configurations."""
     return PenaltyRuleRepository(session)
 
 
 def get_penalty_projection_repository(
     session: Session = Depends(get_session),
 ) -> PenaltyProjectionRepository:
+    """Provide a penalty projection repository for reading and writing projections."""
     return PenaltyProjectionRepository(session)
 
 
 def get_actual_penalty_repository(session: Session = Depends(get_session)) -> ActualPenaltyRepository:
+    """Provide an actual penalty repository for reading and writing realized penalties."""
     return ActualPenaltyRepository(session)
 
 
 def get_penalty_summary_repository(session: Session = Depends(get_session)) -> PenaltySummaryRepository:
+    """Provide a penalty summary repository for accessing summary job data."""
     return PenaltySummaryRepository(session)
 
 
 def get_mitigation_input_repository(session: Session = Depends(get_session)) -> MitigationInputRepository:
+    """Provide a mitigation input repository for reading mitigation configuration."""
     return MitigationInputRepository(session)
 
 
 def get_mitigation_option_repository(session: Session = Depends(get_session)) -> MitigationOptionRepository:
+    """Provide a mitigation option repository for reading and writing computed options."""
     return MitigationOptionRepository(session)
 
 
 def get_dispute_repository(session: Session = Depends(get_session)) -> PenaltyDisputeRepository:
+    """Provide a dispute repository for reading and writing penalty disputes."""
     return PenaltyDisputeRepository(session)
 
 
 def get_delivery_change_request_repository(
     session: Session = Depends(get_session),
 ) -> PoDeliveryChangeRequestRepository:
+    """Provide a delivery change request repository for tracking PO delivery modifications."""
     return PoDeliveryChangeRequestRepository(session)
 
 
 def get_penalty_job_item_context_repository(
     session: Session = Depends(get_session),
 ) -> PenaltyJobItemContextRepository:
+    """Provide a penalty job item context repository for job execution details."""
     return PenaltyJobItemContextRepository(session)
 
 
 def get_penalty_job_run_context_repository(
     session: Session = Depends(get_session),
 ) -> PenaltyJobRunContextRepository:
+    """Provide a penalty job run context repository for top-level job state."""
     return PenaltyJobRunContextRepository(session)
 
 
 # ---------------------------------------------------------------------------
-# job queue dispatch -- POST /job-runs only (summary generation enqueues and
-# commits its own job_run/job_item internally, see ProjectionSummaryService/
-# MitigationSummaryService.get_or_schedule -- no separate dispatch wiring
-# needed for those routes this phase; a real consumer worker for either is
-# out of scope, see the phase report).
+# job queue dispatch: POST /job-runs only. Summary generation enqueues and
+# commits its own job_run/job_item internally (see ProjectionSummaryService/
+# MitigationSummaryService.get_or_schedule), so those routes need no separate
+# dispatch wiring.
 # ---------------------------------------------------------------------------
 
 
@@ -224,6 +225,7 @@ def get_job_queue(request: Request) -> tuple[JobDispatcher, JobSource]:
 def get_job_dispatcher(
     job_queue: tuple[JobDispatcher, JobSource] = Depends(get_job_queue),
 ) -> JobDispatcher:
+    """Provide the job dispatcher for enqueuing background work."""
     return job_queue[0]
 
 
@@ -247,11 +249,12 @@ def get_llm_client_for_app(app: FastAPI, settings: Settings) -> AzureOpenAIChatC
 
 
 def get_llm_client(request: Request, settings: Settings = Depends(get_settings)) -> AzureOpenAIChatClient:
+    """Provide the application-scoped Azure OpenAI LLM client."""
     return get_llm_client_for_app(request.app, settings)
 
 
 # ---------------------------------------------------------------------------
-# penalties -- services
+# penalties: services
 # ---------------------------------------------------------------------------
 
 
@@ -262,6 +265,7 @@ def get_projection_service(
     master_data: MasterDataRepository = Depends(get_master_data_repository),
     projections: PenaltyProjectionRepository = Depends(get_penalty_projection_repository),
 ) -> ProjectionService:
+    """Provide a penalty projection service for computing penalty exposure."""
     return ProjectionService(
         purchase_orders=purchase_orders,
         fulfillment=fulfillment,
@@ -280,6 +284,7 @@ def get_mitigation_service(
     mitigation_options: MitigationOptionRepository = Depends(get_mitigation_option_repository),
     projection_service: ProjectionService = Depends(get_projection_service),
 ) -> MitigationService:
+    """Provide a mitigation service for computing penalty reduction options."""
     return MitigationService(
         purchase_orders=purchase_orders,
         rules=rules,
@@ -299,6 +304,7 @@ def get_delivery_change_request_service(
     projection_service: ProjectionService = Depends(get_projection_service),
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> PoDeliveryChangeRequestService:
+    """Provide a delivery change request service for managing delivery date modifications."""
     return PoDeliveryChangeRequestService(
         purchase_orders=purchase_orders,
         delivery_change_requests=delivery_change_requests,
@@ -313,8 +319,9 @@ def get_dispute_service(
     actual_penalties: ActualPenaltyRepository = Depends(get_actual_penalty_repository),
     rules: PenaltyRuleRepository = Depends(get_penalty_rule_repository),
     projection_service: ProjectionService = Depends(get_projection_service),
-) -> DisputeService:
-    return DisputeService(
+) -> DisputeResolutionService:
+    """Provide a dispute service for opening and managing penalty disputes."""
+    return DisputeResolutionService(
         purchase_orders=purchase_orders,
         disputes=disputes,
         actual_penalties=actual_penalties,
@@ -334,6 +341,7 @@ def get_dispute_summary_service(
     rules: PenaltyRuleRepository = Depends(get_penalty_rule_repository),
     master_data: MasterDataRepository = Depends(get_master_data_repository),
 ) -> DisputeSummaryService:
+    """Provide a dispute summary service for generating LLM-powered dispute resolutions."""
     return DisputeSummaryService(
         purchase_orders=purchase_orders,
         summaries=summaries,
@@ -360,6 +368,7 @@ def get_projection_summary_service(
     actual_penalties: ActualPenaltyRepository = Depends(get_actual_penalty_repository),
     projection_service: ProjectionService = Depends(get_projection_service),
 ) -> ProjectionSummaryService:
+    """Provide a projection summary service for generating LLM-powered projection analyses."""
     return ProjectionSummaryService(
         purchase_orders=purchase_orders,
         summaries=summaries,
@@ -387,6 +396,7 @@ def get_mitigation_summary_service(
     actual_penalties: ActualPenaltyRepository = Depends(get_actual_penalty_repository),
     projection_service: ProjectionService = Depends(get_projection_service),
 ) -> MitigationSummaryService:
+    """Provide a mitigation summary service for generating LLM-powered mitigation recommendations."""
     return MitigationSummaryService(
         purchase_orders=purchase_orders,
         summaries=summaries,
@@ -422,6 +432,7 @@ def get_penalty_seeding_service(
     ),
     penalty_job_run_context: PenaltyJobRunContextRepository = Depends(get_penalty_job_run_context_repository),
 ) -> PenaltySeedingService:
+    """Provide a penalty seeding service for populating test data and simulations."""
     return PenaltySeedingService(
         master_data=master_data,
         rules=rules,
@@ -451,15 +462,7 @@ def get_penalty_seeding_service(
 def _build_cmir_job_context_repositories(
     container: Container,
 ) -> tuple[JobQueueRepository, CmirJobRunContextRepository, CmirJobItemContextRepository]:
-    """`Container.build()` does not itself construct the `process.job_queue`
-    / `cmir.cmir_job_*_context` repositories `CmirRunService` needs (it
-    predates `start_email_ingest`/`process_queued_email` creating real
-    `process.job_run`/`job_item` rows) -- `container.py` is read-only this
-    phase, so this opens one small, dedicated session on the same database
-    URL rather than extending it. Flagged for the CMIR follow-up pass:
-    the real fix is for `Container` to own this session/these repositories
-    itself, alongside its other single-session repositories.
-    """
+    """Build job context repositories from a dedicated session on the container database."""
     database = Database(
         container.config.database.url,
         pool_size=container.config.database.pool_size,
@@ -494,15 +497,7 @@ def build_service() -> CmirRunService:
 
 
 def build_po_validation_service() -> PoValidationService:
-    """Build the production PO Validation service from the project composition root.
-
-    `Container.build()` does not itself construct the `process.job_queue`/
-    `cmir.cmir_job_*_context` repositories `PoValidationService` needs
-    either (same gap `_build_cmir_job_context_repositories` above already
-    flags/works around for `CmirRunService`) -- reuses that same helper
-    rather than duplicating it, since both need the identical repository
-    trio against the same database URL.
-    """
+    """Build the production PO Validation service from the project composition root."""
     container = Container.build()
     job_queue, job_run_context, job_item_context = _build_cmir_job_context_repositories(container)
     return PoValidationService(
@@ -521,13 +516,7 @@ def build_po_validation_service() -> PoValidationService:
 
 
 def get_service(request: Request) -> CmirRunService:
-    """FastAPI dependency returning the app-instance-lifetime CMIR service.
-
-    Memoized on `request.app.state` (not a plain lru_cache) so each FastAPI
-    app instance -- including a test-created one that already carries a fake
-    via create_app(service=...) -- gets its own singleton instead of sharing
-    one across the process.
-    """
+    """Return the app-instance-lifetime CMIR service singleton."""
     if request.app.state.service is None:
         request.app.state.service = build_service()
     return request.app.state.service

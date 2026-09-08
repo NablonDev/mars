@@ -1,5 +1,4 @@
-"""Cause/cost assumptions feeding the mitigation-ranking stage, and the
-persisted, ranked mitigation options themselves."""
+"""Cause and cost assumptions feeding mitigation ranking, plus the ranked options themselves."""
 
 from datetime import date
 from uuid import UUID
@@ -11,11 +10,11 @@ from app.db.base import PENALTIES_SCHEMA, UUID_PK, Base, TimestampMixin, generat
 
 
 class MitigationInput(Base, TimestampMixin):
-    """One row per PO: the current best-guess cause/cost assumptions used
-    to rank mitigation options. Mutable -- represents a current
-    assumption, not a historized event, deliberately unlike
-    order_confirmation/production_schedule/shipment (which ARE
-    append-only)."""
+    """Shortage cause and mitigation cost assumptions for a purchase order.
+
+    Stores user-provided or inferred data for penalty mitigation ranking.
+    Mutable; one row per PO with unique constraint.
+    """
 
     __tablename__ = "mitigation_input"
     __table_args__ = ({"schema": PENALTIES_SCHEMA},)
@@ -36,12 +35,11 @@ class MitigationInput(Base, TimestampMixin):
 
 
 class MitigationOption(Base, TimestampMixin):
-    """One row per (purchase_order_id, projection_date, action): the
-    persisted, ranked output of the mitigation engine for a given PO and
-    projection day. Renamed from `MitigationResult` (the ORM class used to
-    be kept apart from the pure-engine `MitigationOption` dataclass under
-    that name -- see the approved Phase 1 plan's naming decisions, which
-    now unify on this name for the ORM class instead)."""
+    """Ranked mitigation action for a purchase order and projection date.
+
+    Persists mitigation engine output with savings, costs, and confidence ratings.
+    Keyed by (purchase_order_id, projection_date, action) with idempotent writes.
+    """
 
     __tablename__ = "mitigation_option"
     __table_args__ = (

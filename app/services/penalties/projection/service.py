@@ -1,18 +1,4 @@
-"""Orchestrates one penalty-projection run: assemble the snapshot, load the
-retailer's rules, run the pure engine, persist, return the result.
-
-Was `app/services/fine_projection/service.py`'s `FineProjectionService`
-(renamed `ProjectionService`, folder-split per the approved plan). Rewritten
-against the Phase 2 `common`/`penalties` repositories -- `OrderRepository`/
-`FineRuleRepository`/`MasterDataRepository`/`ProjectionRepository` no longer
-exist; see `app/repositories/{common,penalties}/*.py`.
-
-`build_snapshot` is new here: `app/repositories/common/fulfillment.py`'s
-module docstring explicitly deferred composing the `OrderSnapshot` to this
-phase, once two schema gaps were resolved (both resolved by the approved
-Phase 1 plan and Phase 2's own flags): `unit_price` now lives on
-`purchase_order_line`, and a PO can have more than one line.
-"""
+"""Orchestrates penalty-projection runs: assemble snapshot, load rules, run engine, persist."""
 
 from __future__ import annotations
 
@@ -41,6 +27,13 @@ if TYPE_CHECKING:
 
 @dataclass
 class ProjectionService:
+    """Orchestrates penalty-projection runs for a single purchase order.
+
+    Assembles a snapshot of current order state (quantity, confirmed shipments,
+    production/carrier status) from PO and fulfillment facts as-of a projection
+    date, loads the applicable penalty rules, runs the projection engine, and
+    persists the result. One entry point: run_for_purchase_order."""
+
     purchase_orders: PurchaseOrderRepository
     fulfillment: FulfillmentRepository
     rules: PenaltyRuleRepository
@@ -48,35 +41,7 @@ class ProjectionService:
     projections: PenaltyProjectionRepository
 
     def build_snapshot(self, purchase_order_id: UUID, projection_date: date) -> OrderSnapshot:
-        """Assemble a projection-ready `OrderSnapshot` from a purchase
-        order's current lines/facts.
-
-        The pure-calc engine's snapshot type stays single-line/scalar (see
-        `app.services.penalties.projection.types`'s module docstring) --
-        that contract does not change in this pass. Since
-        `common.purchase_order_line` is normalized (a PO can have multiple
-        lines, each with its own `ordered_quantity`/`unit_price`), this
-        method aggregates a PO's lines into that same scalar shape:
-        `order_qty` is the sum of every line's `ordered_quantity`, and
-        `unit_price` is the quantity-weighted average unit price
-        (`sum(qty * price) / sum(qty)`). This is exactly equivalent to the
-        old single-line behavior when a PO has one line (the only case
-        that exists in the four worked-example scenarios today), and is a
-        defensible, documented approximation for a true multi-line PO --
-        true multi-line/multi-SKU penalty-rule differentiation (e.g. pricing
-        each line against its own rule set) is out of scope for this pass.
-
-        `confirmed_qty`/`demand_exception_flagged` are true per-line facts
-        (each `order_confirmation_line`/`demand_exception` row FKs to one
-        `purchase_order_line`), so those aggregate honestly across every
-        line (summed / any-line-flagged respectively) rather than
-        approximating. `production_status` has no such honest aggregation
-        available -- `production_schedule` is keyed by `(material_id,
-        plant_id)`, a single pair, not a per-line list -- so it is read off
-        the PO's first line (by `line_number`) only; a true multi-material
-        PO would need per-line production status, which is the same
-        out-of-scope multi-SKU differentiation noted above.
-        """
+        """Assemble an OrderSnapshot from purchase-order lines and fulfillment facts."""
         purchase_order = self.purchase_orders.require_purchase_order(purchase_order_id)
         lines = self.purchase_orders.list_lines(purchase_order_id)
         if not lines:
@@ -161,6 +126,14 @@ class ProjectionService:
         projection_date: date | None = None,
         stacking_mode_override: str | None = None,
     ) -> ProjectionResult:
+        """Run projection for a purchase order as-of a date, persist, and return result.
+
+        Assembles order snapshot as-of projection_date (or today if omitted), loads
+        retailer's active penalty rules, projects via engine, and persists each
+        violation row to penalty_projection. Returns ProjectionResult with violations
+        stamped with their persisted IDs. stacking_mode_override (if given) overrides
+        the retailer's configured stacking mode. Raises NotFoundError if PO doesn't
+        exist or BusinessRuleError if no active rules exist for the retailer."""
         purchase_order = self.purchase_orders.get_purchase_order(purchase_order_id)
         if purchase_order is None:
             raise NotFoundError(
@@ -185,12 +158,10 @@ class ProjectionService:
         )
         result = ProjectionEngine().project(snapshot, rule_list, stacking_mode=stacking_mode)
         ids_by_rule_id = self.projections.save_result(purchase_order_id, result)
-        # Stitch each violation's own persisted `penalty_projection.id` back
-        # onto it -- the only way `POST /penalties/projections` can hand a
-        # client that row's id in the response (see `ViolationProjection.id`'s
-        # docstring); `save_result` itself stays return-shaped as a plain
-        # rule_id -> id mapping rather than mutating `result` directly, so it
-        # has no dependency on the pure-engine dataclass being mutable.
+        # Stitch each violation's persisted `penalty_projection.id` back onto it
+        # so `POST /penalties/projections` can return that row's id.
+        # `save_result` returns a rule_id -> id mapping instead of mutating
+        # `result`, keeping it independent of the pure-engine dataclass.
         for v in result.violations:
             v.id = ids_by_rule_id[v.rule_id]
         return result
@@ -200,6 +171,12 @@ class ProjectionService:
         projection_date: date | None = None,
         stacking_mode_override: str | None = None,
     ) -> list[ProjectionResult]:
+        """Run and persist a projection for every purchase order currently OPEN.
+
+        A `BusinessRuleError` from any single order propagates and aborts the
+        rest of the batch. There is no partial-batch handling, so the calling
+        worker decides how to retry.
+        """
         results = []
         for purchase_order in self.purchase_orders.list_purchase_orders(order_status="OPEN"):
             results.append(

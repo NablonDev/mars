@@ -1,6 +1,6 @@
 """Runs the eight dispute seed scenarios
 (`app.services.seeding.scenario_data_dispute.SCENARIOS`) end to end --
-`PenaltySeedingService.seed_disputes()` -> `DisputeService.open_dispute()`
+`PenaltySeedingService.seed_disputes()` -> `DisputeResolutionService.open_dispute()`
 -> `.analyze()` -- against the SQLite test DB, and asserts each one
 produces exactly the verdict/computed_amount/delta_amount (or error code)
 its fixture declares. This is the "confirm the new seed scenarios actually
@@ -12,13 +12,13 @@ from __future__ import annotations
 import pytest
 
 from app.core.exceptions import AppError
-from app.services.penalties.dispute.service import DisputeService
+from app.services.penalties.dispute.service import DisputeResolutionService
 from app.services.penalties.projection.service import ProjectionService
 from app.services.seeding.scenario_data_dispute import SCENARIOS
 
 
 @pytest.fixture
-def dispute_service(repos) -> DisputeService:
+def dispute_service(repos) -> DisputeResolutionService:
     projection_service = ProjectionService(
         purchase_orders=repos.purchase_orders,
         fulfillment=repos.fulfillment,
@@ -26,7 +26,7 @@ def dispute_service(repos) -> DisputeService:
         master_data=repos.master_data,
         projections=repos.penalty_projections,
     )
-    return DisputeService(
+    return DisputeResolutionService(
         purchase_orders=repos.purchase_orders,
         disputes=repos.disputes,
         actual_penalties=repos.actual_penalties,

@@ -1,7 +1,8 @@
-"""ORM models for the shared master data and fulfillment facts used by both
-the `cmir`/`po_validation` and `penalties` domains. These tables live in
-Postgres's default `public` schema (unqualified), not a dedicated schema --
-`process`/`cmir`/`penalties`/`langgraph` remain separate schemas."""
+"""ORM models for the master data and fulfillment facts shared by every domain.
+
+These tables live unqualified in Postgres's default `public` schema rather
+than a dedicated schema of their own.
+"""
 
 from app.models.common.carrier import Carrier
 from app.models.common.delivery import Delivery, DeliveryLine, Shipment

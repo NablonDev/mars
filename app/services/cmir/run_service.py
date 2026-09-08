@@ -1,70 +1,4 @@
-"""Coordinates the CMIR resolution workflow's API surface across
-repositories and LangGraph.
-
-Was `app/services/cmir_run_service.py` (825 lines). Per the approved plan
-("just move it to `app/services/cmir/run_service.py` as-is
-(behavior-preserving), do not attempt the internal ingest/thread-resolution
-/decision-handling split the plan flags as a *separate* future refactor
-call"), this move keeps the same method structure/responsibilities as
-before -- it is NOT split into ingest/thread-resolution/decision-handling
-files. What DOES have to change, unavoidably, is every repository call
-site: `app.repositories.{observability,email,cmir}` (flat modules the old
-service imported) no longer exist -- Phase 2 replaced them with
-`app.repositories.{process.workflow,process.agent_registry,cmir.email,
-cmir.cmir_record}`, a real schema shape change, not just a rename. See this
-phase's report for the concrete, load-bearing design decisions this forced:
-
-1. **Checkpoint thread id vs. reviewer-facing thread id.** The old schema's
-   `workflow_thread.thread_id` was a single string serving BOTH as the
-   LangGraph checkpointer's `configurable.thread_id` AND the reviewer-facing
-   API handle. The new `process.workflow_thread.id` is a UUID surrogate
-   created only once, lazily, on the thread's first human interrupt (see
-   that model's docstring) -- but a LangGraph checkpointer needs a
-   `configurable.thread_id` from the very first `graph.invoke()` call,
-   before any interrupt (or `workflow_thread` row) exists. Resolution: a
-   random checkpoint-thread-id string is generated up front for every graph
-   run (`_new_checkpoint_thread_id`), used as the checkpointer key from the
-   start; if/when the run's first interrupt fires, the `workflow_thread`
-   row is created and the checkpoint string is stashed in its
-   `metadata_json["checkpoint_thread_id"]`. Every resume call
-   (`submit_missing_fields`/`update_draft`/`submit_decision`) looks the
-   reviewer-facing `thread_id` (the row's UUID `id`) up, reads the
-   checkpoint string back out of `metadata_json`, and uses THAT for the
-   LangGraph `configurable.thread_id`. The two ids are never the same
-   value; conflating them would either break the checkpointer (no id until
-   an interrupt happens) or break the "lazy creation" model.
-2. **`agent_run_id` bridging.** `process.agent_run.workflow_thread_id` is a
-   FK set only at `AgentRun` creation time -- but the agent run starts
-   BEFORE any `workflow_thread` row exists (same ordering problem as #1).
-   Rather than adding a repository method to patch that FK in after the
-   fact (out of scope for a services-only phase), the run id is likewise
-   stashed in `metadata_json["agent_run_id"]` at thread-creation time and
-   read back out on resume. Flagged as a real (if minor) loss versus a
-   first-class FK: `AgentRun.workflow_thread_id` stays `NULL` for every
-   CMIR run that reaches a thread, so a query keyed off that FK column
-   alone won't find it -- only `metadata_json` does.
-3. **Audit-trail fidelity.** The old `hitl_actions` table carried an
-   explicit `field_changes` diff column per resume; the new merged
-   `process.human_action` has no such column (see that model's docstring --
-   completing a row already *is* the audit entry). `field_changes` is
-   dropped from every resume call here; the diff is still computed and
-   shown to the reviewer via `update_draft`'s response and the thread's
-   `metadata_json["latest_snapshot"]["diff"]`, it is just no longer
-   separately persisted per human-action row.
-4. **`list_runs(view="batches")` has no repository support.** The old
-   `batch_id` denormalization is gone (see `process.workflow.py`'s module
-   docstring); nothing here groups job runs by a listable "batch" concept
-   any more (`JobQueueRepository` can summarize/list items for ONE known
-   `job_run_id`, but not list job runs themselves). `view="batches"` now
-   raises `ValidationError(code="VIEW_NOT_SUPPORTED")` rather than silently
-   returning nothing -- a real, flagged capability gap versus the old API,
-   not a rename casualty.
-5. **`start_email_ingest`/`process_queued_email` now create a real
-   `process.job_run`/`job_item` per batch/email**, with the matching
-   `cmir.cmir_job_item_context`/`cmir_job_run_context` row attached in the
-   same transaction (design point #2) -- the old ad hoc `batch_id` string
-   is now a real `job_run.id`.
-"""
+"""Coordinates CMIR resolution workflow across repositories and LangGraph."""
 
 from __future__ import annotations
 
@@ -111,10 +45,9 @@ FINAL_STAGE_BY_DECISION = {
 }
 
 # Reached when persist_cmir's supersede_and_insert loses to a concurrent write
-# (see app.repositories.cmir.cmir_record.CmirVersionConflict). The thread still
-# closes out (consistent with approve/reject) rather than silently reopening
-# for retry -- the exact reviewer-facing retry UX is an open product question,
-# so this is the minimal, safe behavior: fail loud, don't guess.
+# (see app.repositories.cmir.cmir_record.CmirVersionConflict). The thread closes
+# out rather than silently reopening for retry: the reviewer-facing retry UX is
+# still an open product question, so this fails loud instead of guessing.
 CONFLICT_STAGE = ("COMPLETED_CONFLICT", "completed_conflict")
 
 _AGENT_CODE = "cmir_extractor"
@@ -160,6 +93,7 @@ class CmirRunService:
         self._validator = validator or CmirValidator()
 
     def _ensure_registered(self) -> UUID:
+        """Ensure the `cmir_extractor` agent row exists for this prompt version and return its id."""
         return self._agent_registry.ensure_registered(
             agent_code=_AGENT_CODE,
             prompt_version=_PROMPT_VERSION,
@@ -346,10 +280,14 @@ class CmirRunService:
         limit: int = 50,
         cursor: str | None = None,
     ) -> dict[str, Any]:
-        """Return either reviewer thread rows or agent-run summaries.
+        """Return reviewer thread rows or agent-run summaries.
 
-        `view="batches"` is no longer supported -- see this module's
-        docstring, point 4.
+        `view='threads'` lists `workflow_thread` rows (the reviewer-facing
+        queue); `view='agents'` lists `agent_run` rows for one agent instead.
+        `cursor` is an opaque ISO 8601 timestamp echoed back from a prior call's
+        `next_cursor` for keyset pagination; a malformed one raises
+        `ValidationError` rather than a raw `ValueError`. `view='batches'` is
+        rejected: batches have no dedicated repository in the current model.
         """
         try:
             if view == "threads":
@@ -378,8 +316,8 @@ class CmirRunService:
             raise ValidationError(
                 code="VIEW_NOT_SUPPORTED",
                 message=(
-                    "view='batches' has no repository support in the process-schema restructure -- "
-                    "list items for one known job_run_id instead."
+                    "view='batches' has no repository support in the process-schema restructure. "
+                    "List items for one known job_run_id instead."
                 ),
                 details={"view": view},
             )
@@ -390,14 +328,22 @@ class CmirRunService:
         )
 
     def get_stage(self, thread_id: UUID) -> dict[str, Any]:
-        """Return current UI stage for one thread."""
+        """Return current UI stage for one thread.
+
+        Raises `NotFoundError` when `thread_id` doesn't match any
+        `workflow_thread` row, so callers never have to null-check the result.
+        """
         stage = self._workflow_threads.get_stage(thread_id)
         if stage is None:
             raise self._thread_not_found(thread_id)
         return stage
 
     def get_snapshot(self, thread_id: UUID) -> dict[str, Any]:
-        """Return the latest review snapshot for one thread."""
+        """Return the CMIR draft the reviewer UI renders while a thread is paused.
+
+        Reflects the thread's most recent interrupt or edit, and carries a diff
+        against the current active record once one is available.
+        """
         snapshot = self._workflow_threads.get_snapshot(thread_id)
         if snapshot is None:
             raise self._thread_not_found(thread_id)
@@ -411,7 +357,14 @@ class CmirRunService:
         fields: dict[str, Any],
         expected_updated_at: str,
     ) -> dict[str, Any]:
-        """Resume a thread waiting for mandatory CMIR fields."""
+        """Resume a thread waiting for mandatory CMIR fields.
+
+        Validates `fields` against the editable-field allowlist and the
+        thread's expected `updated_at` (optimistic concurrency) before
+        resuming the LangGraph run with them as the interrupt's answer. Raises
+        `ConflictError` if the thread has moved on since `expected_updated_at`,
+        or isn't actually waiting on this interrupt.
+        """
         self._validate_fields(fields)
         stage = self._ensure_current(thread_id, expected_updated_at)
         if stage["status"] != "waiting_missing_fields":
@@ -546,7 +499,13 @@ class CmirRunService:
         expected_updated_at: str,
         reason: str = "",
     ) -> dict[str, Any]:
-        """Approve or reject a thread waiting for approval."""
+        """Approve or reject a thread waiting for approval.
+
+        A rejection requires a non-empty `reason`. Resumes the LangGraph run with
+        the decision as the interrupt's answer, then persists the terminal thread
+        state: COMPLETED_APPROVED, COMPLETED_REJECTED, or COMPLETED_CONFLICT if a
+        concurrent write beat this approval to the active CMIR record.
+        """
         if decision not in {"approve", "reject"}:
             raise ValidationError(
                 code="VALIDATION_ERROR",
@@ -605,7 +564,15 @@ class CmirRunService:
         *,
         resume_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Persist thread status after a graph invoke or resume."""
+        """Persist thread status after a graph invoke or resume.
+
+        On a fresh interrupt, either creates a new `workflow_thread` or records the
+        human action against the existing one, moving the thread into the
+        interrupt's waiting stage. Otherwise the graph has run to completion and
+        the thread is closed out as approved, rejected, or conflicted. A version
+        conflict on `persist_cmir` surfaces as `ConflictError` even though the
+        thread bookkeeping itself committed cleanly.
+        """
         if state.get(INTERRUPT_KEY):
             payload = state[INTERRUPT_KEY][0].value
             reason = payload["reason"]
@@ -680,10 +647,9 @@ class CmirRunService:
             )
 
         if resume_context is None:
-            # Reached only if the graph completes without ever interrupting
-            # (not possible on the current graph shape, which always
-            # interrupts at human_approval -- kept defensive, mirrors
-            # PoValidationService's own "touchless path").
+            # Reached only if the graph completes without ever interrupting, which
+            # the current shape cannot do because it always interrupts at
+            # human_approval. Kept defensive, mirroring PoValidationService.
             self._agent_runs.update_status(run_id, status, completed=True)
             return {
                 "batch_id": batch_id,
@@ -720,10 +686,9 @@ class CmirRunService:
         self._agent_runs.update_status(run_id, status, completed=True)
 
         if conflict:
-            # The thread bookkeeping above is already committed and consistent
-            # (mirrors approve/reject's own close-out) -- this raise is purely to
-            # give the reviewer who just clicked approve immediate, honest feedback
-            # that their approval did not actually commit, rather than a silent 200.
+            # The thread bookkeeping above is already committed and consistent. This
+            # raise exists so the reviewer who just clicked approve is told their
+            # approval did not commit, rather than getting a silent 200.
             raise ConflictError(
                 code="CMIR_VERSION_CONFLICT",
                 message=(
@@ -735,6 +700,7 @@ class CmirRunService:
         return self.get_stage(workflow_thread_id)
 
     def _require_open_pending(self, thread_id: UUID, interrupt_type: str) -> dict[str, Any]:
+        """Return the thread's open `human_action` row, or raise if it isn't waiting on `interrupt_type`."""
         pending = self._human_actions.get_open_for_thread(thread_id)
         if pending is None or pending["interrupt_type"] != interrupt_type:
             actual = None if pending is None else pending["interrupt_type"]
@@ -742,6 +708,7 @@ class CmirRunService:
         return pending
 
     def _ensure_current(self, thread_id: UUID, expected_updated_at: str) -> dict[str, Any]:
+        """Return the thread's current stage, or raise `ConflictError` if it has moved since `expected_updated_at`."""
         stage = self.get_stage(thread_id)
         if stage["updated_at"].isoformat() != expected_updated_at:
             raise ConflictError(
@@ -752,6 +719,7 @@ class CmirRunService:
         return stage
 
     def _validate_fields(self, fields: dict[str, Any]) -> None:
+        """Raise `ValidationError` if `fields` contains a key outside `EDITABLE_FIELDS`."""
         invalid_fields = sorted(set(fields) - EDITABLE_FIELDS)
         if invalid_fields:
             raise ValidationError(
@@ -762,6 +730,7 @@ class CmirRunService:
 
     @staticmethod
     def _checkpoint_thread_id(stage: dict[str, Any]) -> str:
+        """Read the LangGraph checkpoint thread id off a stage's metadata, or raise if it's missing."""
         checkpoint_thread_id = (stage["metadata_json"] or {}).get("checkpoint_thread_id")
         if checkpoint_thread_id is None:
             raise ExternalServiceError(
@@ -773,21 +742,31 @@ class CmirRunService:
 
     @staticmethod
     def _agent_run_id(stage: dict[str, Any]) -> UUID:
+        """Read the originating agent run id off a stage's metadata, falling back to the thread's own id."""
         agent_run_id = (stage["metadata_json"] or {}).get("agent_run_id")
         return UUID(agent_run_id) if agent_run_id else stage["id"]
 
     @staticmethod
     def _thread_config(checkpoint_thread_id: str) -> dict[str, Any]:
+        """Build the LangGraph `config` dict that pins a graph call to one checkpoint thread."""
         return {"configurable": {"thread_id": checkpoint_thread_id}}
 
     @staticmethod
     def _email_to_payload(email: Any) -> dict[str, Any]:
+        """Normalize an `EmailMessage` dataclass or plain dict into a dict for graph state."""
         if isinstance(email, dict):
             return email
         return asdict(email)
 
     @staticmethod
     def _email_from_payload(payload: dict[str, Any], *, fallback_imap_id: str | None = None) -> EmailMessage:
+        """Build an `EmailMessage` from a queued Service Bus payload.
+
+        `imap_id` is resolved from whichever of `imap_id`/`source_imap_id`/
+        `email_id` is present, falling back to `fallback_imap_id`, since the
+        Service Bus consumer's nested `email` payload doesn't always carry the
+        same key the top-level request does.
+        """
         # email_id is a required top-level field of the request; the nested copy
         # inside `email` is a convenience the Service Bus consumer adds, so fall
         # back to the authoritative value rather than KeyError-ing on its absence.
@@ -813,6 +792,7 @@ class CmirRunService:
 
     @staticmethod
     def _already_processed_summary(batch_id: str, email_id: Any) -> dict[str, Any]:
+        """Build the summary row returned for an email whose queue state is already 'processed'."""
         return {
             "batch_id": batch_id,
             "agent_run_id": None,
@@ -827,6 +807,7 @@ class CmirRunService:
 
     @staticmethod
     def _queue_summary(batch_id: str, row: dict[str, Any], status: str) -> dict[str, Any]:
+        """Build the per-email summary row `start_email_ingest` returns for one queued email."""
         stage_by_status = {
             "new": "NEW",
             "queued": "QUEUED",
@@ -853,14 +834,17 @@ class CmirRunService:
 
     @staticmethod
     def _new_checkpoint_thread_id() -> str:
+        """Generate a fresh, unique LangGraph checkpoint thread id for a new run."""
         return f"thread_{uuid4().hex[:12]}"
 
     @staticmethod
     def _snapshot_state(state: dict[str, Any]) -> dict[str, Any]:
+        """Strip the LangGraph interrupt marker out of graph state before persisting it as a snapshot."""
         return {key: value for key, value in state.items() if key != INTERRUPT_KEY}
 
     @staticmethod
     def _thread_not_found(thread_id: UUID) -> NotFoundError:
+        """Build the `NotFoundError` raised for an unknown `thread_id`."""
         return NotFoundError(
             code="THREAD_NOT_FOUND",
             message="Unknown thread_id.",
@@ -869,6 +853,7 @@ class CmirRunService:
 
     @staticmethod
     def _resume_failed(thread_id: UUID, pending_action_id: UUID, exc: Exception) -> ExternalServiceError:
+        """Log and build the `ExternalServiceError` raised when resuming a thread's graph run fails unexpectedly."""
         logger.exception(
             "Failed to resume workflow thread %s from pending action %s",
             thread_id,
@@ -890,6 +875,7 @@ class CmirRunService:
         expected: str,
         actual: str | None,
     ) -> ConflictError:
+        """Build the `ConflictError` raised when a resume API is called against a thread not paused on that interrupt."""
         return ConflictError(
             code="THREAD_NOT_WAITING",
             message="Resume API called while thread is not paused for that action.",

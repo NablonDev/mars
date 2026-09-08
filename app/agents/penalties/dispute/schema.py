@@ -6,4 +6,4 @@ from app.agents.penalties._summary_output import PenaltySummaryOutputBase
 
 
 class DisputeSummaryOutput(PenaltySummaryOutputBase):
-    pass
+    """Output of dispute-summary generation; no fields beyond the shared base."""

@@ -1,8 +1,4 @@
-"""Delay probability + pricing.
-
-Moved unchanged from `app/services/fine_projection/delay.py` (Phase 3 --
-services move/folder-split); only the import path below changed.
-"""
+"""Delay probability and pricing calculations."""
 
 from datetime import date, timedelta
 
@@ -22,13 +18,11 @@ DELAY_PROBABILITY_TABLE = {
     "le_-3": {1: 0.50, 2: 0.70, 3: 0.88, 4: 0.98},
 }
 
-# Production risk is a leading indicator for ship-date slip too, not just
-# for shortage. This is deliberately modest and sits at the bottom of the
-# priority order in resolve_expected_ship_date() below -- a real
-# appointment reschedule, an actual ship date, or an explicit caller-supplied
-# estimate all override this assumption, because they represent better
-# information than a generic status-based guess. Mirrors how
-# ANTICIPATED_SHORTFALL_PCT already works on the shortage side.
+# Production risk is a leading indicator for ship-date slip, not just for
+# shortage. Deliberately modest, and last in resolve_expected_ship_date()'s
+# priority order: a real appointment reschedule, an actual ship date, or an
+# explicit caller estimate all carry better information than a generic
+# status-based guess. Mirrors ANTICIPATED_SHORTFALL_PCT on the shortage side.
 PRODUCTION_STATUS_SHIP_SLIP_DAYS = {
     ProductionStatus.ON_TRACK: 0,
     ProductionStatus.AT_RISK: 1,
@@ -37,6 +31,12 @@ PRODUCTION_STATUS_SHIP_SLIP_DAYS = {
 
 
 def _buffer_bucket(buffer_days: int) -> str:
+    """Map slack days onto a `DELAY_PROBABILITY_TABLE` row key.
+
+    `buffer_days` is requested delivery minus expected delivery, so negative
+    means late. Three or more days over collapse into one ceiling bucket;
+    marginal risk beyond that point isn't modeled.
+    """
     if buffer_days >= 0:
         return "ge_0"
     if buffer_days == -1:
@@ -47,6 +47,11 @@ def _buffer_bucket(buffer_days: int) -> str:
 
 
 def _carrier_multiplier(reliability_score: float) -> float:
+    """Scale the base delay probability up for a less reliable carrier.
+
+    Multiplies `compute_delay_probability`'s table lookup, so a poor carrier
+    amplifies buffer- and stage-driven risk rather than replacing it.
+    """
     if reliability_score >= 90:
         return 1.0
     if reliability_score >= 75:
@@ -57,9 +62,11 @@ def _carrier_multiplier(reliability_score: float) -> float:
 
 
 def resolve_expected_ship_date(s: OrderSnapshot) -> date:
-    """Best current estimate of the ship date, checked most-to-least
-    trustworthy: actual date, then caller-supplied estimate, then a
-    missed appointment, then a generic production-status guess."""
+    """Best current estimate of the ship date.
+
+    Sources are checked most-to-least trustworthy: actual date, caller-supplied
+    estimate, missed appointment, then a generic production-status guess.
+    """
     if s.actual_ship_date is not None:
         return s.actual_ship_date
     if s.expected_ship_date is not None:
@@ -71,6 +78,12 @@ def resolve_expected_ship_date(s: OrderSnapshot) -> date:
 
 
 def compute_stage(s: OrderSnapshot) -> int:
+    """Classify how close the order is to shipping, as a 1-4 column key into `DELAY_PROBABILITY_TABLE`.
+
+    Stage 4 short-circuits once `actual_ship_date` is set: a confirmed buffer
+    predicts better than any estimate. Later stages carry higher base
+    probabilities for the same buffer, reflecting less time left to recover.
+    """
     if s.actual_ship_date is not None:
         return 4
     days_before_ship = (s.required_ship_date - s.projection_date).days
@@ -82,6 +95,11 @@ def compute_stage(s: OrderSnapshot) -> int:
 
 
 def compute_delay_probability(s: OrderSnapshot) -> float:
+    """Estimate the probability this order misses its requested delivery date.
+
+    Capped at 0.98 rather than treated as a certainty: a shipment already in
+    transit can still arrive early.
+    """
     expected_ship = resolve_expected_ship_date(s)
     expected_delivery = expected_ship + timedelta(days=s.expected_transit_days)
     buffer_days = (s.requested_delivery_date - expected_delivery).days
@@ -93,8 +111,7 @@ def compute_delay_probability(s: OrderSnapshot) -> float:
 
 
 def price_delay_penalty(rule: PenaltyRule, order_qty: int, unit_price: float) -> float:
-    """Flat reference cost for the violation type, not scaled by the
-    current buffer."""
+    """Flat reference cost for the violation type, not scaled by the current buffer."""
     if rule.calc_type == CalcType.PERCENT_OF_PO:
         penalty = rule.rate * order_qty * unit_price
     elif rule.calc_type == CalcType.FLAT_FEE:
